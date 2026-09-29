@@ -120,7 +120,7 @@ Pipeline details:
 | `namespaces` | `/proc/<pid>/ns/*`, pid-1 ns (root) | per-type isolation for all 8 ns types; `degraded` when pid-1 unreadable; cgroup-ns inode comparison |
 | `uidmap` | `/proc/<pid>/uid_map`, `gid_map`, `setgroups` | full mapping rows; single-line range-1 ⇒ rootless signal |
 | `capabilities` | `/proc/<pid>/status` `CapEff/Prm/Inh/Bnd/Amb/LastEff`, `NoNewPrivs`, securebits, `/proc/sys/kernel/yama/ptrace_scope` | all 6 sets decoded to names (incl. `CAP_BPF`, `CAP_PERFMON`, `CAP_CHECKPOINT_RESTORE`); `NoNewPrivs` state; Yama ptrace scope (scoped single-knob read, see non-goals) |
-| `seccomp` | `/proc/<pid>/status` `Seccomp`, `Seccomp_filters` (kernel ≥ 4.14; degrade to mode-only when absent), `seccomp(2)` `GET_ACTION_AVAIL`, `SECCOMP_GET_FILTER` (root) | mode 0/1/2, filter count, supported actions matrix; BPF program dump when root; template match vs known profiles reported **as labeled inference**, never as fact |
+| `seccomp` | `/proc/<pid>/status` `Seccomp`, `Seccomp_filters` (kernel ≥ 4.14; degrade to mode-only when absent), `seccomp(2)` `GET_ACTION_AVAIL`, `SECCOMP_GET_FILTER` (root) | mode 0/1/2, filter count, supported actions matrix; raw BPF program dump when root. Template matching against known profile templates (docker/runc defaults) is **deferred to v1.1** — it requires disassembling the filter program, and reporting a matched template name as fact would overclaim |
 | `syscall-probe` | execution of null-arg syscalls `0..RSEQ`, EPERM/EACCES classified as blocked | blocked-syscall list. **Only with `--probe-syscalls`.** Skips amicontained's hang/side-effect list (rt_sigreturn, select, pause, pselect6, ppoll, exit, exit_group, clone, fork, vfork, seccomp). Enforced by `--probe-timeout` when set |
 | `lsm` | `/proc/<pid>/attr/current`, `/sys/kernel/security/lsm`, `/sys/kernel/security/lockdown`, `/sys/kernel/security/apparmor/`, `landlock(ABI)` query | active LSM list verbatim (may include `lockdown`, `bpf`, `ipe`, `ima`); AppArmor profile + mode; SELinux context + enforce/permissive; Kernel Lockdown state; Landlock ABI level or absent |
 | `vmm` | CPUID hypervisor bit + vendor leaf (x86; best-effort aarch64), `/sys/class/dmi/id/*` (public fields unprivileged), `clocksource0`, `/dev/vsock` presence, `/proc/cpuinfo` `hypervisor` flag | hypervisor vendor/product; confidence per signature; composite signals for firecracker (no DMI + `kvm-clock` + vsock) and gVisor (characteristic kernel/ptrace quirks reported conservatively) |
@@ -171,7 +171,7 @@ Seed catalog (v1; registry is append-only in id-space):
 | AMR-009 | cgroup-v1-container | low | cgroup v1 in effect inside container (release_agent-class vectors; host-side) |
 | AMR-010 | no-pids-limit | low | container detected ∧ pids controller present but unlimited |
 | AMR-011 | gid-map-includes-0 | medium | gid_map maps host gid 0 without `setgroups: deny` |
-| AMR-012 | landlock-available-unused | info | kernel offers Landlock ABI ≥ 1 ∧ current process not under a ruleset |
+| AMR-012 | landlock-abi-available | info | kernel exposes Landlock ABI ≥ 1 (`/sys/kernel/security/landlock` present) — presence-only: a process's Landlock domain state is not observable through procfs, so "unused" is never claimed |
 | AMR-013 | virtualized | info | hypervisor detected (context for VMM-boundary claims) |
 | AMR-014 | strong-isolation-runtime | info | firecracker/gVisor/kata detected (positive note) |
 | AMR-015 | unrecognized-runtime | info | no candidate scored above threshold (audit manually) |
