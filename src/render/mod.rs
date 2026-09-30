@@ -9,13 +9,11 @@ use crate::pipeline::Event;
 /// Event sink for one output format. `Send` so the Task 7 CLI can hand the
 /// renderer to whichever thread owns the writer; `finish` lets a format flush
 /// trailing state after the final event.
-#[allow(dead_code)] // Methods are called via the Task 7 CLI wiring.
 pub trait Renderer: Send {
     fn on_event(&mut self, w: &mut dyn std::io::Write, ev: &Event) -> std::io::Result<()>;
     fn finish(&mut self, w: &mut dyn std::io::Write) -> std::io::Result<()>;
 }
 
-#[allow(dead_code)] // Consumed by the CLI wiring in Task 7.
 pub fn make(fmt: Format, verbose: bool) -> Box<dyn Renderer> {
     match fmt {
         Format::Text => Box::new(text::Text { verbose }),

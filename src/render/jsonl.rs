@@ -4,7 +4,6 @@ use crate::pipeline::Event;
 
 pub struct Jsonl;
 
-#[allow(dead_code)] // Reached only through Renderer::on_event, wired in Task 7.
 /// Probe events get a fixed key order — `schemaVersion`, `type`, then the
 /// outcome fields (`name`, `availability`, `facts`, `timedOut`; `signals` is
 /// `#[serde(skip)]`). Index-assigning the tags onto `to_value(outcome)` would
@@ -13,9 +12,14 @@ fn probe_line(o: &ProbeOutcome) -> serde_json::Result<serde_json::Value> {
     let mut m = serde_json::Map::new();
     m.insert("schemaVersion".into(), serde_json::json!(1));
     m.insert("type".into(), serde_json::json!("probe"));
-    if let serde_json::Value::Object(fields) = serde_json::to_value(o)? {
-        m.extend(fields);
-    }
+    let outcome = serde_json::to_value(o)?;
+    // Invariant: `ProbeOutcome` is a struct, so serde always emits an object.
+    // Anything else would silently drop every field but the header keys.
+    debug_assert!(
+        matches!(outcome, serde_json::Value::Object(_)),
+        "probe outcome must serialize as an object, got {outcome}"
+    );
+    m.extend(outcome.as_object().cloned().unwrap_or_default());
     Ok(serde_json::Value::Object(m))
 }
 

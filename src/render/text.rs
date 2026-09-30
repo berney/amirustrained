@@ -5,7 +5,6 @@ use crate::pipeline::Event;
 use crate::model::{Counts, ProbeOutcome}; // referenced by tests through `use super::*`
 
 pub struct Text {
-    #[allow(dead_code)] // Read by on_event once Task 7 wires `make`.
     pub verbose: bool,
 }
 

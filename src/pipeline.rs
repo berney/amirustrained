@@ -19,7 +19,7 @@ pub struct Prior {
 
 /// Read-only context handed to a probe on its worker thread. The fields are
 /// consumed by the concrete probes (Tasks 8+), not by the pipeline itself.
-#[allow(dead_code)]
+#[allow(dead_code)] // Still unread: the registered probes are stubs (Tasks 8+).
 pub struct Ctx<'a> {
     pub pid: u32,
     pub uid: u32,
@@ -30,7 +30,6 @@ pub struct Ctx<'a> {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)] // Variant payloads are consumed by the Task 6/7 renderers.
 pub enum Event {
     Meta {
         tool: Tool,
@@ -117,7 +116,6 @@ fn run_probe_bounded(
 /// Runs `probes` in order, emitting `Meta` → one `Probe` event per outcome →
 /// `Summary`, and returns the finished `Report`. Aggregation is single-threaded
 /// between dispatches, so `Prior` snapshots and report assembly are deterministic.
-#[allow(dead_code)] // Consumed by the CLI wiring in Task 7.
 pub fn scan_with_probes(
     fs: Arc<PseudoFs>,
     os: Arc<dyn OsApi>,

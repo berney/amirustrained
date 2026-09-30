@@ -53,11 +53,8 @@ pub trait OsApi: Send + Sync {
     fn is_root(&self) -> bool; // geteuid() == 0
 }
 
-// Consumed by probe tasks (8-18); allow until then.
-#[allow(dead_code)]
 pub struct RealOs;
 
-#[allow(dead_code)]
 impl OsApi for RealOs {
     fn hypervisor(&self) -> HypervisorInfo {
         #[cfg(target_arch = "x86_64")]

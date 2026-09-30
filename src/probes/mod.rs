@@ -19,7 +19,6 @@ pub mod uidmap;
 
 /// Probes in dispatch order. The syscall probe (gated on `opts.probe_syscalls`)
 /// is appended here when its task lands.
-#[allow(dead_code)] // Consumed by the CLI wiring in Task 7.
 pub fn registry(_opts: &Opts) -> Vec<Arc<dyn Probe>> {
     vec![Arc::new(namespaces::Namespaces), Arc::new(uidmap::Uidmap)]
 }
