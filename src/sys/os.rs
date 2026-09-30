@@ -222,6 +222,12 @@ impl OsApi for RealOs {
 /// `UnixStream::connect_timeout` equivalent (std provides none): non-blocking
 /// connect, `poll` for writability within `timeout`, surface a deferred
 /// connect error, then restore blocking mode for the request/response path.
+///
+/// AF_UNIX caveat — NOT full parity with `TcpStream::connect_timeout`: a unix
+/// `connect(2)` never reports EINPROGRESS; a full listener backlog returns
+/// EAGAIN/WouldBlock immediately (propagated as an error, no timed wait) and
+/// success returns 0 synchronously. The EINPROGRESS/poll branch is defensive,
+/// kept so a hypothetical deferred-connect transport still honors `timeout`.
 fn connect_uds_timeout(
     path: &Path,
     timeout: Duration,
@@ -278,7 +284,11 @@ fn connect_uds_timeout(
             events: libc::POLLOUT,
             revents: 0,
         };
-        let ms = timeout.as_millis().min(libc::c_int::MAX as u128) as libc::c_int;
+        // Round sub-millisecond timeouts UP so poll waits at least one tick
+        // instead of truncating to 0 (Duration::ZERO stays an immediate check).
+        let ms = (timeout.as_millis()
+            + u128::from(!timeout.subsec_nanos().is_multiple_of(1_000_000)))
+        .min(libc::c_int::MAX as u128) as libc::c_int;
         // SAFETY: a valid one-element pollfd array; ms is within c_int bounds.
         let pr = unsafe { libc::poll(&mut pfd, 1, ms) };
         if pr < 0 {
@@ -398,10 +408,16 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     fn seccomp_actions_baseline_support_and_honest_matrix() {
         let a = RealOs.seccomp_actions();
-        // seccomp(2) KILL_THREAD/TRAP exist on every x86_64 kernel with seccomp
-        // support (≥ 3.17); a wrong action constant would show EOPNOTSUPP here.
-        assert!(a.kill_thread, "KILL_THREAD must be available");
-        assert!(a.trap, "TRAP must be available");
+        // SECCOMP_GET_ACTION_AVAIL itself is 4.14+, and a sandbox may also
+        // ERRNO seccomp(2); in either case every probe fails and
+        // `probed_ok == false` — the honest degrade signal, so we only assert
+        // on kernels where the probe mechanism demonstrably worked. There,
+        // KILL_THREAD/TRAP must come back available; a wrong action constant
+        // would show EOPNOTSUPP instead.
+        assert!(
+            (a.kill_thread && a.trap) || !a.probed_ok,
+            "GET_ACTION_AVAIL worked but KILL_THREAD/TRAP missing: {a:?}"
+        );
         // KILL_PROCESS/ERRNO/LOG/TRACE (4.14+) and USER_NOTIF (5.0+) are true
         // on this host's kernel but are NOT pinned here: stripped/hardened
         // kernels may lack them; `probed_ok` stays the witness either way.
@@ -409,9 +425,12 @@ mod tests {
 
     #[test]
     fn uds_probe_missing_socket_is_not_found() {
-        let missing = std::path::Path::new("/tmp/amirus-absent-socket.sock");
+        // Fresh tempdir path: never created ⇒ guaranteed ENOENT, immune to
+        // stale-socket collisions a fixed /tmp name would risk.
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("absent.sock");
         let err = RealOs
-            .uds_probe(missing, Duration::from_millis(200))
+            .uds_probe(&missing, Duration::from_millis(200))
             .expect_err("connect to an absent socket must fail");
         assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     }
