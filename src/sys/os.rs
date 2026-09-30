@@ -6,7 +6,7 @@
 //! unexpected kernel responses — it degrades to `None`/`false`/`Err` instead.
 
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::sys::fs::ProbeIo;
 use serde::Serialize;
@@ -182,14 +182,23 @@ impl OsApi for RealOs {
 
     fn uds_probe(&self, path: &Path, timeout: Duration) -> std::io::Result<UdsReply> {
         use std::io::{Read, Write};
+        // ONE cumulative deadline covers the whole exchange — connect, ping
+        // read, and /info read share `timeout`. Socket read timeouts are
+        // per-read: a hostile listener trickling one byte per interval
+        // resets them forever, so every read re-arms with the time left and
+        // exhaustion yields Err(TimedOut) — like any Err here (e.g.
+        // WouldBlock stalls), it degrades to null info upstream, never a
+        // panic and never an unbounded wait.
+        let deadline = Instant::now() + timeout;
+        let left = || deadline.saturating_duration_since(Instant::now());
+
         // Handshake step 1 (spec): GET /_ping for liveness, on its own
         // connection — dockerd/podman honor `Connection: close` and tear the
         // stream down after the ping reply, so /info cannot reuse it.
-        let mut ping = connect_uds_timeout(path, timeout)?;
-        ping.set_read_timeout(Some(timeout))?;
-        ping.set_write_timeout(Some(timeout))?;
+        let mut ping = connect_uds_timeout(path, left())?;
+        ping.set_write_timeout(Some(left()))?;
         ping.write_all(b"GET /_ping HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")?;
-        let status = read_status_code(&mut ping)?;
+        let status = read_status_code(&mut ping, deadline)?;
         if status != 200 {
             // Liveness failed: report the status verbatim, never send /info.
             return Ok(UdsReply {
@@ -197,19 +206,36 @@ impl OsApi for RealOs {
                 body: String::new(),
             });
         }
-        // Step 2: GET /info on a fresh connection, read to EOF capped at
-        // 1 MiB — a noisy or hostile listener cannot balloon the scan.
-        // std has no `UnixStream::connect_timeout`; connect_uds_timeout
-        // replicates its semantics; the read timeout maps WouldBlock-style
-        // stalls to TimedOut errors on blocking sockets.
-        let mut s = connect_uds_timeout(path, timeout)?;
-        s.set_read_timeout(Some(timeout))?;
-        s.set_write_timeout(Some(timeout))?;
+        drop(ping);
+        // Step 2: GET /info on a fresh connection (Accept: */* is Docker API
+        // etiquette; Podman ignores it). Reads stop at EOF or the 1 MiB cap —
+        // a noisy listener cannot balloon the scan, the deadline bounds time.
+        let mut s = connect_uds_timeout(path, left())?;
+        s.set_write_timeout(Some(left()))?;
         s.write_all(
             b"GET /info HTTP/1.1\r\nHost: localhost\r\nAccept: */*\r\nConnection: close\r\n\r\n",
         )?;
         let mut buf = Vec::new();
-        s.take(1 << 20).read_to_end(&mut buf)?;
+        let mut chunk = [0u8; 8192];
+        loop {
+            let remain = left();
+            if remain.is_zero() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "uds cumulative deadline exhausted",
+                ));
+            }
+            s.set_read_timeout(Some(remain))?;
+            let n = s.read(&mut chunk)?;
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            if buf.len() >= 1 << 20 {
+                buf.truncate(1 << 20);
+                break; // 1 MiB read cap: all any fact could carry anyway
+            }
+        }
         Ok(UdsReply {
             status,
             body: http_body(&buf),
@@ -227,13 +253,26 @@ impl OsApi for RealOs {
 }
 
 /// Read an HTTP status line (up to the first `\n`, capped at 4 KiB) and
-/// parse its status code. Unparseable headlines report 0 — probes treat 0
-/// as "not 2xx" without needing to distinguish transport noise.
-fn read_status_code<R: std::io::Read>(r: &mut R) -> std::io::Result<u16> {
+/// parse its status code, re-arming the socket read timeout against the
+/// cumulative `deadline` before every byte. Unparseable headlines report 0 —
+/// probes treat 0 as "not 2xx" without needing to distinguish transport noise.
+fn read_status_code(
+    s: &mut std::os::unix::net::UnixStream,
+    deadline: Instant,
+) -> std::io::Result<u16> {
+    use std::io::Read;
     let mut buf: Vec<u8> = Vec::with_capacity(32);
     let mut byte = [0u8; 1];
     loop {
-        if r.read(&mut byte)? == 0 || byte[0] == b'\n' {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "uds cumulative deadline exhausted",
+            ));
+        }
+        s.set_read_timeout(Some(left))?;
+        if s.read(&mut byte)? == 0 || byte[0] == b'\n' {
             break;
         }
         buf.push(byte[0]);
@@ -594,6 +633,37 @@ mod tests {
         server.join().unwrap();
     }
 
+    #[test]
+    fn uds_probe_cumulative_deadline_beats_trickling_listener() {
+        use std::io::Write;
+        use std::os::unix::net::UnixListener;
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("trickle.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+        let server = std::thread::spawn(move || {
+            // Hostile listener: dribble 1 byte / 50 ms — enough to reset any
+            // per-read timeout forever while never completing a status line.
+            let (mut stream, _) = listener.accept().unwrap();
+            for _ in 0..1_000 {
+                if stream.write_all(b"H").is_err() {
+                    break; // the probe gave up and disconnected
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let budget = Duration::from_millis(300);
+        let t0 = std::time::Instant::now();
+        let err = RealOs
+            .uds_probe(&sock, budget)
+            .expect_err("trickling listener must hit the cumulative deadline");
+        let elapsed = t0.elapsed();
+        assert!(elapsed < budget * 3, "stalled {elapsed:?} > 3× {budget:?}");
+        assert!(matches!(
+            err.kind(),
+            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+        ));
+        server.join().unwrap(); // trickler sees EPIPE once the probe socket drops
+    }
     #[test]
     fn http_body_identity_and_chunked_framing() {
         // close-delimited identity (docker's /info shape):
