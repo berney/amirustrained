@@ -103,6 +103,8 @@ pub fn probe_cgroup(fs: &PseudoFs, pid: u32) -> ProbeOutcome {
                 runtime: rt,
                 weight: w,
                 evidence: pattern_fact,
+                // Own-cgroup classification is self-containment proof: it scores.
+                env_only: false,
             });
         }
     }

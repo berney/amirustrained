@@ -47,6 +47,15 @@ pub struct Signal {
     pub runtime: RuntimeKind,
     pub weight: f32,
     pub evidence: Fact,
+    /// Environment-only evidence (a reachable control socket, a user's
+    /// rootless uidmap layout) proves the runtime is *installed/reachable
+    /// on the machine*, not that this process runs inside it. It never
+    /// scores into the self-containment verdict; the fusion layer reports
+    /// it as an `environment:` note (spec §5, amendment 2026-10-01).
+    /// Signals are `#[serde(skip)]`-ed in `ProbeOutcome` and never cross
+    /// the wire, so no `#[serde(default)]` applies (the struct itself has
+    /// no serde derive, where such an attribute would not compile).
+    pub env_only: bool,
 }
 
 /// Signals accumulated by the pipeline before the `runtime` probe runs.

@@ -96,9 +96,11 @@ impl Probe for Sockets {
         );
         for e in &found {
             if e["writable"] == serde_json::json!(true) {
-                // A socket we could write to is runtime-adjacent enough for a
-                // 0.9 signal; containerd/kata stay fact-only (no dedicated
-                // signal per the brief's kind map).
+                // A writable socket proves the runtime is present and
+                // reachable on this machine — environment evidence, not this
+                // process's own containment: it scores nothing and lands as
+                // an `environment:` note (spec §5 amendment 2026-10-01).
+                // containerd/kata stay fact-only (no kind map entry).
                 let kind = match e["kind"].as_str() {
                     Some("podman") => RuntimeKind::Podman,
                     Some("docker") => RuntimeKind::Docker,
@@ -109,6 +111,7 @@ impl Probe for Sockets {
                     runtime: kind,
                     weight: 0.9,
                     evidence: fact.clone(),
+                    env_only: true,
                 });
             }
         }
@@ -314,6 +317,10 @@ mod tests {
         assert_eq!(o.signals.len(), 1);
         assert_eq!(o.signals[0].runtime, RuntimeKind::Docker);
         assert!((o.signals[0].weight - 0.9).abs() < f32::EPSILON);
+        assert!(
+            o.signals[0].env_only,
+            "a reachable socket is environment presence, not containment"
+        );
     }
 
     #[test]
@@ -344,6 +351,7 @@ mod tests {
         let o = Sockets.run(&cx);
         assert_eq!(o.signals.len(), 1);
         assert_eq!(o.signals[0].runtime, RuntimeKind::Podman);
+        assert!(o.signals[0].env_only);
     }
 
     #[test]

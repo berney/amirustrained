@@ -9,6 +9,14 @@
 //! falls back to `host`, with the vmm hypervisor fact deciding how far that
 //! claim reaches.
 //!
+//! Since the 2026-10-01 amendment (spec §5) those summed weights cover only
+//! *self-containment* signals: env-only ones (a reachable control socket, a
+//! rootless uidmap) prove what the machine runs, never where this process
+//! runs; they are excluded from the ranking and appended as
+//! `environment: <kind> present (<probe>.<key>)` evidence notes instead.
+//! Inside-visible markers (`/.dockerenv`, `container=`) do score, and when
+//! one names an outer runtime the verdict gains `nested-in-<outer>`.
+//!
 //! Two shapes differ from the brief sketch, because the shipped `model::Verdict`
 //! (Task 2, and the report schema the pipeline deserializes against) fixes
 //! `runtime: RuntimeKind` and `confidence: "high"|"medium"|"low"`:
@@ -29,10 +37,11 @@ const MEANINGFUL: f32 = 0.1;
 /// A top score at or above this bar is a primary verdict rather than a guess.
 const PRIMARY: f32 = 0.5;
 
-/// Sums every signal weight per runtime, best first.
+/// Sums the scoring signals' weights per runtime, best first. Env-only
+/// signals never enter the ranking (spec §5, amendment 2026-10-01).
 fn rank(signals: &[Signal]) -> Vec<(RuntimeKind, f32)> {
     let mut totals: std::collections::HashMap<RuntimeKind, f32> = Default::default();
-    for s in signals {
+    for s in signals.iter().filter(|s| !s.env_only) {
         *totals.entry(s.runtime).or_default() += s.weight;
     }
     let mut ranked: Vec<(RuntimeKind, f32)> = totals.into_iter().collect();
@@ -48,10 +57,10 @@ fn rank(signals: &[Signal]) -> Vec<(RuntimeKind, f32)> {
 }
 
 /// Numeric top score → the report's confidence ladder. `0.9` is where a
-/// top-grade single signature (a writable docker socket, gVisor's `/proc/version`)
-/// or a corroborated pair (kubepods + uidmap) lands, so `high` means "strongly
-/// evidenced"; `0.5` is the brief's primary bar, hence `medium`; anything under
-/// it is a guess stated at its own weight.
+/// top-grade self-containment read lands (a `libpod-`/docker cgroup pattern
+/// plus the marker that corroborates it, gVisor's `/proc/version`), so
+/// `high` means "strongly evidenced"; `0.5` is the brief's primary bar,
+/// hence `medium`; anything under it is a guess stated at its own weight.
 fn confidence_of(score: f32) -> &'static str {
     if score >= 0.9 {
         "high"
@@ -62,16 +71,25 @@ fn confidence_of(score: f32) -> &'static str {
     }
 }
 
-/// Fuses the accumulated signals into the verdict, in spec §7 precedence order:
-/// the Kubernetes overlay if the target is in a pod, else the strongest runtime
-/// at or above the primary bar, else a weak guess stated at its own weight,
-/// else the host fallback. `in_pod` is the raw `k8s.inPod` fact (a non-boolean
-/// or null value is simply "not in a pod"), `hv_present` the tri-state read of
-/// `vmm.hypervisor.present`.
-pub fn score(signals: &[Signal], in_pod: serde_json::Value, hv_present: Option<bool>) -> Verdict {
+/// Fuses the accumulated signals into the verdict, in spec §7 precedence
+/// order: the Kubernetes overlay if the target is in a pod, else the
+/// strongest runtime at or above the primary bar, else a weak guess stated
+/// at its own weight, else the host fallback. `in_pod` is the raw
+/// `k8s.inPod` fact (a non-boolean or null value is simply "not in a pod"),
+/// `hv_present` the tri-state read of `vmm.hypervisor.present`, `markers`
+/// the raw `namespaces.containerMarkers` fact (absent/null ⇒ no nesting
+/// claim). Only self-scoring signals rank; env-only ones become trailing
+/// `environment:` notes whatever the verdict ends up being.
+pub fn score(
+    signals: &[Signal],
+    in_pod: serde_json::Value,
+    hv_present: Option<bool>,
+    markers: serde_json::Value,
+) -> Verdict {
     let ranked = rank(signals);
     let mut evidence: Vec<String> = signals
         .iter()
+        .filter(|s| !s.env_only)
         .map(|s| {
             format!(
                 "{} {}.{} {:.2}",
@@ -118,6 +136,34 @@ pub fn score(signals: &[Signal], in_pod: serde_json::Value, hv_present: Option<b
             }
         }
     };
+    // Nesting (spec §5): markers naming an outer runtime different from the
+    // innermost container verdict qualify it. The Kubernetes branch keeps its
+    // underlying-runtime variant only — no marker logic there.
+    let variant = variant.or_else(|| match runtime {
+        RuntimeKind::Docker
+        | RuntimeKind::Podman
+        | RuntimeKind::Containerd
+        | RuntimeKind::CriO
+        | RuntimeKind::Lxc
+        | RuntimeKind::SystemdNspawn => {
+            outer_runtime(&markers, runtime).map(|outer| format!("nested-in-{outer}"))
+        }
+        _ => None,
+    });
+    // Excluded env-only signals do not vanish: each becomes a presence note
+    // after the scored evidence lines, deduped by the whole note string (two
+    // writable sockets of one kind are one line).
+    for s in signals.iter().filter(|s| s.env_only) {
+        let note = format!(
+            "environment: {} present ({}.{})",
+            s.runtime.as_str(),
+            s.evidence.probe,
+            s.evidence.key
+        );
+        if !evidence.contains(&note) {
+            evidence.push(note);
+        }
+    }
     let alternatives = ranked
         .iter()
         .filter(|(k, w)| *w > MEANINGFUL && *k != runtime)
@@ -132,6 +178,21 @@ pub fn score(signals: &[Signal], in_pod: serde_json::Value, hv_present: Option<b
         confidence: confidence_of(confidence).to_string(),
         alternatives,
         evidence,
+    }
+}
+
+/// The outer runtime implied by inside-visible markers, when it differs from
+/// the innermost verdict: `/.dockerenv` ⇒ docker (the docker-specific file
+/// settles a `container=podman` clash — podman-in-docker);
+/// `container=docker`/`container=podman` likewise. Any other value, and any
+/// absent or malformed marker fact, implies nothing (spec §5 nesting).
+fn outer_runtime(markers: &serde_json::Value, inner: RuntimeKind) -> Option<String> {
+    if markers["dockerenv"].as_bool().unwrap_or(false) && "docker" != inner.as_str() {
+        return Some("docker".to_string());
+    }
+    match markers["containerEnv"].as_str() {
+        Some(v @ ("docker" | "podman")) if v != inner.as_str() => Some(v.to_string()),
+        _ => None,
     }
 }
 
@@ -171,7 +232,13 @@ impl Probe for Runtime {
             .facts
             .get("vmm.hypervisor")
             .and_then(|v| v["present"].as_bool());
-        let verdict = score(&cx.prior.signals, in_pod, hv_present);
+        let markers = cx
+            .prior
+            .facts
+            .get("namespaces.containerMarkers")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let verdict = score(&cx.prior.signals, in_pod, hv_present, markers);
         ProbeOutcome::empty(PROBE).with_fact(Fact::ok(
             PROBE,
             "verdict",
@@ -190,6 +257,7 @@ mod tests {
             runtime: rt,
             weight: w,
             evidence: Fact::ok("x", "y", serde_json::json!(1), "test".into()),
+            env_only: false,
         }
     }
 
@@ -203,6 +271,7 @@ mod tests {
             ],
             serde_json::json!(false),
             None,
+            serde_json::Value::Null,
         );
         assert_eq!(v.runtime, RuntimeKind::Docker);
         // Brief numeric confidence 0.9 (0.8 + 0.1 summed): the shipped model
@@ -220,20 +289,31 @@ mod tests {
             ],
             serde_json::json!(true),
             None,
+            serde_json::Value::Null,
         );
         assert_eq!(v.runtime, RuntimeKind::Kubernetes);
     }
 
     #[test]
     fn bare_host_fallback() {
-        let v = score(&[], serde_json::json!(false), Some(false));
+        let v = score(
+            &[],
+            serde_json::json!(false),
+            Some(false),
+            serde_json::Value::Null,
+        );
         assert_eq!(v.runtime, RuntimeKind::Host);
         assert_eq!(v.confidence, "high");
     }
 
     #[test]
     fn vm_host_notes_virtualization() {
-        let v = score(&[], serde_json::json!(false), Some(true));
+        let v = score(
+            &[],
+            serde_json::json!(false),
+            Some(true),
+            serde_json::Value::Null,
+        );
         assert_eq!(v.runtime, RuntimeKind::Host);
         assert_eq!(v.confidence, "high");
     }
@@ -243,6 +323,16 @@ mod tests {
             runtime: rt,
             weight: w,
             evidence: Fact::ok(probe, key, serde_json::json!("v"), "src".into()),
+            env_only: false,
+        }
+    }
+
+    fn env_sig(rt: RuntimeKind, w: f32, probe: &str, key: &str) -> Signal {
+        Signal {
+            runtime: rt,
+            weight: w,
+            evidence: Fact::ok(probe, key, serde_json::json!("v"), "src".into()),
+            env_only: true,
         }
     }
 
@@ -272,9 +362,14 @@ mod tests {
         let first: Vec<&str> = rank(&signals).iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(first, ["containerd", "docker", "podman"]);
         assert_eq!(
-            score(&signals, serde_json::json!(false), Some(false))
-                .alternatives
-                .len(),
+            score(
+                &signals,
+                serde_json::json!(false),
+                Some(false),
+                serde_json::Value::Null,
+            )
+            .alternatives
+            .len(),
             2
         );
     }
@@ -290,6 +385,7 @@ mod tests {
             ],
             serde_json::json!(false),
             None,
+            serde_json::Value::Null,
         );
         assert_eq!(v.runtime, RuntimeKind::Docker);
         assert_eq!(
@@ -304,6 +400,7 @@ mod tests {
             &[sig_at(RuntimeKind::Docker, 0.8, "cgroup", "pattern")],
             serde_json::json!(false),
             None,
+            serde_json::Value::Null,
         );
         assert_eq!(v.evidence, ["docker cgroup.pattern 0.80"]);
     }
@@ -315,6 +412,7 @@ mod tests {
                 &[sig(RuntimeKind::Docker, w)],
                 serde_json::json!(false),
                 Some(false),
+                serde_json::Value::Null,
             )
             .confidence
         };
@@ -333,6 +431,7 @@ mod tests {
             ],
             serde_json::json!(true),
             None,
+            serde_json::Value::Null,
         );
         assert_eq!(v.runtime, RuntimeKind::Kubernetes);
         assert_eq!(v.variant.as_deref(), Some("containerd"));
@@ -349,6 +448,7 @@ mod tests {
             ],
             serde_json::json!(true),
             None,
+            serde_json::Value::Null,
         );
         assert_eq!(v.variant, None);
         assert_eq!(v.alternatives[0].runtime, RuntimeKind::Firecracker);
@@ -360,6 +460,7 @@ mod tests {
             &[sig(RuntimeKind::Kubernetes, 0.7)],
             serde_json::json!(true),
             None,
+            serde_json::Value::Null,
         );
         assert_eq!(v.variant, None);
         assert!(v.alternatives.is_empty());
@@ -369,20 +470,31 @@ mod tests {
     #[test]
     fn virtualized_host_records_the_variant_bare_metal_does_not() {
         assert_eq!(
-            score(&[], serde_json::json!(false), Some(true))
-                .variant
-                .as_deref(),
+            score(
+                &[],
+                serde_json::json!(false),
+                Some(true),
+                serde_json::Value::Null,
+            )
+            .variant
+            .as_deref(),
             Some("virtualized")
         );
         assert_eq!(
-            score(&[], serde_json::json!(false), Some(false)).variant,
+            score(
+                &[],
+                serde_json::json!(false),
+                Some(false),
+                serde_json::Value::Null,
+            )
+            .variant,
             None
         );
     }
 
     #[test]
     fn unknown_hypervisor_is_not_reported_as_bare_metal() {
-        let v = score(&[], serde_json::json!(false), None);
+        let v = score(&[], serde_json::json!(false), None, serde_json::Value::Null);
         assert_eq!(v.runtime, RuntimeKind::Host);
         assert_eq!(v.variant, None);
         assert!(
@@ -496,6 +608,198 @@ mod tests {
                 let v = verdict_of(&Runtime.run(cx));
                 assert_eq!(v.runtime, RuntimeKind::Podman);
                 assert_eq!(v.confidence, "medium");
+            },
+        );
+    }
+
+    // ── Self-containment verdict (spec §5, amendment 2026-10-01) ──────────
+
+    /// Scenario (a): a bare host that merely *runs* podman. The socket and
+    /// the rootless uidmap prove the environment, not the process's own
+    /// containment; the verdict stays `host` and the signals become notes.
+    #[test]
+    fn host_running_podman_verdicts_host_with_environment_notes() {
+        let v = score(
+            &[
+                env_sig(RuntimeKind::Podman, 0.9, "sockets", "found"),
+                env_sig(RuntimeKind::Podman, 0.3, "uidmap", "rootless"),
+            ],
+            serde_json::json!(false),
+            Some(false),
+            serde_json::Value::Null,
+        );
+        assert_ne!(v.runtime, RuntimeKind::Podman);
+        assert_eq!(v.runtime, RuntimeKind::Host);
+        assert_eq!(v.confidence, "high");
+        assert!(
+            v.evidence
+                .contains(&"environment: podman present (sockets.found)".to_string()),
+            "{:?}",
+            v.evidence
+        );
+        assert!(
+            v.evidence
+                .contains(&"environment: podman present (uidmap.rootless)".to_string()),
+            "{:?}",
+            v.evidence
+        );
+        assert!(
+            v.alternatives.is_empty(),
+            "env_only signals are evidence, not candidates: {:?}",
+            v.alternatives
+        );
+    }
+
+    /// Scenario (b): `/.dockerenv` alone is containment evidence — enough
+    /// to verdict docker, but only at its own (medium) confidence.
+    #[test]
+    fn dockerenv_marker_alone_verdicts_docker_at_medium() {
+        let v = score(
+            &[sig_at(
+                RuntimeKind::Docker,
+                0.6,
+                "namespaces",
+                "containerMarkers",
+            )],
+            serde_json::json!(false),
+            Some(false),
+            serde_json::json!({ "dockerenv": true, "containerEnv": null }),
+        );
+        assert_eq!(v.runtime, RuntimeKind::Docker);
+        assert_eq!(v.confidence, "medium");
+        // The only outer marker *is* the verdict: nothing nests inside itself.
+        assert_eq!(v.variant, None);
+    }
+
+    /// Scenario (c): `libpod-` cgroup inside a docker host — innermost wins,
+    /// docker is named as the outer layer, and its marker stays a candidate.
+    #[test]
+    fn podman_in_docker_verdicts_podman_nested_in_docker() {
+        let v = score(
+            &[
+                sig_at(RuntimeKind::Podman, 0.7, "cgroup", "pattern"),
+                sig_at(RuntimeKind::Podman, 0.6, "namespaces", "containerMarkers"),
+                sig_at(RuntimeKind::Docker, 0.6, "namespaces", "containerMarkers"),
+            ],
+            serde_json::json!(false),
+            Some(false),
+            serde_json::json!({ "dockerenv": true, "containerEnv": "podman" }),
+        );
+        assert_eq!(v.runtime, RuntimeKind::Podman);
+        assert_eq!(v.confidence, "high", "0.7 + 0.6 = 1.3 capped to 1.0");
+        assert_eq!(v.variant.as_deref(), Some("nested-in-docker"));
+        let docker = v
+            .alternatives
+            .iter()
+            .find(|c| c.runtime == RuntimeKind::Docker)
+            .expect("docker marker must remain an alternative");
+        assert!((docker.score - 0.6).abs() < 1e-6, "alternatives score raw");
+    }
+
+    /// Scenario (d): a contained podman that also *runs* podman services —
+    /// the cgroup verdict is unchanged and the socket note stays visible.
+    #[test]
+    fn contained_podman_with_writable_socket_notes_the_environment() {
+        let v = score(
+            &[
+                sig_at(RuntimeKind::Podman, 0.7, "cgroup", "pattern"),
+                env_sig(RuntimeKind::Podman, 0.9, "sockets", "found"),
+            ],
+            serde_json::json!(false),
+            Some(false),
+            serde_json::Value::Null,
+        );
+        assert_eq!(v.runtime, RuntimeKind::Podman);
+        assert_eq!(v.confidence, "medium", "only the 0.7 cgroup scores");
+        assert!(
+            v.evidence
+                .contains(&"environment: podman present (sockets.found)".to_string()),
+            "{:?}",
+            v.evidence
+        );
+        // Notes come after the scored evidence lines.
+        let scored = v
+            .evidence
+            .iter()
+            .position(|e| e == "podman cgroup.pattern 0.70")
+            .expect("scored line present");
+        let note = v
+            .evidence
+            .iter()
+            .position(|e| e == "environment: podman present (sockets.found)")
+            .expect("note present");
+        assert!(scored < note);
+    }
+
+    #[test]
+    fn environment_notes_dedup_by_their_whole_string() {
+        // Two writable podman sockets ⇒ two signals, one note.
+        let v = score(
+            &[
+                env_sig(RuntimeKind::Podman, 0.9, "sockets", "found"),
+                env_sig(RuntimeKind::Podman, 0.9, "sockets", "found"),
+            ],
+            serde_json::json!(false),
+            Some(false),
+            serde_json::Value::Null,
+        );
+        assert_eq!(
+            v.evidence
+                .iter()
+                .filter(|e| *e == "environment: podman present (sockets.found)")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn kubernetes_branch_takes_no_marker_nesting() {
+        // Spec: the k8s branch keeps the underlying-runtime variant only.
+        let v = score(
+            &[sig_at(RuntimeKind::Kubernetes, 0.7, "k8s", "inPod")],
+            serde_json::json!(true),
+            None,
+            serde_json::json!({ "dockerenv": true, "containerEnv": null }),
+        );
+        assert_eq!(v.runtime, RuntimeKind::Kubernetes);
+        assert_eq!(v.variant, None);
+    }
+
+    #[test]
+    fn markers_absent_or_null_never_nest() {
+        for markers in [
+            serde_json::Value::Null,
+            serde_json::json!({}),
+            serde_json::json!({ "dockerenv": null, "containerEnv": null }),
+            serde_json::json!("garbage"),
+        ] {
+            let v = score(
+                &[sig_at(RuntimeKind::Podman, 0.7, "cgroup", "pattern")],
+                serde_json::json!(false),
+                Some(false),
+                markers.clone(),
+            );
+            assert_eq!(v.runtime, RuntimeKind::Podman, "{markers}");
+            assert_eq!(v.variant, None, "{markers}");
+        }
+    }
+
+    #[test]
+    fn run_plumbs_the_prior_marker_fact_into_the_nested_variant() {
+        with_prior(
+            &[(
+                "namespaces.containerMarkers",
+                serde_json::json!({ "dockerenv": true, "containerEnv": "podman" }),
+            )],
+            vec![
+                sig_at(RuntimeKind::Podman, 0.7, "cgroup", "pattern"),
+                sig_at(RuntimeKind::Podman, 0.6, "namespaces", "containerMarkers"),
+                sig_at(RuntimeKind::Docker, 0.6, "namespaces", "containerMarkers"),
+            ],
+            |cx| {
+                let v = verdict_of(&Runtime.run(cx));
+                assert_eq!(v.runtime, RuntimeKind::Podman);
+                assert_eq!(v.variant.as_deref(), Some("nested-in-docker"));
             },
         );
     }

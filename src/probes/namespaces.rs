@@ -1,7 +1,8 @@
 use super::Probe;
-use crate::model::{Availability, Fact, ProbeOutcome};
+use crate::model::{Availability, Fact, ProbeOutcome, RuntimeKind, Signal};
 use crate::pipeline::Ctx;
 use crate::sys::fs::PseudoFs;
+use crate::sys::os::OsApi;
 
 const PROBE: &str = "namespaces";
 
@@ -37,7 +38,7 @@ fn ns_link(fs: &PseudoFs, pid: u32, ns: &str) -> Option<String> {
 /// pid 1 is the baseline, so an unreadable `/proc/1/ns` makes the comparison —
 /// and only the comparison — unreliable: own inodes are still reported and
 /// `isolated` degrades to per-type nulls.
-pub fn probe_namespaces(fs: &PseudoFs, pid: u32) -> ProbeOutcome {
+pub fn probe_namespaces(fs: &PseudoFs, os: &dyn OsApi, pid: u32) -> ProbeOutcome {
     let mut o = ProbeOutcome::empty(PROBE);
     let own_src = format!("/proc/{pid}/ns");
     let mut isolated = serde_json::Map::new();
@@ -86,7 +87,43 @@ pub fn probe_namespaces(fs: &PseudoFs, pid: u32) -> ProbeOutcome {
     if init_unreadable {
         o.availability = Availability::Degraded("pid 1 namespaces unreadable".into());
     }
-    o
+    // Container membership markers visible from inside (spec §5 amendment):
+    // a container cannot see them from the host, so they are self-containment
+    // evidence and score. Degrade-safe: an env read failure or an empty value
+    // reads as absent, `exists` already swallows errors as false.
+    let dockerenv = fs.exists("/.dockerenv");
+    let container_env = os.env("container").filter(|v| !v.is_empty());
+    let markers = Fact::ok(
+        PROBE,
+        "containerMarkers",
+        serde_json::json!({
+            "dockerenv": dockerenv,
+            "containerEnv": container_env.clone()
+        }),
+        "/.dockerenv + env container".into(),
+    );
+    if dockerenv || container_env.as_deref() == Some("docker") {
+        // One fact family ⇒ at most one docker signal, both markers together
+        // included.
+        o = o.with_signal(Signal {
+            runtime: RuntimeKind::Docker,
+            weight: 0.6,
+            evidence: markers.clone(),
+            env_only: false,
+        });
+    }
+    if container_env.as_deref() == Some("podman") {
+        // container=podman fires even alongside /.dockerenv: that combination
+        // IS podman-in-docker evidence; the fusion layer names the outer
+        // layer. Any other containerEnv value: fact recorded, no signal.
+        o = o.with_signal(Signal {
+            runtime: RuntimeKind::Podman,
+            weight: 0.6,
+            evidence: markers.clone(),
+            env_only: false,
+        });
+    }
+    o.with_fact(markers)
 }
 
 pub struct Namespaces;
@@ -96,7 +133,7 @@ impl Probe for Namespaces {
         PROBE
     }
     fn run(&self, cx: &Ctx) -> ProbeOutcome {
-        probe_namespaces(cx.fs, cx.pid)
+        probe_namespaces(cx.fs, cx.os, cx.pid)
     }
 }
 
@@ -122,6 +159,46 @@ mod tests {
             .unwrap_or_else(|| panic!("missing fact {key}"))
     }
 
+    /// Env-seam stub: only `container` matters to this probe.
+    struct StubOs {
+        container: Option<String>,
+    }
+    impl OsApi for StubOs {
+        fn hypervisor(&self) -> crate::sys::os::HypervisorInfo {
+            Default::default()
+        }
+        fn landlock_abi(&self) -> Option<u64> {
+            None
+        }
+        fn seccomp_actions(&self) -> crate::sys::os::SeccompActions {
+            Default::default()
+        }
+        fn seccomp_filter_dump(&self, _p: u32) -> Result<Vec<u64>, crate::sys::fs::ProbeIo> {
+            Err(crate::sys::fs::ProbeIo::PermissionDenied)
+        }
+        fn syscall0(&self, _n: u32) -> Result<(), i32> {
+            Err(38)
+        }
+        fn uds_probe(
+            &self,
+            _p: &std::path::Path,
+            _t: std::time::Duration,
+        ) -> std::io::Result<crate::sys::os::UdsReply> {
+            Err(std::io::Error::other("no uds in fixture"))
+        }
+        fn env(&self, k: &str) -> Option<String> {
+            (k == "container").then(|| self.container.clone()).flatten()
+        }
+        fn is_root(&self) -> bool {
+            false
+        }
+    }
+    fn os_with(container: Option<&str>) -> StubOs {
+        StubOs {
+            container: container.map(str::to_string),
+        }
+    }
+
     #[test]
     fn isolated_vs_init() {
         let d = fixture(&[
@@ -133,7 +210,7 @@ mod tests {
             ("proc/1/ns/cgroup", "cgroup:[4026531999]"),
         ]);
         let fs = crate::sys::fs::PseudoFs::new(d.path().into());
-        let o = probe_namespaces(&fs, 42);
+        let o = probe_namespaces(&fs, &os_with(None), 42);
         let f = o.facts.iter().find(|f| f.key == "isolated").unwrap();
         assert_eq!(f.value["pid"], serde_json::json!(true));
         assert_eq!(f.value["net"], serde_json::json!(false));
@@ -151,7 +228,7 @@ mod tests {
     fn degraded_when_init_unreadable() {
         let d = fixture(&[("proc/42/ns/pid", "pid:[4026532192]")]);
         let fs = crate::sys::fs::PseudoFs::new(d.path().into());
-        let o = probe_namespaces(&fs, 42);
+        let o = probe_namespaces(&fs, &os_with(None), 42);
         assert!(matches!(
             o.availability,
             crate::model::Availability::Degraded(_)
@@ -164,7 +241,7 @@ mod tests {
     fn isolated_fact_degrades_with_the_availability() {
         let d = fixture(&[("proc/42/ns/pid", "pid:[4026532192]")]);
         let fs = crate::sys::fs::PseudoFs::new(d.path().into());
-        let o = probe_namespaces(&fs, 42);
+        let o = probe_namespaces(&fs, &os_with(None), 42);
         let iso = fact(&o, "isolated");
         assert_eq!(iso.status, FactStatus::Degraded);
         assert_eq!(iso.source, "/proc/42/ns");
@@ -192,7 +269,7 @@ mod tests {
             ("proc/1/ns/user", "user:[4026531991]"),
         ]);
         let fs = crate::sys::fs::PseudoFs::new(d.path().into());
-        let o = probe_namespaces(&fs, 42);
+        let o = probe_namespaces(&fs, &os_with(None), 42);
         let inodes = fact(&o, "inodes");
         assert_eq!(inodes.status, FactStatus::Ok);
         assert_eq!(inodes.source, "/proc/42/ns");
@@ -221,9 +298,9 @@ mod tests {
     fn nothing_readable_yields_nulls_never_a_fabricated_verdict() {
         let d = fixture(&[]);
         let fs = crate::sys::fs::PseudoFs::new(d.path().into());
-        let o = probe_namespaces(&fs, 9);
+        let o = probe_namespaces(&fs, &os_with(None), 9);
         assert_eq!(o.name, "namespaces");
-        assert_eq!(o.facts.len(), 3);
+        assert_eq!(o.facts.len(), 4);
         let iso = fact(&o, "isolated");
         assert_eq!(iso.status, FactStatus::Ok);
         for t in NS_TYPES {
@@ -234,17 +311,32 @@ mod tests {
             fact(&o, "cgroupNsSameAsInit").value,
             serde_json::Value::Null
         );
+        let m = fact(&o, "containerMarkers");
+        assert_eq!(
+            m.value,
+            serde_json::json!({ "dockerenv": false, "containerEnv": null })
+        );
+        assert!(o.signals.is_empty(), "clean markers raise nothing");
     }
 
     #[cfg(target_os = "linux")]
     #[test]
     fn live_host_smoke_is_structurally_wellformed() {
         // Structural shape only: never assert this host's isolation verdict.
-        let o = probe_namespaces(&crate::sys::fs::PseudoFs::real(), std::process::id());
+        let o = probe_namespaces(
+            &crate::sys::fs::PseudoFs::real(),
+            &crate::sys::os::RealOs,
+            std::process::id(),
+        );
         assert_eq!(o.name, "namespaces");
-        assert_eq!(o.facts.len(), 3);
+        assert_eq!(o.facts.len(), 4);
         assert!(o.facts.iter().all(|f| f.probe == "namespaces"));
-        for key in ["isolated", "inodes", "cgroupNsSameAsInit"] {
+        for key in [
+            "isolated",
+            "inodes",
+            "cgroupNsSameAsInit",
+            "containerMarkers",
+        ] {
             assert!(o.facts.iter().any(|f| f.key == key), "missing {key}");
         }
         let iso = fact(&o, "isolated");
@@ -256,5 +348,87 @@ mod tests {
         assert!(fact(&o, "inodes").value.is_object());
         let cg = fact(&o, "cgroupNsSameAsInit").value.clone();
         assert!(cg.is_boolean() || cg.is_null());
+        let m = fact(&o, "containerMarkers");
+        assert!(m.value["dockerenv"].is_boolean());
+        assert!(m.value["containerEnv"].is_null() || m.value["containerEnv"].is_string());
+    }
+
+    #[test]
+    fn dockerenv_file_raises_exactly_one_docker_signal() {
+        let d = fixture(&[(".dockerenv", "")]);
+        let fs = crate::sys::fs::PseudoFs::new(d.path().into());
+        let o = probe_namespaces(&fs, &os_with(None), 9);
+        let m = fact(&o, "containerMarkers");
+        assert_eq!(
+            m.value,
+            serde_json::json!({ "dockerenv": true, "containerEnv": null })
+        );
+        assert_eq!(o.signals.len(), 1, "one marker family ⇒ one signal");
+        assert_eq!(o.signals[0].runtime, RuntimeKind::Docker);
+        assert_eq!(o.signals[0].weight, 0.6);
+        assert!(
+            !o.signals[0].env_only,
+            "a marker seen from inside is self-containment evidence, it scores"
+        );
+        assert_eq!(o.signals[0].evidence.key, "containerMarkers");
+    }
+
+    #[test]
+    fn container_docker_plus_dockerenv_still_raise_one_docker_signal() {
+        // Same fact family: both true together must not double-count.
+        let d = fixture(&[(".dockerenv", "")]);
+        let fs = crate::sys::fs::PseudoFs::new(d.path().into());
+        let o = probe_namespaces(&fs, &os_with(Some("docker")), 9);
+        assert_eq!(fact(&o, "containerMarkers").value["containerEnv"], "docker");
+        assert_eq!(o.signals.len(), 1);
+        assert_eq!(o.signals[0].runtime, RuntimeKind::Docker);
+        assert_eq!(o.signals[0].weight, 0.6);
+    }
+
+    #[test]
+    fn container_podman_fires_alongside_dockerenv_as_podman_in_docker() {
+        // container=podman + /.dockerenv IS podman-in-docker evidence: both
+        // markers score, the fusion layer turns the mismatch into a variant.
+        let d = fixture(&[(".dockerenv", "")]);
+        let fs = crate::sys::fs::PseudoFs::new(d.path().into());
+        let o = probe_namespaces(&fs, &os_with(Some("podman")), 9);
+        assert_eq!(fact(&o, "containerMarkers").value["containerEnv"], "podman");
+        assert_eq!(o.signals.len(), 2, "podman and docker: {:?}", o.signals);
+        let has = |k: RuntimeKind| {
+            o.signals
+                .iter()
+                .any(|s| s.runtime == k && s.weight == 0.6 && !s.env_only)
+        };
+        assert!(has(RuntimeKind::Podman));
+        assert!(has(RuntimeKind::Docker));
+    }
+
+    #[test]
+    fn container_podman_without_dockerenv_raises_only_podman() {
+        let d = fixture(&[]);
+        let fs = crate::sys::fs::PseudoFs::new(d.path().into());
+        let o = probe_namespaces(&fs, &os_with(Some("podman")), 9);
+        assert_eq!(o.signals.len(), 1);
+        assert_eq!(o.signals[0].runtime, RuntimeKind::Podman);
+        assert_eq!(o.signals[0].weight, 0.6);
+    }
+
+    #[test]
+    fn other_container_env_values_record_fact_without_signal() {
+        // "oci" and anything unrecognized: recorded, never scored.
+        let d = fixture(&[]);
+        let fs = crate::sys::fs::PseudoFs::new(d.path().into());
+        let o = probe_namespaces(&fs, &os_with(Some("oci")), 9);
+        assert_eq!(fact(&o, "containerMarkers").value["containerEnv"], "oci");
+        assert!(o.signals.is_empty(), "unrecognized marker: {:?}", o.signals);
+    }
+
+    #[test]
+    fn empty_container_env_reads_as_absent() {
+        let d = fixture(&[]);
+        let fs = crate::sys::fs::PseudoFs::new(d.path().into());
+        let o = probe_namespaces(&fs, &os_with(Some("")), 9);
+        assert!(fact(&o, "containerMarkers").value["containerEnv"].is_null());
+        assert!(o.signals.is_empty());
     }
 }

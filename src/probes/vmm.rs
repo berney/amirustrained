@@ -103,6 +103,8 @@ pub fn probe_vmm_with(fs: &PseudoFs, hv: Option<HypervisorInfo>) -> ProbeOutcome
             runtime: RuntimeKind::Gvisor,
             weight: 0.9,
             evidence: kernel,
+            // Running *inside* the sandbox is containment: it scores.
+            env_only: false,
         });
         return o;
     }
@@ -117,6 +119,7 @@ pub fn probe_vmm_with(fs: &PseudoFs, hv: Option<HypervisorInfo>) -> ProbeOutcome
             runtime: RuntimeKind::Firecracker,
             weight: 0.8,
             evidence: vsock_fact,
+            env_only: false,
         });
     }
     o

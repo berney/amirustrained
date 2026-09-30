@@ -291,6 +291,7 @@ mod tests {
                         runtime: crate::model::RuntimeKind::Podman,
                         weight: 1.0,
                         evidence: Fact::ok("seeder", "sig", serde_json::json!(1), "src".into()),
+                        env_only: false,
                     })
             }
         }

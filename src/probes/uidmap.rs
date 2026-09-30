@@ -85,10 +85,14 @@ pub fn probe_uidmap(fs: &PseudoFs, pid: u32) -> ProbeOutcome {
         format!("{base}/uid_map"),
     );
     if rootless {
+        // A user's rootless uidmap layout describes the environment, not the
+        // scanning process's containment: env-only note, never a score
+        // (spec §5 amendment 2026-10-01).
         o = o.with_signal(Signal {
             runtime: RuntimeKind::Podman,
             weight: 0.3,
             evidence: rf.clone(),
+            env_only: true,
         });
     }
     o.with_fact(rf)
@@ -213,6 +217,10 @@ mod tests {
         assert_eq!(o.signals[0].weight, 0.3);
         assert_eq!(o.signals[0].evidence.key, "rootless");
         assert_eq!(o.signals[0].evidence.status, FactStatus::Ok);
+        assert!(
+            o.signals[0].env_only,
+            "a rootless uidmap is a user's environment layout, not containment"
+        );
         let um = o.facts.iter().find(|f| f.key == "uidMap").unwrap();
         assert_eq!(um.source, "/proc/42/uid_map");
         assert_eq!(
