@@ -21,6 +21,7 @@ pub mod lsm;
 pub mod namespaces;
 pub mod seccomp;
 pub mod uidmap;
+pub mod vmm;
 
 /// Probes in dispatch order. The syscall probe (gated on `opts.probe_syscalls`)
 /// is appended here when its task lands.
@@ -31,6 +32,7 @@ pub fn registry(_opts: &Opts) -> Vec<Arc<dyn Probe>> {
         Arc::new(capabilities::Capabilities),
         Arc::new(seccomp::Seccomp),
         Arc::new(lsm::Lsm),
+        Arc::new(vmm::Vmm),
         Arc::new(cgroup::Cgroup),
     ]
 }

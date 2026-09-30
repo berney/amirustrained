@@ -427,6 +427,7 @@ mod tests {
                 "capabilities",
                 "seccomp",
                 "lsm",
+                "vmm",
                 "cgroup",
             ]
         );

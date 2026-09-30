@@ -11,8 +11,6 @@ use std::time::Duration;
 use crate::sys::fs::ProbeIo;
 use serde::Serialize;
 
-// Consumed by probe tasks (8-18); allow until then.
-#[allow(dead_code)]
 #[derive(Clone, Debug, Default)]
 pub struct HypervisorInfo {
     pub present: bool,
@@ -43,15 +41,16 @@ pub struct UdsReply {
     pub body: String,
 }
 
-// Consumed by probe tasks (8-18); allow until then.
-#[allow(dead_code)]
 pub trait OsApi: Send + Sync {
     fn hypervisor(&self) -> HypervisorInfo;
     fn landlock_abi(&self) -> Option<u64>; // None ⇒ syscall unsupported
     fn seccomp_actions(&self) -> SeccompActions;
     fn seccomp_filter_dump(&self, pid: u32) -> Result<Vec<u64>, ProbeIo>;
+    #[allow(dead_code)] // Consumed by later probe tasks (15-17); allow until then.
     fn syscall0(&self, id: u32) -> Result<(), i32>; // raw arg-less syscall; Err = errno
+    #[allow(dead_code)] // Consumed by later probe tasks (15-17); allow until then.
     fn uds_probe(&self, path: &Path, timeout: Duration) -> std::io::Result<UdsReply>;
+    #[allow(dead_code)] // Consumed by later probe tasks (15-17); allow until then.
     fn env(&self, key: &str) -> Option<String>;
     fn is_root(&self) -> bool; // geteuid() == 0
 }

@@ -52,7 +52,6 @@ impl PseudoFs {
         }
         Ok(std::fs::read_link(path)?.to_string_lossy().into_owned())
     }
-    #[allow(dead_code)] // Still unused until later probe tasks.
     pub fn exists(&self, abs: &str) -> bool {
         self.p(abs).exists()
     }
