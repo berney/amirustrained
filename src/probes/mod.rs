@@ -16,6 +16,7 @@ pub trait Probe: Send + Sync {
 // Constraints: namespaces, uidmap, capabilities, seccomp, [syscall-probe], lsm,
 // vmm, cgroup, sockets, k8s, runtime) lives in `registry()` below.
 pub mod capabilities;
+pub mod cgroup;
 pub mod namespaces;
 pub mod uidmap;
 
@@ -26,5 +27,6 @@ pub fn registry(_opts: &Opts) -> Vec<Arc<dyn Probe>> {
         Arc::new(namespaces::Namespaces),
         Arc::new(uidmap::Uidmap),
         Arc::new(capabilities::Capabilities),
+        Arc::new(cgroup::Cgroup),
     ]
 }
