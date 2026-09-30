@@ -148,7 +148,12 @@ stays visible while the verdict stays honest. Only self-containment evidence sco
 
 - own-cgroup classification (`/proc/<pid>/cgroup` path patterns via `cgroup.pattern`)
 - container membership markers visible from inside: `/.dockerenv`, `container=` env
-  var (`container=docker` / `container=podman`, image-set; weight below cgroup proof)
+  var (`container=docker` / `container=podman`, image-set; weight below cgroup proof).
+  **Precedence:** a named `container=` value out-ranks the `/.dockerenv`-derived
+  Docker inference for the *inner* runtime — with `container=podman` and `/.dockerenv`
+  both present, only Podman scores; `/.dockerenv` still lands in the `containerMarkers`
+  fact and becomes the outer layer via the variant rule below. Two same-family markers
+  (dockerenv + `container=docker`) count once.
 - in-pod evidence (SA token dir, `KUBERNETES_SERVICE_HOST`) — existing k8s branch
 - hypervisor presence (VM containment: kvm/qemu/firecracker/gVisor/kata)
 
