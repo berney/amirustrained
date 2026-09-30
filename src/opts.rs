@@ -43,3 +43,26 @@ pub struct Opts {
     pub fail_on: Option<Severity>,
     pub dump_filters: bool,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Format {
+    Text,
+    Markdown,
+    Json,
+    Sarif,
+    Jsonl,
+}
+
+impl std::str::FromStr for Format {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, ()> {
+        Ok(match s {
+            "text" => Format::Text,
+            "markdown" => Format::Markdown,
+            "json" => Format::Json,
+            "sarif" => Format::Sarif,
+            "jsonl" => Format::Jsonl,
+            _ => return Err(()),
+        })
+    }
+}

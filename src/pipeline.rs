@@ -184,7 +184,7 @@ pub fn scan_with_probes(
         verdict: report.verdict.clone(),
         findings: report.findings.clone(),
         counts: report.counts.clone(),
-        complete: true,
+        complete: report.scan.complete,
     });
     report
 }
