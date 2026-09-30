@@ -193,9 +193,9 @@ All formats derive from the same `Report` / event stream. `Fact` shape:
 
 ```json
 {
-  "schema_version": 1,
+  "schemaVersion": 1,
   "tool": {"name": "amirustrained", "version": "0.1.0"},
-  "scan": {"target_pid": 1234, "uid": 1000, "timestamp": "...", "kernel": "6.x", "complete": true, "probe_timeout_s": null},
+  "scan": {"targetPid": 1234, "uid": 1000, "timestamp": "...", "kernel": "6.x", "complete": true, "probeTimeoutS": null},
   "verdict": {"runtime": "podman-rootless", "confidence": "high",
                "alternatives": [{"runtime": "docker", "score": 0.2}],
                "evidence": ["cgroup:libpod-…", "uidmap:single-line", "socket:$XDG_RUNTIME_DIR/podman/podman.sock"]},
@@ -208,7 +208,7 @@ All formats derive from the same `Report` / event stream. `Fact` shape:
 
 ### `jsonl` (streaming)
 
-One JSON object per line, each carrying `"schema_version": 1` and a `type`:
+One JSON object per line, each carrying `"schemaVersion": 1` and a `type`:
 
 - `{"type":"meta", …}` — first line, flushed before probes start.
 - `{"type":"probe","name":"seccomp","availability":"ok","facts":[…],"findings":[…]}` —
