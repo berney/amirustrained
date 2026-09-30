@@ -47,7 +47,6 @@ pub trait OsApi: Send + Sync {
     #[allow(dead_code)] // Consumed by later probe tasks (15-17); allow until then.
     fn syscall0(&self, id: u32) -> Result<(), i32>; // raw arg-less syscall; Err = errno
     fn uds_probe(&self, path: &Path, timeout: Duration) -> std::io::Result<UdsReply>;
-    #[allow(dead_code)] // Consumed by later probe tasks (15-17); allow until then.
     fn env(&self, key: &str) -> Option<String>;
     fn is_root(&self) -> bool; // geteuid() == 0
 }

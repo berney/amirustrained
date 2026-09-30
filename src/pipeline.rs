@@ -430,6 +430,7 @@ mod tests {
                 "vmm",
                 "sockets",
                 "cgroup",
+                "k8s",
             ]
         );
     }

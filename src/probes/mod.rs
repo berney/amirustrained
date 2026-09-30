@@ -17,6 +17,7 @@ pub trait Probe: Send + Sync {
 // vmm, sockets, cgroup, k8s, runtime) lives in `registry()` below.
 pub mod capabilities;
 pub mod cgroup;
+pub mod k8s;
 pub mod lsm;
 pub mod namespaces;
 pub mod seccomp;
@@ -36,5 +37,6 @@ pub fn registry(_opts: &Opts) -> Vec<Arc<dyn Probe>> {
         Arc::new(vmm::Vmm),
         Arc::new(sockets::Sockets),
         Arc::new(cgroup::Cgroup),
+        Arc::new(k8s::K8s),
     ]
 }
