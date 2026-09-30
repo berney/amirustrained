@@ -68,6 +68,12 @@ impl std::fmt::Display for CliError {
 /// beyond any legitimate probe budget, so the clamp never bites in practice.
 const MAX_PROBE_TIMEOUT_SECS: u64 = 86_400;
 
+/// Ceiling forced on `--probe-syscalls` when no explicit `--probe-timeout`
+/// is given (spec §5, security review 2026-10-01): the canonical SKIP list
+/// is the primary protection; this is the backstop so the sweep can never
+/// run the scan unbounded.
+const SWEEP_TIMEOUT_SECS: u64 = 30;
+
 impl Opts {
     /// Translates parsed flags into the pipeline's view. `Err` means misuse:
     /// the process exits `2` without running a probe.
@@ -93,9 +99,12 @@ impl Opts {
             Opts {
                 pid: c.pid,
                 probe_syscalls: c.probe_syscalls,
-                probe_timeout: c
-                    .probe_timeout
-                    .map(|s| Duration::from_secs(s.min(MAX_PROBE_TIMEOUT_SECS))),
+                probe_timeout: match (c.probe_syscalls, c.probe_timeout) {
+                    // An explicit value stays authoritative; the sweep
+                    // alone never runs without a ceiling (spec §5).
+                    (true, None) => Some(Duration::from_secs(SWEEP_TIMEOUT_SECS)),
+                    (_, secs) => secs.map(|s| Duration::from_secs(s.min(MAX_PROBE_TIMEOUT_SECS))),
+                },
                 fail_on,
                 dump_filters: c.dump_filters,
             },
@@ -182,6 +191,24 @@ mod tests {
         let (_, opts) = Opts::from_cli(&cli("text", None, Some(u64::MAX))).unwrap();
         assert_eq!(opts.probe_timeout, Some(Duration::from_secs(86_400)));
         let (_, opts) = Opts::from_cli(&cli("text", None, Some(5))).unwrap();
+        assert_eq!(opts.probe_timeout, Some(Duration::from_secs(5)));
+        let (_, opts) = Opts::from_cli(&cli("text", None, None)).unwrap();
+        assert_eq!(opts.probe_timeout, None);
+    }
+
+    #[test]
+    fn probe_syscalls_forces_the_sweep_ceiling() {
+        // Spec §5 (amended 2026-10-01): the EPERM sweep must never run
+        // unbounded. `--probe-syscalls` without `--probe-timeout` forces a
+        // 30 s ceiling; an explicit value stays authoritative; without the
+        // flag nothing changes.
+        let flag = |c: Cli| Cli {
+            probe_syscalls: true,
+            ..c
+        };
+        let (_, opts) = Opts::from_cli(&flag(cli("text", None, None))).unwrap();
+        assert_eq!(opts.probe_timeout, Some(Duration::from_secs(30)));
+        let (_, opts) = Opts::from_cli(&flag(cli("text", None, Some(5)))).unwrap();
         assert_eq!(opts.probe_timeout, Some(Duration::from_secs(5)));
         let (_, opts) = Opts::from_cli(&cli("text", None, None)).unwrap();
         assert_eq!(opts.probe_timeout, None);

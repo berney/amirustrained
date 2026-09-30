@@ -4,28 +4,72 @@
 //! (`ENOENT`, `EFAULT`, `EINVAL`, `E2BIG`, `ENOSYS`…) is "not blocked /
 //! indeterminate". Mirrors amicontained's sweep — parity over cleverness.
 //!
-//! SAFETY contract: null-arg calls only, minus the fixed SKIP list below
-//! (hang / exit / self-modifying under zero args). The probe is registered
-//! ONLY with `--probe-syscalls` (see `probes::registry`) and `--probe-timeout`
-//! bounds it like every other probe. The whole sweep is ~325 pure
-//! sysenter round-trips (< 1 ms).
+//! SAFETY contract (security review 2026-10-01; canonical SKIP supersedes
+//! amicontained's hang list): the null-arg premise fails exactly where the
+//! capability check precedes argument validation and the NULL/zero branch
+//! is a DOCUMENTED ACTION. The canonical SKIP list removes three failure
+//! classes:
+//!   1. never-returns — hang / exit / self-modifying: rt_sigreturn, select,
+//!      pause, pselect6, ppoll, exit, exit_group, clone, fork, vfork, seccomp.
+//!   2. acts-when-guard-passes — NULL is the real action, so a privileged
+//!      run mutates state: ptrace(TRACEME) self-attach, umask reset,
+//!      setsid/setpgid, setgroups(0), swapoff(NULL)=all swap off,
+//!      delete_module(NULL,0)=rmmod -a, vhangup(ctty), acct(NULL)=accounting
+//!      off, sethostname/setdomainname(len 0)=empty UTS name.
+//!   3. context-dependent, no root needed — fd-0-relative calls act on
+//!      stdin's file/pty (fchmod, fchown, ftruncate, finit_module), and
+//!      conditional waits block when the object exists (wait4, waitid,
+//!      msgrcv, accept, accept4).
+//!
+//! Registered ONLY with `--probe-syscalls`; without `--probe-timeout` the
+//! CLI forces a 30 s ceiling (spec §5), so even a missed hazard degrades
+//! instead of hanging the scan. Sweep = 303 pure sysenter round-trips.
 
 use crate::model::{Fact, ProbeOutcome};
 
-/// Spec §5 skip list: hang / exit / self-modifying under all-zero args.
+/// Canonical SKIP (spec §5 syscall-probe row, security review 2026-10-01):
+/// hang-class, exit-class, self-modifying, NULL-arg acts-on-root,
+/// fd-0-relative, conditional-block. Names grouped by class; every entry
+/// must exist in NAMES (pinned by test).
 #[cfg(target_arch = "x86_64")]
 pub const SKIP: &[&str] = &[
+    // hang-class
     "rt_sigreturn",
     "select",
     "pause",
     "pselect6",
     "ppoll",
+    // exit-class
     "exit",
     "exit_group",
     "clone",
     "fork",
     "vfork",
+    // self-modifying
     "seccomp",
+    "ptrace",
+    "umask",
+    "setsid",
+    "setpgid",
+    "setgroups",
+    // NULL-arg acts-on-root (NULL is a documented action)
+    "swapoff",
+    "delete_module",
+    "vhangup",
+    "acct",
+    "sethostname",
+    "setdomainname",
+    // fd-0-relative: stdin's file/pty is the state sink, no root needed
+    "fchmod",
+    "fchown",
+    "ftruncate",
+    "finit_module",
+    // conditional-block: acts/blocks only when the object exists
+    "wait4",
+    "waitid",
+    "msgrcv",
+    "accept",
+    "accept4",
 ];
 
 /// x86_64 number→name table. Generated ONCE, committed verbatim (pinned to
@@ -429,13 +473,13 @@ impl crate::probes::Probe for SyscallProbe {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_arch = "x86_64"))]
 mod tests {
     use super::*;
     use crate::probes::Probe;
 
-    /// Full-trait stub (Task 4 signatures). `syscall0` answers EPERM for the
-    /// four picked numbers, EACCES for sethostname, ENOSYS for everything
+    /// Full-trait stub (Task 4 signatures). `syscall0` answers EPERM for
+    /// the four picked numbers, EACCES for chroot, ENOSYS for everything
     /// else — the sweep must treat all other errnos as indeterminate.
     struct Stub;
     impl crate::sys::os::OsApi for Stub {
@@ -462,7 +506,7 @@ mod tests {
             if eperm.contains(&n) {
                 return Err(1); // EPERM
             }
-            if n == libc::SYS_sethostname as u32 {
+            if n == libc::SYS_chroot as u32 {
                 return Err(13); // EACCES
             }
             Err(38) // ENOSYS
@@ -494,17 +538,17 @@ mod tests {
         //
         // pause(34) stubs EPERM but sits on SKIP (all-zero args would hang
         // the sweep), so it must NOT appear. Result ordered by syscall
-        // number: mount(165) < reboot(169) < sethostname(170) < setns(308).
+        // number: chroot(161) < mount(165) < reboot(169) < setns(308).
+        // The EACCES arm sits on chroot, not sethostname: sethostname is
+        // now skipped (len 0 is a valid empty-UTS-name write on any run).
         let blocked = probe_blocked(&Stub);
-        assert_eq!(blocked, ["mount", "reboot", "sethostname", "setns"]);
+        assert_eq!(blocked, ["chroot", "mount", "reboot", "setns"]);
     }
 
     #[test]
     fn names_table_is_strictly_ascending_and_pinned_to_libc() {
         // Mechanical pin for the committed table (libc 0.2.189, gnu x86_64):
-        // 334 rows from read(0) to rseq(334), no alias duplicates, and every
-        // SKIP entry inside the swept range (else the hang list silently
-        // rots when the table is regenerated).
+        // 334 rows from read(0) to rseq(334), no alias duplicates.
         assert_eq!(NAMES.len(), 334);
         assert!(
             NAMES.windows(2).all(|w| w[0].1 < w[1].1),
@@ -519,12 +563,71 @@ mod tests {
             NAMES.last().map(|&(n, nr)| (n, nr)),
             Some(("rseq", libc::SYS_rseq as u32))
         );
-        for s in SKIP {
+    }
+
+    #[test]
+    fn skip_list_is_the_canonical_set_and_shrinks_the_sweep() {
+        // Canonical list from spec §5 (security review 2026-10-01): every
+        // canonical name ∈ SKIP and ∈ NAMES, SKIP gained nothing else, and
+        // regenerating NAMES must not silently drop a protected name into
+        // the swept set.
+        const CANONICAL: &[&str] = &[
+            "rt_sigreturn",
+            "select",
+            "pause",
+            "pselect6",
+            "ppoll",
+            "exit",
+            "exit_group",
+            "clone",
+            "fork",
+            "vfork",
+            "seccomp",
+            "ptrace",
+            "umask",
+            "setsid",
+            "setpgid",
+            "setgroups",
+            "swapoff",
+            "delete_module",
+            "vhangup",
+            "acct",
+            "sethostname",
+            "setdomainname",
+            "fchmod",
+            "fchown",
+            "ftruncate",
+            "finit_module",
+            "wait4",
+            "waitid",
+            "msgrcv",
+            "accept",
+            "accept4",
+        ];
+        assert_eq!(CANONICAL.len(), 31);
+        for s in CANONICAL {
+            assert!(SKIP.contains(s), "canonical name {s} missing from SKIP");
             assert!(
                 NAMES.iter().any(|(n, _)| n == s),
                 "SKIP entry {s} missing from NAMES"
             );
         }
+        assert_eq!(
+            SKIP.len(),
+            CANONICAL.len(),
+            "SKIP gained unreviewed entries"
+        );
+        assert_eq!(
+            NAMES.iter().filter(|(n, _)| !SKIP.contains(n)).count(),
+            303,
+            "swept set must be NAMES minus the 31 skipped"
+        );
+        // Why the live smoke never tripped classes 2-3 on this host: single
+        // process (no children ⇒ wait4/waitid inert), stdin was a pipe
+        // (neither a listening socket for accept nor an owned file for
+        // fchmod/fchown), no msg queue id 0 existed, and no capabilities
+        // were held. The list is a contractual guarantee for arbitrary
+        // (including root) runs, not an observation of one.
     }
 
     #[test]
@@ -555,9 +658,19 @@ mod tests {
         let blocked = o.facts.iter().find(|f| f.key == "blocked").unwrap();
         assert_eq!(
             blocked.value,
-            serde_json::json!(["mount", "reboot", "sethostname", "setns"])
+            serde_json::json!(["chroot", "mount", "reboot", "setns"])
         );
         let count = o.facts.iter().find(|f| f.key == "blockedCount").unwrap();
         assert_eq!(count.value, serde_json::json!(4));
+    }
+}
+
+#[cfg(all(test, not(target_arch = "x86_64")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sweep_compiles_to_empty_off_x86_64() {
+        assert!(probe_blocked(&crate::sys::os::RealOs).is_empty());
     }
 }
