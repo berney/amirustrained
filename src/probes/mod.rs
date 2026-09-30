@@ -11,9 +11,10 @@ pub trait Probe: Send + Sync {
     fn run(&self, cx: &Ctx) -> ProbeOutcome;
 }
 
-// Modules are appended here by their own tasks. Final order (spec Global
-// Constraints): namespaces, uidmap, capabilities, seccomp, [syscall-probe],
-// lsm, vmm, cgroup, sockets, k8s, runtime.
+// Probe modules are appended here by their own tasks; rustfmt keeps these
+// declarations sorted alphabetically. The dispatch order (spec Global
+// Constraints: namespaces, uidmap, capabilities, seccomp, [syscall-probe], lsm,
+// vmm, cgroup, sockets, k8s, runtime) lives in `registry()` below.
 pub mod capabilities;
 pub mod namespaces;
 pub mod uidmap;

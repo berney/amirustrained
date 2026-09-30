@@ -45,7 +45,6 @@ impl PseudoFs {
             .trim_end_matches('\n')
             .to_string())
     }
-    #[allow(dead_code)] // Still unused until the namespace probes (Task 9+).
     pub fn read_link(&self, abs: &str) -> Result<String, ProbeIo> {
         let path = self.p(abs);
         if self.is_fixture() && path.is_file() {
