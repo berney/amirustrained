@@ -102,22 +102,25 @@ pub fn probe_namespaces(fs: &PseudoFs, os: &dyn OsApi, pid: u32) -> ProbeOutcome
         }),
         "/.dockerenv + env container".into(),
     );
-    if dockerenv || container_env.as_deref() == Some("docker") {
-        // One fact family ⇒ at most one docker signal, both markers together
-        // included.
+    // A named `container=` value out-ranks the dockerenv-derived docker
+    // *inference* for the INNER runtime (ReviewT17b): container=podman
+    // alongside /.dockerenv is podman-in-docker, so only podman scores and
+    // dockerenv stays in the fact as the OUTER evidence the fusion layer
+    // reads into the variant. container=docker (± dockerenv) and dockerenv
+    // alone each give the one docker signal; any other containerEnv value
+    // is fact-recorded without a signal.
+    if container_env.as_deref() == Some("podman") {
         o = o.with_signal(Signal {
-            runtime: RuntimeKind::Docker,
+            runtime: RuntimeKind::Podman,
             weight: 0.6,
             evidence: markers.clone(),
             env_only: false,
         });
-    }
-    if container_env.as_deref() == Some("podman") {
-        // container=podman fires even alongside /.dockerenv: that combination
-        // IS podman-in-docker evidence; the fusion layer names the outer
-        // layer. Any other containerEnv value: fact recorded, no signal.
+    } else if dockerenv || container_env.as_deref() == Some("docker") {
+        // One fact family ⇒ at most one docker signal, both markers together
+        // included.
         o = o.with_signal(Signal {
-            runtime: RuntimeKind::Podman,
+            runtime: RuntimeKind::Docker,
             weight: 0.6,
             evidence: markers.clone(),
             env_only: false,
@@ -387,20 +390,29 @@ mod tests {
 
     #[test]
     fn container_podman_fires_alongside_dockerenv_as_podman_in_docker() {
-        // container=podman + /.dockerenv IS podman-in-docker evidence: both
-        // markers score, the fusion layer turns the mismatch into a variant.
+        // container=podman + /.dockerenv is podman-in-docker: the named env
+        // value out-ranks the dockerenv *inference* for the INNER runtime,
+        // so only podman scores; dockerenv stays in the fact as the OUTER
+        // evidence the fusion layer turns into the variant.
         let d = fixture(&[(".dockerenv", "")]);
         let fs = crate::sys::fs::PseudoFs::new(d.path().into());
         let o = probe_namespaces(&fs, &os_with(Some("podman")), 9);
-        assert_eq!(fact(&o, "containerMarkers").value["containerEnv"], "podman");
-        assert_eq!(o.signals.len(), 2, "podman and docker: {:?}", o.signals);
-        let has = |k: RuntimeKind| {
+        let m = fact(&o, "containerMarkers");
+        assert_eq!(m.value["containerEnv"], "podman");
+        assert_eq!(
+            m.value["dockerenv"],
+            serde_json::json!(true),
+            "outer-layer evidence stays recorded"
+        );
+        assert_eq!(
+            o.signals.len(),
+            1,
+            "no competing docker signal: {:?}",
             o.signals
-                .iter()
-                .any(|s| s.runtime == k && s.weight == 0.6 && !s.env_only)
-        };
-        assert!(has(RuntimeKind::Podman));
-        assert!(has(RuntimeKind::Docker));
+        );
+        assert_eq!(o.signals[0].runtime, RuntimeKind::Podman);
+        assert_eq!(o.signals[0].weight, 0.6);
+        assert!(!o.signals[0].env_only);
     }
 
     #[test]
@@ -430,5 +442,45 @@ mod tests {
         let o = probe_namespaces(&fs, &os_with(Some("")), 9);
         assert!(fact(&o, "containerMarkers").value["containerEnv"].is_null());
         assert!(o.signals.is_empty());
+    }
+
+    /// Regression (ReviewT17b): markers-only podman-in-docker (cgroup scope
+    /// masked) used to tie 0.6/0.6, break alphabetically to docker, and then
+    /// variant as `docker nested-in-podman` — inverted on both halves.
+    #[test]
+    fn markers_only_podman_in_docker_never_verdicts_docker() {
+        let d = fixture(&[(".dockerenv", "")]);
+        let fs = crate::sys::fs::PseudoFs::new(d.path().into());
+        let o = probe_namespaces(&fs, &os_with(Some("podman")), 9);
+        let markers = fact(&o, "containerMarkers").value.clone();
+        let v = crate::probes::runtime::score(
+            &o.signals,
+            serde_json::json!(false),
+            Some(false),
+            markers,
+        );
+        assert_ne!(v.runtime, RuntimeKind::Docker, "the inner layer is podman");
+        assert_eq!(v.runtime, RuntimeKind::Podman);
+        assert_eq!(v.confidence, "medium");
+        assert_eq!(v.variant.as_deref(), Some("nested-in-docker"));
+        assert!(
+            !v.variant
+                .as_deref()
+                .unwrap_or_default()
+                .contains("nested-in-podman"),
+            "{:?}",
+            v.variant
+        );
+        assert!(
+            v.alternatives.is_empty(),
+            "no docker candidate: {:?}",
+            v.alternatives
+        );
+        assert!(
+            v.evidence
+                .contains(&"podman namespaces.containerMarkers 0.60".to_string()),
+            "{:?}",
+            v.evidence
+        );
     }
 }
