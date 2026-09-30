@@ -44,7 +44,7 @@ pub trait OsApi: Send + Sync {
     fn landlock_abi(&self) -> Option<u64>; // None ⇒ syscall unsupported
     fn seccomp_actions(&self) -> SeccompActions;
     fn seccomp_filter_dump(&self, pid: u32) -> Result<Vec<u64>, ProbeIo>;
-    fn syscall0(&self, id: u32) -> Result<(), i32>; // raw arg-less syscall; Err = errno
+    fn syscall0(&self, id: u32) -> Result<(), i32>; // all six arg regs zeroed; Err = errno
     fn uds_probe(&self, path: &Path, timeout: Duration) -> std::io::Result<UdsReply>;
     fn env(&self, key: &str) -> Option<String>;
     fn is_root(&self) -> bool; // geteuid() == 0
@@ -167,9 +167,25 @@ impl OsApi for RealOs {
     }
 
     fn syscall0(&self, id: u32) -> Result<(), i32> {
-        // SAFETY: only the syscall number is passed — no pointers — and any
-        // errno is read on the same thread immediately below.
-        let rc = unsafe { libc::syscall(id as libc::c_long) };
+        // SAFETY: only integer scalars are passed — no pointers — and any
+        // errno is read on the same thread immediately below. The explicit
+        // zero literals place zeros in ALL six argument registers (glibc's
+        // syscall() documents up to 6 args): this is the sweep's all-null-
+        // args safety contract (probes::syscall_probe). Bare `syscall(id)`
+        // would leave registers 2-6 carrying residual values, making the
+        // sweep's kernel responses non-deterministic. Callers needing
+        // non-zero args must NOT use this seam.
+        let rc = unsafe {
+            libc::syscall(
+                id as libc::c_long,
+                0 as libc::c_long,
+                0 as libc::c_long,
+                0 as libc::c_long,
+                0 as libc::c_long,
+                0 as libc::c_long,
+                0 as libc::c_long,
+            )
+        };
         if rc < 0 {
             // SAFETY: __errno_location always returns the valid per-thread errno slot.
             Err(unsafe { *libc::__errno_location() })

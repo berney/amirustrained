@@ -23,14 +23,15 @@
 //!
 //! Registered ONLY with `--probe-syscalls`; without `--probe-timeout` the
 //! CLI forces a 30 s ceiling (spec §5), so even a missed hazard degrades
-//! instead of hanging the scan. Sweep = 303 pure sysenter round-trips.
+//! instead of hanging the scan. Sweep = 301 pure sysenter round-trips.
 
 use crate::model::{Fact, ProbeOutcome};
 
 /// Canonical SKIP (spec §5 syscall-probe row, security review 2026-10-01):
 /// hang-class, exit-class, self-modifying, NULL-arg acts-on-root,
 /// fd-0-relative, conditional-block. Names grouped by class; every entry
-/// must exist in NAMES (pinned by test).
+/// must exist in NAMES (pinned by test). Entries beyond the spec's 31 are
+/// review-approved additions (see the `REVIEW_ADDS` pin in the tests).
 #[cfg(target_arch = "x86_64")]
 pub const SKIP: &[&str] = &[
     // hang-class
@@ -59,7 +60,12 @@ pub const SKIP: &[&str] = &[
     "acct",
     "sethostname",
     "setdomainname",
-    // fd-0-relative: stdin's file/pty is the state sink, no root needed
+    // fd-0-relative: stdin's file/pty is the state sink, no root needed.
+    // close(0) is the trigger for fd-0 poisoning: it frees the slot, then
+    // the sweep's own fd creators (inotify_init, timerfd_create, ...) claim
+    // it, and any later dfd- or read(0)-based call acts on the replacement
+    // (inotify_read with count 0 waits forever).
+    "close",
     "fchmod",
     "fchown",
     "ftruncate",
@@ -70,6 +76,13 @@ pub const SKIP: &[&str] = &[
     "msgrcv",
     "accept",
     "accept4",
+    // thread-exit bookkeeping (review addition 2026-10-01): set_tid_address(0)
+    // NULLs the caller's clear_child_tid, so the thread's exit never fires the
+    // futex wake pthread_join waits on - the joined thread vanishes from
+    // /proc while the joiner hangs forever (repro: spawn + syscall(218, 0) +
+    // join). The pipeline itself is immune (channel + recv_timeout), but the
+    // sweep must not poison other joiners in the process.
+    "set_tid_address",
 ];
 
 /// x86_64 number→name table. Generated ONCE, committed verbatim (pinned to
@@ -567,10 +580,10 @@ mod tests {
 
     #[test]
     fn skip_list_is_the_canonical_set_and_shrinks_the_sweep() {
-        // Canonical list from spec §5 (security review 2026-10-01): every
-        // canonical name ∈ SKIP and ∈ NAMES, SKIP gained nothing else, and
-        // regenerating NAMES must not silently drop a protected name into
-        // the swept set.
+        // Canonical list from spec §5 (security review 2026-10-01) plus
+        // reviewed additions: every name ∈ SKIP and ∈ NAMES, SKIP gained
+        // nothing beyond CANONICAL ∪ REVIEW_ADDS, and regenerating NAMES
+        // must not silently drop a protected name into the swept set.
         const CANONICAL: &[&str] = &[
             "rt_sigreturn",
             "select",
@@ -594,6 +607,7 @@ mod tests {
             "acct",
             "sethostname",
             "setdomainname",
+            "close",
             "fchmod",
             "fchown",
             "ftruncate",
@@ -604,9 +618,14 @@ mod tests {
             "accept",
             "accept4",
         ];
-        assert_eq!(CANONICAL.len(), 31);
-        for s in CANONICAL {
-            assert!(SKIP.contains(s), "canonical name {s} missing from SKIP");
+        assert_eq!(CANONICAL.len(), 32);
+        // Beyond the spec's 31, both additions carry dated review evidence:
+        // close (fd-0 poisoning trigger, approved 2026-10-01) and
+        // set_tid_address (NULL clear_child_tid silently deadlocks any
+        // pthread_join in the process - see the SKIP comment).
+        const REVIEW_ADDS: &[&str] = &["set_tid_address"];
+        for s in CANONICAL.iter().chain(REVIEW_ADDS) {
+            assert!(SKIP.contains(s), "protected name {s} missing from SKIP");
             assert!(
                 NAMES.iter().any(|(n, _)| n == s),
                 "SKIP entry {s} missing from NAMES"
@@ -614,13 +633,13 @@ mod tests {
         }
         assert_eq!(
             SKIP.len(),
-            CANONICAL.len(),
+            CANONICAL.len() + REVIEW_ADDS.len(),
             "SKIP gained unreviewed entries"
         );
         assert_eq!(
             NAMES.iter().filter(|(n, _)| !SKIP.contains(n)).count(),
-            303,
-            "swept set must be NAMES minus the 31 skipped"
+            301,
+            "swept set must be NAMES minus the 33 skipped"
         );
         // Why the live smoke never tripped classes 2-3 on this host: single
         // process (no children ⇒ wait4/waitid inert), stdin was a pipe
@@ -628,6 +647,47 @@ mod tests {
         // fchmod/fchown), no msg queue id 0 existed, and no capabilities
         // were held. The list is a contractual guarantee for arbitrary
         // (including root) runs, not an observation of one.
+    }
+
+    #[test]
+    fn fd_creating_sweep_calls_leak_only_process_scoped_fds() {
+        // Pins the spec §5 "Benign accepted" clause: the sweep's fd creators
+        // return immediately (never block) and their only residue is an fd
+        // that lives until process exit. Anon-inode fds are never closed
+        // during a run, so counting their links in /proc/self/fd is monotone
+        // and immune to other tests' regular fd churn.
+        use crate::sys::os::{OsApi, RealOs};
+        let anon = |kinds: &[&str]| -> usize {
+            std::fs::read_dir("/proc/self/fd")
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .filter(|e| {
+                    std::fs::read_link(e.path())
+                        .map(|t| {
+                            let t = t.to_string_lossy();
+                            kinds.iter().any(|k| t.contains(k))
+                        })
+                        .unwrap_or(false)
+                })
+                .count()
+        };
+        const KINDS: &[&str] = &["[timerfd]", "[eventfd]", "inotify", "[eventpoll]"];
+        let before = anon(KINDS);
+        for name in [
+            "timerfd_create",
+            "eventfd2",
+            "inotify_init",
+            "epoll_create1",
+        ] {
+            let (_, nr) = *NAMES.iter().find(|(n, _)| *n == name).unwrap();
+            assert!(!SKIP.contains(&name), "{name} must stay in the sweep");
+            assert!(RealOs.syscall0(nr).is_ok(), "{name} must return, not block");
+        }
+        let after = anon(KINDS);
+        assert!(
+            after >= before + 4,
+            "each swept fd creator must leave exactly its fd behind (benign, process-scoped)"
+        );
     }
 
     #[test]
@@ -662,6 +722,17 @@ mod tests {
         );
         let count = o.facts.iter().find(|f| f.key == "blockedCount").unwrap();
         assert_eq!(count.value, serde_json::json!(4));
+    }
+
+    #[test]
+    fn real_sweep_is_deterministic_in_process() {
+        // ReviewT18 seam finding: `libc::syscall(id)` leaves arg registers
+        // 2-6 carrying residual values, so blocked[] drifted between runs.
+        // With the seam's all-zeroed-registers contract the same process
+        // must observe the identical sweep twice.
+        let a = probe_blocked(&crate::sys::os::RealOs);
+        let b = probe_blocked(&crate::sys::os::RealOs);
+        assert_eq!(a, b, "sweep must be deterministic in-process");
     }
 }
 

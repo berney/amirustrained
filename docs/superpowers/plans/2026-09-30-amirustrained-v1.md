@@ -2469,7 +2469,7 @@ pub const SKIP: &[&str] = &["rt_sigreturn", "select", "pause", "pselect6",
     "ppoll", "exit", "exit_group", "clone", "fork", "vfork", "seccomp",
     "ptrace", "umask", "setsid", "setpgid", "setgroups",
     "swapoff", "delete_module", "vhangup", "acct", "sethostname", "setdomainname",
-    "fchmod", "fchown", "ftruncate", "finit_module",
+    "close", "fchmod", "fchown", "ftruncate", "finit_module",
     "wait4", "waitid", "msgrcv", "accept", "accept4"];
 
 /// x86_64 number→name table. Generated ONCE, committed verbatim (pinned to the
