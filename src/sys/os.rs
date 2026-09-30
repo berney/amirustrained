@@ -409,14 +409,22 @@ mod tests {
     fn seccomp_actions_baseline_support_and_honest_matrix() {
         let a = RealOs.seccomp_actions();
         // SECCOMP_GET_ACTION_AVAIL itself is 4.14+, and a sandbox may also
-        // ERRNO seccomp(2); in either case every probe fails and
-        // `probed_ok == false` — the honest degrade signal, so we only assert
-        // on kernels where the probe mechanism demonstrably worked. There,
-        // KILL_THREAD/TRAP must come back available; a wrong action constant
-        // would show EOPNOTSUPP instead.
+        // ERRNO seccomp(2); in either case every probe fails — all seven
+        // flags false — so the pin below is vacuous and the test passes on
+        // kernels/sandboxes that never ran the mechanism. Whenever ANY action
+        // probes available, the mechanism demonstrably worked, so the two
+        // baseline actions must be among them: a wrong action constant
+        // (EOPNOTSUPP on the TRAP/KILL_THREAD probe) trips this pin.
+        let any_avail = a.kill_process
+            || a.kill_thread
+            || a.trap
+            || a.errno
+            || a.log
+            || a.trace
+            || a.user_notif;
         assert!(
-            (a.kill_thread && a.trap) || !a.probed_ok,
-            "GET_ACTION_AVAIL worked but KILL_THREAD/TRAP missing: {a:?}"
+            !any_avail || (a.kill_thread && a.trap),
+            "GET_ACTION_AVAIL working yet baseline actions missing: {a:?}"
         );
         // KILL_PROCESS/ERRNO/LOG/TRACE (4.14+) and USER_NOTIF (5.0+) are true
         // on this host's kernel but are NOT pinned here: stripped/hardened
