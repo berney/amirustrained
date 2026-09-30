@@ -18,6 +18,7 @@ pub trait Probe: Send + Sync {
 pub mod capabilities;
 pub mod cgroup;
 pub mod namespaces;
+pub mod seccomp;
 pub mod uidmap;
 
 /// Probes in dispatch order. The syscall probe (gated on `opts.probe_syscalls`)
@@ -27,6 +28,7 @@ pub fn registry(_opts: &Opts) -> Vec<Arc<dyn Probe>> {
         Arc::new(namespaces::Namespaces),
         Arc::new(uidmap::Uidmap),
         Arc::new(capabilities::Capabilities),
+        Arc::new(seccomp::Seccomp),
         Arc::new(cgroup::Cgroup),
     ]
 }

@@ -28,6 +28,9 @@ pub struct Cli {
     pub no_color: bool,
     #[arg(long, short)]
     pub verbose: bool,
+    /// Dumps raw seccomp filter programs (root only, ptrace attach).
+    #[arg(long, hide = true)]
+    pub dump_filters: bool,
     #[arg(long, hide = true)]
     pub fixture_root: Option<std::path::PathBuf>,
 }
@@ -35,8 +38,7 @@ pub struct Cli {
 /// Internal derived view of `Cli`; [`Opts::from_cli`] is the only place clap
 /// meets the pipeline, so nothing downstream depends on clap.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // `probe_syscalls` gates the syscall probe registration
-// (Task 18) and `dump_filters` gates the seccomp filter dump (Task 12).
+#[allow(dead_code)] // `probe_syscalls` gates the syscall probe registration (Task 18).
 pub struct Opts {
     pub pid: Option<u32>,
     pub probe_syscalls: bool,
@@ -96,8 +98,7 @@ impl Opts {
                     .probe_timeout
                     .map(|s| Duration::from_secs(s.min(MAX_PROBE_TIMEOUT_SECS))),
                 fail_on,
-                // No `--dump-filters` flag yet; Task 12 sets it from `Cli`.
-                dump_filters: false,
+                dump_filters: c.dump_filters,
             },
         ))
     }
@@ -140,6 +141,7 @@ mod tests {
             fail_on: fail_on.map(str::to_owned),
             no_color: false,
             verbose: false,
+            dump_filters: false,
             fixture_root: None,
         }
     }

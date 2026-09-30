@@ -9,6 +9,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::sys::fs::ProbeIo;
+use serde::Serialize;
 
 // Consumed by probe tasks (8-18); allow until then.
 #[allow(dead_code)]
@@ -18,9 +19,11 @@ pub struct HypervisorInfo {
     pub vendor: Option<String>,
 }
 
-// Consumed by probe tasks (8-18); allow until then.
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, Default)]
+/// Kernel support for each `SECCOMP_RET_*` action, probed via
+/// `seccomp(SECCOMP_GET_ACTION_AVAIL)`. Serialized `camelCase` for the
+/// `seccomp.actions` fact (Task 12 probe).
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SeccompActions {
     pub kill_process: bool,
     pub kill_thread: bool,
