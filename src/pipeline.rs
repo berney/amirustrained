@@ -421,7 +421,14 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            ["namespaces", "uidmap", "capabilities", "seccomp", "cgroup"]
+            [
+                "namespaces",
+                "uidmap",
+                "capabilities",
+                "seccomp",
+                "lsm",
+                "cgroup",
+            ]
         );
     }
 }
