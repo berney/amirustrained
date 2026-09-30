@@ -419,6 +419,6 @@ mod tests {
             .iter()
             .map(|p| p.name())
             .collect();
-        assert_eq!(names, ["namespaces", "uidmap"]);
+        assert_eq!(names, ["namespaces", "uidmap", "capabilities"]);
     }
 }

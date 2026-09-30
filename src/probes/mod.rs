@@ -14,11 +14,16 @@ pub trait Probe: Send + Sync {
 // Modules are appended here by their own tasks. Final order (spec Global
 // Constraints): namespaces, uidmap, capabilities, seccomp, [syscall-probe],
 // lsm, vmm, cgroup, sockets, k8s, runtime.
+pub mod capabilities;
 pub mod namespaces;
 pub mod uidmap;
 
 /// Probes in dispatch order. The syscall probe (gated on `opts.probe_syscalls`)
 /// is appended here when its task lands.
 pub fn registry(_opts: &Opts) -> Vec<Arc<dyn Probe>> {
-    vec![Arc::new(namespaces::Namespaces), Arc::new(uidmap::Uidmap)]
+    vec![
+        Arc::new(namespaces::Namespaces),
+        Arc::new(uidmap::Uidmap),
+        Arc::new(capabilities::Capabilities),
+    ]
 }
