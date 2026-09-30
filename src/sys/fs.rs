@@ -1,7 +1,5 @@
 use std::path::{Path, PathBuf};
 
-// Consumed by probe tasks (8-18); allow until then.
-#[allow(dead_code)]
 #[derive(Debug, PartialEq)]
 pub enum ProbeIo {
     NotFound,
@@ -20,14 +18,11 @@ impl From<std::io::Error> for ProbeIo {
     }
 }
 
-// Consumed by probe tasks (8-18); allow until then.
-#[allow(dead_code)]
 #[derive(Clone)]
 pub struct PseudoFs {
     root: PathBuf,
 }
 
-#[allow(dead_code)]
 impl PseudoFs {
     pub fn real() -> Self {
         Self {
@@ -37,6 +32,7 @@ impl PseudoFs {
     pub fn new(root: PathBuf) -> Self {
         Self { root }
     }
+    #[allow(dead_code)] // Still unused until the namespace probes (Task 9+).
     pub fn is_fixture(&self) -> bool {
         self.root != Path::new("/")
     }
@@ -49,6 +45,7 @@ impl PseudoFs {
             .trim_end_matches('\n')
             .to_string())
     }
+    #[allow(dead_code)] // Still unused until the namespace probes (Task 9+).
     pub fn read_link(&self, abs: &str) -> Result<String, ProbeIo> {
         let path = self.p(abs);
         if self.is_fixture() && path.is_file() {
@@ -56,9 +53,11 @@ impl PseudoFs {
         }
         Ok(std::fs::read_link(path)?.to_string_lossy().into_owned())
     }
+    #[allow(dead_code)] // Still unused until later probe tasks.
     pub fn exists(&self, abs: &str) -> bool {
         self.p(abs).exists()
     }
+    #[allow(dead_code)] // Still unused until later probe tasks.
     pub fn list_dir(&self, abs: &str) -> Result<Vec<String>, ProbeIo> {
         let mut v: Vec<String> = std::fs::read_dir(self.p(abs))?
             .filter_map(|e| e.ok())
@@ -66,6 +65,16 @@ impl PseudoFs {
             .collect();
         v.sort();
         Ok(v)
+    }
+}
+
+/// The errno a probe should report for a failed pseudo-fs read:
+/// `EACCES`/`ENOENT` are meaningful to the rule engine; other errors are not.
+pub fn errno_of(e: &ProbeIo) -> Option<i32> {
+    match e {
+        ProbeIo::PermissionDenied => Some(13),
+        ProbeIo::NotFound => Some(2),
+        ProbeIo::Other(_) => None,
     }
 }
 
