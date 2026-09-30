@@ -23,17 +23,23 @@ pub mod namespaces;
 pub mod runtime;
 pub mod seccomp;
 pub mod sockets;
+pub mod syscall_probe;
 pub mod uidmap;
 pub mod vmm;
 
-/// Probes in dispatch order. The syscall probe (gated on `opts.probe_syscalls`)
-/// is appended here when its task lands.
-pub fn registry(_opts: &Opts) -> Vec<Arc<dyn Probe>> {
-    vec![
+/// Probes in dispatch order. The syscall probe is conditional: registered
+/// only with `--probe-syscalls`, since it actively invokes syscalls (spec §5).
+pub fn registry(opts: &Opts) -> Vec<Arc<dyn Probe>> {
+    let mut probes: Vec<Arc<dyn Probe>> = vec![
         Arc::new(namespaces::Namespaces),
         Arc::new(uidmap::Uidmap),
         Arc::new(capabilities::Capabilities),
         Arc::new(seccomp::Seccomp),
+    ];
+    if opts.probe_syscalls {
+        probes.push(Arc::new(syscall_probe::SyscallProbe));
+    }
+    let tail: Vec<Arc<dyn Probe>> = vec![
         Arc::new(lsm::Lsm),
         Arc::new(vmm::Vmm),
         Arc::new(sockets::Sockets),
@@ -41,5 +47,7 @@ pub fn registry(_opts: &Opts) -> Vec<Arc<dyn Probe>> {
         Arc::new(k8s::K8s),
         // Last: it only fuses what the probes above accumulated.
         Arc::new(runtime::Runtime),
-    ]
+    ];
+    probes.extend(tail);
+    probes
 }

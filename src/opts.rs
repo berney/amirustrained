@@ -38,7 +38,6 @@ pub struct Cli {
 /// Internal derived view of `Cli`; [`Opts::from_cli`] is the only place clap
 /// meets the pipeline, so nothing downstream depends on clap.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // `probe_syscalls` gates the syscall probe registration (Task 18).
 pub struct Opts {
     pub pid: Option<u32>,
     pub probe_syscalls: bool,

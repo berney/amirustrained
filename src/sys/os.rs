@@ -44,7 +44,6 @@ pub trait OsApi: Send + Sync {
     fn landlock_abi(&self) -> Option<u64>; // None ⇒ syscall unsupported
     fn seccomp_actions(&self) -> SeccompActions;
     fn seccomp_filter_dump(&self, pid: u32) -> Result<Vec<u64>, ProbeIo>;
-    #[allow(dead_code)] // Consumed by later probe tasks (15-17); allow until then.
     fn syscall0(&self, id: u32) -> Result<(), i32>; // raw arg-less syscall; Err = errno
     fn uds_probe(&self, path: &Path, timeout: Duration) -> std::io::Result<UdsReply>;
     fn env(&self, key: &str) -> Option<String>;

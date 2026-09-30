@@ -436,4 +436,38 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn registry_gates_syscall_probe_on_probe_syscalls() {
+        // The sweep actively invokes syscalls, so it must NOT appear by
+        // default (asserted by the sibling above) and must sit right after
+        // `seccomp` in dispatch order when `--probe-syscalls` is given.
+        let opts = Opts {
+            pid: None,
+            probe_syscalls: true,
+            dump_filters: false,
+            probe_timeout: None,
+            fail_on: None,
+        };
+        let names: Vec<&str> = crate::probes::registry(&opts)
+            .iter()
+            .map(|p| p.name())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "namespaces",
+                "uidmap",
+                "capabilities",
+                "seccomp",
+                "syscall-probe",
+                "lsm",
+                "vmm",
+                "sockets",
+                "cgroup",
+                "k8s",
+                "runtime",
+            ]
+        );
+    }
 }
