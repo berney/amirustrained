@@ -30,6 +30,7 @@ binaries, or vulnerable packages. It observes; it never remediates.
 | Deployment | Capability-aware drop-binary: one static musl binary (amd64 + arm64); every probe degrades gracefully when unprivileged, enriches under root. |
 | Scope | "Parity+" — amicontained parity plus VMM detection, modern runtimes (podman/CRI-O/k8s/firecracker/gVisor/kata), own-cgroup context, LSM matrix. |
 | Syscall enumeration | Safe introspection by default; amicontained-style null-arg brute-force only behind explicit `--probe-syscalls`. |
+| eBPF audit | Exposure knobs read always; a real program load only behind `--probe-ebpf`. `aya` + embedded object (compiled with `bpf-linker` in the release build); ships as the same single static binary. |
 | Output | Facts + findings, two layers; formats `text` (default), `markdown`, `json`, `sarif` (findings-only), `jsonl` (streaming). |
 | Streaming | Event-stream pipeline so partial results survive probe hangs and mid-scan SIGKILL. |
 
@@ -51,6 +52,7 @@ amirustrained [OPTIONS]
 
       --format <FORMAT>     text (default) | markdown | json | sarif | jsonl
       --probe-syscalls      enable execution-based seccomp syscall enumeration (opt-in)
+      --probe-ebpf          attempt a real trivial eBPF program load (opt-in; needs privileges)
   -o, --output <FILE>       write to file instead of stdout
       --pid <PID>           inspect another process (root required; default: self)
       --probe-timeout <S>   per-probe timeout in seconds (default: none)
@@ -122,6 +124,7 @@ Pipeline details:
 | `capabilities` | `/proc/<pid>/status` `CapEff/Prm/Inh/Bnd/Amb/LastEff`, `NoNewPrivs`, securebits, `/proc/sys/kernel/yama/ptrace_scope` | all 6 sets decoded to names (incl. `CAP_BPF`, `CAP_PERFMON`, `CAP_CHECKPOINT_RESTORE`); `NoNewPrivs` state; Yama ptrace scope (scoped single-knob read, see non-goals) |
 | `seccomp` | `/proc/<pid>/status` `Seccomp`, `Seccomp_filters` (kernel ≥ 4.14; degrade to mode-only when absent), `seccomp(2)` `GET_ACTION_AVAIL`, `SECCOMP_GET_FILTER` (root) | mode 0/1/2, filter count, supported actions matrix; raw BPF program dump when root. Template matching against known profile templates (docker/runc defaults) is **deferred to v1.1** — it requires disassembling the filter program, and reporting a matched template name as fact would overclaim |
 | `syscall-probe` | execution of null-arg syscalls `0..RSEQ`, EPERM/EACCES classified as blocked | blocked-syscall list. **Only with `--probe-syscalls`.** Skips amicontained's hang/side-effect list (rt_sigreturn, select, pause, pselect6, ppoll, exit, exit_group, clone, fork, vfork, seccomp). Enforced by `--probe-timeout` when set |
+| `ebpf` | always: `/proc/sys/kernel/unprivileged_bpf_disabled`, `/sys/kernel/security/lockdown`, capabilities facts; with `--probe-ebpf`: trivial program load of the embedded object via `aya` | knob states (`unprivileged_bpf_disabled` 0/1/2, lockdown mode), which privilege path to `bpf()` is open (cap-based vs unprivileged); opt-in load result: ok, or denial decoded (EPERM caps / EPERM unpriv-disabled / EACCES-LSM / EOPNOTSUPP lockdown). Objects are never pinned: kernel frees them when the process exits, so crashes leave nothing behind |
 | `lsm` | `/proc/<pid>/attr/current`, `/sys/kernel/security/lsm`, `/sys/kernel/security/lockdown`, `/sys/kernel/security/apparmor/`, `landlock(ABI)` query | active LSM list verbatim (may include `lockdown`, `bpf`, `ipe`, `ima`); AppArmor profile + mode; SELinux context + enforce/permissive; Kernel Lockdown state; Landlock ABI level or absent |
 | `vmm` | CPUID hypervisor bit + vendor leaf (x86; best-effort aarch64), `/sys/class/dmi/id/*` (public fields unprivileged), `clocksource0`, `/dev/vsock` presence, `/proc/cpuinfo` `hypervisor` flag | hypervisor vendor/product; confidence per signature; composite signals for firecracker (no DMI + `kvm-clock` + vsock) and gVisor (characteristic kernel/ptrace quirks reported conservatively) |
 | `cgroup` | `/proc/<pid>/cgroup`, own `memory.max`, `pids.max`, `cpu.max`, cpuset, controllers list | v1/v2, controllers, own limits, normalized path pattern (`kubepods-…pod<uid>`, `libpod-…`, `docker-<hex>`, `lxc-…`) |
@@ -204,6 +207,9 @@ Seed catalog (v1; registry is append-only in id-space):
 | AMR-016 | cap-sys-admin-no-combo | medium | CAP_SYS_ADMIN present but some restraints active (weaker sibling of AMR-002) |
 | AMR-017 | cgroupns-host | info | own cgroup-ns inode equals pid-1's (container sees host cgroup tree) |
 | AMR-018 | no-new-privs-unset | low | NoNewPrivs = 0 (execve can gain privs via setuid/exec-caps) |
+| AMR-019 | bpf-unpriv-open | medium | verdict != host and `unprivileged_bpf_disabled` is 0 (or absent pre-5.13 knob): any local uid can reach `bpf()` from a weak foothold |
+| AMR-020 | cap-bpf-or-perfmon | low | `CapEff` includes `CAP_BPF` or `CAP_PERFMON`: program load / map read possible without full root |
+| AMR-021 | ebpf-load-succeeded | high | `--probe-ebpf` only: trivial program load succeeded while contained — `bpf()` reachable past seccomp/LSM/cap drops; kernel attack surface confirmed open |
 
 Rules downgraded by privilege: where the assessment needs data an unprivileged run
 cannot read, the rule reports `info` with "insufficient privilege to assess" rather
@@ -294,17 +300,21 @@ process context in `properties`). Validated against the official schema in tests
 - **Live smoke harness** (scripted, manual/nightly, never shared CI hosts): run the
   same binary in docker default, docker `--privileged`, rootless podman, kind pod,
   systemd-nspawn; assert the fingerprint verdict table. `--probe-syscalls` exercised
-  only inside containers.
+  only inside containers; `--probe-ebpf` real load exercised here with root, never on
+  shared CI hosts (fixtures cannot fake `BPF_PROG_LOAD`; knob reading is fixture-tested).
 
 ## 10. Build & distribution
 
 - Targets: `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl` (static, no
   runtime deps), plus native builds for dev.
-- Edition 2024; deps: `rustix`, `clap`, `serde`, `serde_json`; release profile
-  `opt-level="z"`, `lto=true`, `strip=true`, panic=abort (abandon-worker design still
-  works: hangs are stalls, not unwinds).
+- Edition 2024; deps: `rustix`, `clap`, `serde`, `serde_json`; `aya` for the eBPF load
+  (pure Rust, musl-safe); release profile `opt-level="z"`, `lto=true`, `strip=true`,
+  panic=abort (abandon-worker design still works: hangs are stalls, not unwinds).
+- eBPF object: minimal probe program in `bpf/`, built with `bpf-linker` (nightly) in a
+  dedicated CI job; the main crate embeds the artifact via `include_bytes!` (aya's
+  recommended layout) — the shipped binary stays a single static file.
 - GitHub Actions: `cargo fmt --check`, `clippy -D warnings`, unit+golden tests on
-  native, cross-compile release artifacts.
+  native, cross-compile release artifacts, eBPF-object build job (nightly + bpf-linker).
 
 ## 11. Future tiers (explicitly out of v1)
 

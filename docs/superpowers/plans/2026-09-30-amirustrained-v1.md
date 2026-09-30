@@ -3187,17 +3187,69 @@ README: install (prebuilt musl tarball, cargo install), usage examples (incl. re
 
 ---
 
+### Task 28: eBPF exposure knobs probe (always-on, no new deps)
+
+**Files:**
+- Create: `src/probes/ebpf.rs` + registry entry
+- Modify: `src/model/rules.rs` (AMR-019, AMR-020 per spec §6)
+
+Facts (all via PseudoFs, fixture-testable):
+- `ebpf.knobs` — `{"unprivilegedBpfDisabled": 0|1|2|null, "lockdown": string|null}` from
+  `/proc/sys/kernel/unprivileged_bpf_disabled`, `/sys/kernel/security/lockdown`
+  (absent file ⇒ null, not degraded; pre-5.13 kernels simply lack the knob)
+- `ebpf.reachability` — computed `{capPathOpen: bool, unprivilegedOpen: bool}`:
+  capPathOpen = CapEff has CAP_BPF (CAP_PERFMON needed only for maps/probes — note in
+  `why`); unprivilegedOpen = knob == 0 || knob == null(pre-5.13) && lockdown != "integrity".
+  Reads `capabilities.effective` + lockdown from `cx.prior`; availability `degraded`
+  (reachability `null`) when capabilities facts absent.
+Rules: AMR-019 `bpf-unpriv-open` medium (verdict != host && unprivilegedOpen),
+AMR-020 `cap-bpf-or-perfmon` low (CAP_BPF or CAP_PERFMON in CapEff). No runtime signals.
+
+- [ ] **Step 1: RED** — fixture scenarios: knob=0/1/2/absent × lockdown ∈ {none, integrity, absent} × caps with/without CAP_BPF; rule fire/no-fire for AMR-019/020 incl. host-verdict suppression of 019.
+- [ ] **Step 2: GREEN. Gates:** cargo test / clippy -D warnings / fmt.
+- [ ] **Step 3: Commit** — `"feat: ebpf exposure knobs probe + AMR-019/020"`
+
+---
+
+### Task 29: eBPF real-load probe (`--probe-ebpf`, aya, embedded object)
+
+**Files:**
+- Create: `bpf/` (minimal no_std program: tracepoint returning 0), build via `bpf-linker`
+- Create: `src/probes/ebpf_load.rs` (conditional registry entry, like syscall-probe)
+- Modify: `Cargo.toml` (`aya`), CLI (`--probe-ebpf`), `src/model/rules.rs` (AMR-021),
+  CI (`eBPF-object` job: nightly + bpf-linker; artifact path embedded via `include_bytes!`)
+
+Behavior (never in shared CI; fixtures cannot fake `BPF_PROG_LOAD`):
+- Load embedded object through aya (`Program::load_bytes` path); on success fact
+  `ebpf.load = {"status": "ok"}` ⇒ AMR-021 high when verdict != host.
+- Denial decoded to kernel errno: EPERM+knob0 ⇒ `permb-caps`; EPERM+knob1/2 ⇒
+  `permb-unpriv-disabled`; EACCES ⇒ `lsm-or-lockdown`; EOPNOTSUPP ⇒ `unsupported`;
+  artifact not built (dev tree without CI job) ⇒ `artifact-missing`, probe degraded, never a crash.
+- Cleanup invariant: never pin; program FDs die with the process (drop + exit covers
+  the crash case — no unload CLI needed; state this in the probe's `why`/README).
+- Unit-testable pure fn: errno+knob context ⇒ denial classification (table test).
+- musl: verify `x86_64-unknown-linux-musl` build stays static with aya (add to
+  Task 27's musl job target list).
+
+- [ ] **Step 1: RED** — denial-classification table tests + registry-conditional test (flag off ⇒ probe absent).
+- [ ] **Step 2: GREEN.** Live check on this host as root: `sudo target/release/amirustrained --probe-ebpf --format json` ⇒ `ebpf.load.status == "ok"`, AMR-021 suppressed (host verdict); unprivileged run ⇒ decoded denial. Paste both in commit message.
+- [ ] **Step 3: Commit** — `"feat: opt-in real eBPF program load probe via aya (embedded object)"`
+
+---
+
+
+
 ## Spec coverage self-check (executor: run last, before final review)
 
 | spec section | tasks |
 |---|---|
-| §4 CLI flags | 7 (all flags), 12 (`--dump-filters` hidden), 18 (`--probe-syscalls`), 25 (`--fail-on`) |
-| §5 probes | 8–18 |
+| §4 CLI flags | 7 (all flags), 12 (`--dump-filters` hidden), 18 (`--probe-syscalls`), 25 (`--fail-on`), 29 (`--probe-ebpf`) |
+| §5 probes | 8–18, 28 (ebpf knobs), 29 (ebpf load) |
 | §6 pipeline/timeout/events | 5, 22 (`Summary.report`) |
 | §7 runtime scoring | 17 |
-| §8 rules/demotions/exit codes | 19–21 (demotion in `Rule::evaluate`), 7+25 (exit codes) |
+| §8 rules/demotions/exit codes | 19–21 (demotion in `Rule::evaluate`), 28 (AMR-019/020), 29 (AMR-021), 7+25 (exit codes) |
 | §9 formats | 6 (jsonl/text-min), 22 (json), 23 (text/md), 24 (sarif) |
-| §10 testing | 26 (fixtures/goldens), 27 (live smoke, musl) |
+| §10 testing | 26 (fixtures/goldens), 27 (live smoke, musl), 29 (ebpf-object CI job) |
 
 Spec errata applied 2026-09-30 (same commit): AMR-012 reframed to `landlock-abi-available` (info, presence-only — per-process Landlock domain state is unobservable); §5 seccomp profile-template matching descoped to v1.1 (mode + filter count + action matrix reported; `landlock(ABI)` stays the landlock source, made deterministic in tests via `FixtureOs`).
 
