@@ -117,32 +117,58 @@ Pipeline details:
 
 | probe | sources | emits (facts) |
 |---|---|---|
-| `namespaces` | `/proc/<pid>/ns/*`, pid-1 ns (root) | per-type isolation for all 8 ns types; `degraded` when pid-1 unreadable; cgroup-ns inode comparison |
-| `uidmap` | `/proc/<pid>/uid_map`, `gid_map`, `setgroups` | full mapping rows; single-line range-1 ⇒ rootless signal |
+| `namespaces` | `/proc/<pid>/ns/*`, pid-1 ns (root), `/.dockerenv`, `container=` env var | per-type isolation for all 8 ns types; `degraded` when pid-1 unreadable; cgroup-ns inode comparison; container membership markers (`containerMarkers`: dockerenv bool + container-env value) |
+| `uidmap` | `/proc/<pid>/uid_map`, `gid_map`, `setgroups` | full mapping rows; single-line range-1 ⇒ rootless **environment note** (never scores into the verdict) |
 | `capabilities` | `/proc/<pid>/status` `CapEff/Prm/Inh/Bnd/Amb/LastEff`, `NoNewPrivs`, securebits, `/proc/sys/kernel/yama/ptrace_scope` | all 6 sets decoded to names (incl. `CAP_BPF`, `CAP_PERFMON`, `CAP_CHECKPOINT_RESTORE`); `NoNewPrivs` state; Yama ptrace scope (scoped single-knob read, see non-goals) |
 | `seccomp` | `/proc/<pid>/status` `Seccomp`, `Seccomp_filters` (kernel ≥ 4.14; degrade to mode-only when absent), `seccomp(2)` `GET_ACTION_AVAIL`, `SECCOMP_GET_FILTER` (root) | mode 0/1/2, filter count, supported actions matrix; raw BPF program dump when root. Template matching against known profile templates (docker/runc defaults) is **deferred to v1.1** — it requires disassembling the filter program, and reporting a matched template name as fact would overclaim |
 | `syscall-probe` | execution of null-arg syscalls `0..RSEQ`, EPERM/EACCES classified as blocked | blocked-syscall list. **Only with `--probe-syscalls`.** Skips amicontained's hang/side-effect list (rt_sigreturn, select, pause, pselect6, ppoll, exit, exit_group, clone, fork, vfork, seccomp). Enforced by `--probe-timeout` when set |
 | `lsm` | `/proc/<pid>/attr/current`, `/sys/kernel/security/lsm`, `/sys/kernel/security/lockdown`, `/sys/kernel/security/apparmor/`, `landlock(ABI)` query | active LSM list verbatim (may include `lockdown`, `bpf`, `ipe`, `ima`); AppArmor profile + mode; SELinux context + enforce/permissive; Kernel Lockdown state; Landlock ABI level or absent |
 | `vmm` | CPUID hypervisor bit + vendor leaf (x86; best-effort aarch64), `/sys/class/dmi/id/*` (public fields unprivileged), `clocksource0`, `/dev/vsock` presence, `/proc/cpuinfo` `hypervisor` flag | hypervisor vendor/product; confidence per signature; composite signals for firecracker (no DMI + `kvm-clock` + vsock) and gVisor (characteristic kernel/ptrace quirks reported conservatively) |
 | `cgroup` | `/proc/<pid>/cgroup`, own `memory.max`, `pids.max`, `cpu.max`, cpuset, controllers list | v1/v2, controllers, own limits, normalized path pattern (`kubepods-…pod<uid>`, `libpod-…`, `docker-<hex>`, `lxc-…`) |
-| `sockets` | fixed candidate list: `/var/run/docker.sock`, `/run/docker.sock`, `/run/docker/*.sock`, `/run/containerd/containerd.sock`, `/run/crio/crio.sock`, `/run/podman/podman.sock`, `$XDG_RUNTIME_DIR/podman/podman.sock` | path, type, writable?; for docker/podman endpoints a hand-rolled `GET /info` over the UDS (no HTTP dep; 1 s timeout) reporting `SecurityOptions` (userns-remap, apparmor/seccomp defaults), version, rootless flag |
+| `sockets` | fixed candidate list: `/var/run/docker.sock`, `/run/docker.sock`, `/run/docker/*.sock`, `/run/containerd/containerd.sock`, `/run/crio/crio.sock`, `/run/podman/podman.sock`, `$XDG_RUNTIME_DIR/podman/podman.sock` | path, type, writable?; for docker/podman endpoints a hand-rolled `GET /info` over the UDS (no HTTP dep; 1 s timeout) reporting `SecurityOptions` (userns-remap, apparmor/seccomp defaults), version, rootless flag. **Environment-only evidence**: presence of a socket means a runtime is reachable here, not that we run inside it; contributes verdict evidence notes, never score |
 | `k8s` | env `KUBERNETES_SERVICE_HOST/PORT`, `/var/run/secrets/kubernetes.io/serviceaccount/`, downward-API dir | in-pod?, namespace name, QoS class (cross-referenced with cgroup path) |
-| `runtime` | composite of all above | ranked fingerprint: primary verdict + alternatives, each citing evidence facts |
+| `runtime` | composite of all above | self-containment fingerprint: primary verdict + alternatives, each citing evidence facts; environment-only signals become `environment:` notes |
 
 ### Fingerprinting algorithm
 
 Scored evidence, not a single string. Each probe contributes weighted signals; the
-`runtime` probe sums them into candidates:
+`runtime` probe sums them into candidates.
 
-- docker: `/.dockerenv` + `docker-<64hex>` cgroup + docker.sock SecurityOptions
-- podman rootless: partial/single-line `uid_map` + `libpod-` cgroup + XDG podman socket
-- containerd/CRI-O: cgroup path + socket identity
+**Verdict semantics (amendment 2026-10-01): the verdict names *self-containment*.**
+`verdict.runtime` identifies the containment the scanning process is itself running
+inside (`host` when it is not contained). Evidence that a runtime is *installed or
+reachable on the machine* — a writable control socket (`sockets.found`), a user's
+rootless uidmap layout (`uidmap.rootless`) — is an **environment-only** signal: it
+never scores into the verdict. Environment-only signals are reported as evidence
+notes (`environment: <kind> present (<probe>.<key>)`) so "this is a podman system"
+stays visible while the verdict stays honest. Only self-containment evidence scores:
+
+- own-cgroup classification (`/proc/<pid>/cgroup` path patterns via `cgroup.pattern`)
+- container membership markers visible from inside: `/.dockerenv`, `container=` env
+  var (`container=docker` / `container=podman`, image-set; weight below cgroup proof)
+- in-pod evidence (SA token dir, `KUBERNETES_SERVICE_HOST`) — existing k8s branch
+- hypervisor presence (VM containment: kvm/qemu/firecracker/gVisor/kata)
+
+Per-kind scored evidence after the gate:
+
+- docker: `docker-<64hex>`/`/docker/` cgroup (0.8) + `/.dockerenv` or
+  `container=docker` marker + docker.sock SecurityOptions (environment note)
+- podman: `libpod-` cgroup (0.7) + `container=podman` marker; uidmap single-line and
+  the XDG podman socket are environment notes
+- containerd/CRI-O: cgroup path identity (socket = environment note)
 - Kubernetes pod: `kubepods` cgroup path or `KUBERNETES_SERVICE_HOST` + SA token dir
   (underlying runtime reported separately, e.g. "k8s pod on containerd")
 - LXC / systemd-nspawn: cgroup path patterns + container-env vars
 - firecracker: hypervisor present + empty DMI + `kvm-clock` + vsock, no PCI-visible BIOS
 - gVisor / kata: vmm signatures + kernel-version/name mismatches (conservative, labeled)
-- bare host: no isolation signals in any namespace, host cgroup path, no hypervisor
+- bare host: no self-containment signals, host cgroup path, no hypervisor
+
+**Nesting:** the innermost identifiable containment is the verdict (own cgroup scope
+sees it first). When outer-layer markers coexist with an inner containment verdict
+that they do not explain (e.g. verdict `podman` from a `libpod-` scope while
+`/.dockerenv` is present), the verdict gains `variant: "nested-in-docker"` and an
+evidence note. A nested container whose runtime leaves no inner marker degrades to
+the outer layer's evidence — stated at that evidence's confidence, never guessed.
 
 Output always includes the evidence list per candidate; low-confidence outcomes say so.
 
@@ -196,9 +222,11 @@ All formats derive from the same `Report` / event stream. `Fact` shape:
   "schemaVersion": 1,
   "tool": {"name": "amirustrained", "version": "0.1.0"},
   "scan": {"targetPid": 1234, "uid": 1000, "timestamp": "...", "kernel": "6.x", "complete": true, "probeTimeoutS": null},
-  "verdict": {"runtime": "podman-rootless", "confidence": "high",
+  "verdict": {"runtime": "podman", "variant": null, "confidence": "high",
                "alternatives": [{"runtime": "docker", "score": 0.2}],
-               "evidence": ["cgroup:libpod-…", "uidmap:single-line", "socket:$XDG_RUNTIME_DIR/podman/podman.sock"]},
+               "evidence": ["podman cgroup.pattern 0.7", "podman namespaces.containerMarkers 0.6",
+                             "environment: podman present (sockets.found)",
+                             "environment: podman present (uidmap.rootless)"]},
   "probes": [{"name": "namespaces", "availability": "ok", "facts": []}, …],
   "findings": [{"rule": "AMR-011", "severity": "medium", "summary": "…", "why": "…",
                  "evidence": [ …facts… ], "remediation": "…", "references": [ … ]}],
@@ -257,7 +285,12 @@ process context in `properties`). Validated against the official schema in tests
 - **Unit tests**: uid_map/gid_map parser, cgroup-path classifier, capability decoder,
   DMI/CPUID matcher, each rule predicate against synthetic fact sets (fire + no-fire).
 - **Golden tests**: all five renderers against each fixture scenario; SARIF validated
-  against the official JSON schema in-test.
+  against the official JSON schema in-test. Scenario table MUST include the
+  containment-vs-environment cases: *host with writable podman/docker sockets* ⇒
+  verdict `host` with `environment:` notes (no socket score); *inside docker with
+  cgroupns-hidden path* ⇒ `/.dockerenv` marker carries docker over the primary bar;
+  *podman-in-docker* (libpod scope + dockerenv) ⇒ verdict `podman`,
+  `variant: "nested-in-docker"`.
 - **Live smoke harness** (scripted, manual/nightly, never shared CI hosts): run the
   same binary in docker default, docker `--privileged`, rootless podman, kind pod,
   systemd-nspawn; assert the fingerprint verdict table. `--probe-syscalls` exercised

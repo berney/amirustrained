@@ -2393,6 +2393,27 @@ impl Probe for Runtime {
 
 ---
 
+### Task 17b: Containment-gated verdict (semantics amendment, 2026-10-01)
+
+Spec §5 amendment: `verdict.runtime` = **self-containment**; runtime presence
+(writable socket, rootless uidmap) is environment-only evidence. See spec
+"Verdict semantics (amendment 2026-10-01)" + "Nesting".
+
+**Files:**
+- Modify `src/model/runtime.rs`: `Signal` gains `env_only: bool` (`#[serde(default)]`); construction sites updated
+- Modify `src/probes/sockets.rs`: raised signals set `env_only: true` (weights/facts unchanged)
+- Modify `src/probes/uidmap.rs`: rootless signal `env_only: true`
+- Modify `src/probes/namespaces.rs`: new fact `containerMarkers` — object `{dockerenv: bool, containerEnv: string|null}` via `PseudoFs::exists("/.dockerenv")` + `OsApi::env("container")`; raises containment signal per value: `dockerenv==true` ⇒ Docker 0.6; `container=docker` ⇒ Docker 0.6; `container=podman` ⇒ Podman 0.6 (other values: fact-only, no signal)
+- Modify `src/probes/runtime.rs`: `rank`/`score` exclude `env_only` signals from totals; each excluded signal appends evidence `environment: <kind> present (<evidence probe.key>)` (deduped by kind+key); `nested-in-<outer>` variant when verdict is a container runtime that the markers do not explain (e.g. podman verdict + dockerenv) — outer = marker kind; host branch otherwise unchanged
+- Test updates: sockets/uidmap signal tests assert `env_only`; runtime scoring tests re-pinned (host + podman socket ⇒ host verdict + environment note; dockerenv-only ⇒ docker medium; libpod+dockerenv ⇒ podman + variant `nested-in-docker`; contained podman + socket note); namespaces markers test
+
+- [ ] **Step 1: RED tests for the four pinned scenarios above.**
+- [ ] **Step 2: GREEN minimal. Gates: cargo test / clippy -D warnings / fmt.**
+- [ ] **Step 3: Commit** — `"fix: verdict means self-containment; sockets/uidmap are environment evidence"`
+
+---
+
+
 ### Task 18: Opt-in syscall probe
 
 **Files:**
@@ -2809,6 +2830,9 @@ Metadata for each (id, slug, severity, summary/why/remediation/references `requi
 ---
 
 ### Task 21: Rules 014–018 + registry-order regression
+> Amendment 2026-10-01: `Verdict.confidence` is the shipped string ladder
+> `high|medium|low` — AMR-015's "confidence < 0.5" means `confidence == "low"`.
+
 
 **Files:**
 - Modify: `src/model/rules.rs`
@@ -2841,6 +2865,9 @@ AMR-014 check: `a.report.verdict` runtime in `["firecracker","gvisor","kata"]`; 
 ---
 
 ### Task 22: JSON renderer (full report)
+
+> Amendment 2026-10-01: render `confidence` as the string ladder; evidence lines
+> follow `"<runtime> <probe>.<key> <weight>"` plus `environment:` notes (spec §8).
 
 **Files:**
 - Create: `src/render/json.rs`
