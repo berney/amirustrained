@@ -1,3 +1,6 @@
+use std::time::Duration;
+
+use crate::model::Severity;
 use clap::Parser;
 
 #[derive(Parser, Debug, Clone)]
@@ -27,4 +30,16 @@ pub struct Cli {
     pub verbose: bool,
     #[arg(long, hide = true)]
     pub fixture_root: Option<std::path::PathBuf>,
+}
+
+/// Internal derived view of `Cli`; Task 7 converts `Cli` → `Opts` so the
+/// pipeline never depends on clap.
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // Fields are read as Task 7/12+/17 wire each consumer.
+pub struct Opts {
+    pub pid: Option<u32>,
+    pub probe_syscalls: bool,
+    pub probe_timeout: Option<Duration>,
+    pub fail_on: Option<Severity>,
+    pub dump_filters: bool,
 }

@@ -1,0 +1,25 @@
+use std::sync::Arc;
+
+use crate::model::ProbeOutcome;
+use crate::opts::Opts;
+use crate::pipeline::Ctx;
+
+/// One self-contained inspection. Runs on a pipeline worker thread; `Ctx`
+/// borrows the shared seams and the accumulated output of earlier probes.
+pub trait Probe: Send + Sync {
+    fn name(&self) -> &'static str;
+    fn run(&self, cx: &Ctx) -> ProbeOutcome;
+}
+
+// Modules are appended here by their own tasks. Final order (spec Global
+// Constraints): namespaces, uidmap, capabilities, seccomp, [syscall-probe],
+// lsm, vmm, cgroup, sockets, k8s, runtime.
+pub mod namespaces;
+pub mod uidmap;
+
+/// Probes in dispatch order. The syscall probe (gated on `opts.probe_syscalls`)
+/// is appended here when its task lands.
+#[allow(dead_code)] // Consumed by the CLI wiring in Task 7.
+pub fn registry(_opts: &Opts) -> Vec<Arc<dyn Probe>> {
+    vec![Arc::new(namespaces::Namespaces), Arc::new(uidmap::Uidmap)]
+}

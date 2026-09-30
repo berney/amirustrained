@@ -3,6 +3,7 @@ pub mod finding;
 pub mod outcome;
 pub mod report;
 pub mod rule;
+pub mod rules;
 pub mod runtime;
 
 pub use fact::{Fact, FactStatus};
