@@ -428,6 +428,7 @@ mod tests {
                 "seccomp",
                 "lsm",
                 "vmm",
+                "sockets",
                 "cgroup",
             ]
         );

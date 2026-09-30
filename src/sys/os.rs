@@ -33,8 +33,6 @@ pub struct SeccompActions {
     pub probed_ok: bool, // false ⇒ GET_ACTION_AVAIL unsupported (pre-4.14 / EOPNOTSUPP)
 }
 
-// Consumed by probe tasks (8-18); allow until then.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub struct UdsReply {
     pub status: u16,
@@ -48,7 +46,6 @@ pub trait OsApi: Send + Sync {
     fn seccomp_filter_dump(&self, pid: u32) -> Result<Vec<u64>, ProbeIo>;
     #[allow(dead_code)] // Consumed by later probe tasks (15-17); allow until then.
     fn syscall0(&self, id: u32) -> Result<(), i32>; // raw arg-less syscall; Err = errno
-    #[allow(dead_code)] // Consumed by later probe tasks (15-17); allow until then.
     fn uds_probe(&self, path: &Path, timeout: Duration) -> std::io::Result<UdsReply>;
     #[allow(dead_code)] // Consumed by later probe tasks (15-17); allow until then.
     fn env(&self, key: &str) -> Option<String>;
@@ -185,26 +182,37 @@ impl OsApi for RealOs {
 
     fn uds_probe(&self, path: &Path, timeout: Duration) -> std::io::Result<UdsReply> {
         use std::io::{Read, Write};
-        // std has no `UnixStream::connect_timeout`; replicate its semantics.
+        // Handshake step 1 (spec): GET /_ping for liveness, on its own
+        // connection — dockerd/podman honor `Connection: close` and tear the
+        // stream down after the ping reply, so /info cannot reuse it.
+        let mut ping = connect_uds_timeout(path, timeout)?;
+        ping.set_read_timeout(Some(timeout))?;
+        ping.set_write_timeout(Some(timeout))?;
+        ping.write_all(b"GET /_ping HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")?;
+        let status = read_status_code(&mut ping)?;
+        if status != 200 {
+            // Liveness failed: report the status verbatim, never send /info.
+            return Ok(UdsReply {
+                status,
+                body: String::new(),
+            });
+        }
+        // Step 2: GET /info on a fresh connection, read to EOF capped at
+        // 1 MiB — a noisy or hostile listener cannot balloon the scan.
+        // std has no `UnixStream::connect_timeout`; connect_uds_timeout
+        // replicates its semantics; the read timeout maps WouldBlock-style
+        // stalls to TimedOut errors on blocking sockets.
         let mut s = connect_uds_timeout(path, timeout)?;
         s.set_read_timeout(Some(timeout))?;
+        s.set_write_timeout(Some(timeout))?;
         s.write_all(
             b"GET /info HTTP/1.1\r\nHost: localhost\r\nAccept: */*\r\nConnection: close\r\n\r\n",
         )?;
-        let mut buf = String::new();
-        // read_to_string caps at stream close; the socket probe enforces the
-        // timeout via set_read_timeout (EAGAIN surfaces as a read error —
-        // WouldBlock-style mapped to TimedOut by std on blocking sockets).
-        s.read_to_string(&mut buf)?;
-        let (head, body) = buf.split_once("\r\n\r\n").unwrap_or(("", ""));
-        let status = head
-            .split_whitespace()
-            .nth(1)
-            .and_then(|c| c.parse().ok())
-            .unwrap_or(0);
+        let mut buf = Vec::new();
+        s.take(1 << 20).read_to_end(&mut buf)?;
         Ok(UdsReply {
             status,
-            body: body.to_string(),
+            body: http_body(&buf),
         })
     }
 
@@ -216,6 +224,78 @@ impl OsApi for RealOs {
         // SAFETY: geteuid() is a pure, always-successful libc call.
         unsafe { libc::geteuid() == 0 }
     }
+}
+
+/// Read an HTTP status line (up to the first `\n`, capped at 4 KiB) and
+/// parse its status code. Unparseable headlines report 0 — probes treat 0
+/// as "not 2xx" without needing to distinguish transport noise.
+fn read_status_code<R: std::io::Read>(r: &mut R) -> std::io::Result<u16> {
+    let mut buf: Vec<u8> = Vec::with_capacity(32);
+    let mut byte = [0u8; 1];
+    loop {
+        if r.read(&mut byte)? == 0 || byte[0] == b'\n' {
+            break;
+        }
+        buf.push(byte[0]);
+        if buf.len() >= 4096 {
+            break; // absurd status line: stop buffering, parse what we have
+        }
+    }
+    let line = String::from_utf8_lossy(&buf);
+    Ok(line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|c| c.parse().ok())
+        .unwrap_or(0))
+}
+
+/// Extract an HTTP response body: strip headers, then de-chunk when
+/// `Transfer-Encoding` declares `chunked` — Podman's /info always uses it —
+/// else return the remainder verbatim (close-delimited identity, Docker's
+/// /info). A 1 MiB read cap can truncate mid-chunk; the bytes framed so far
+/// are all anyone gets, and a partial body fails JSON parse ⇒ null info.
+fn http_body(response: &[u8]) -> String {
+    let Some(sep) = response.windows(4).position(|w| w == b"\r\n\r\n") else {
+        return String::new(); // no headers ⇒ no body
+    };
+    let head = String::from_utf8_lossy(&response[..sep]);
+    let mut rest = &response[sep + 4..];
+    let chunked = head.lines().skip(1).any(|h| {
+        let (name, value) = h.split_once(':').unwrap_or(("", ""));
+        name.trim().eq_ignore_ascii_case("transfer-encoding")
+            && value
+                .split(',')
+                .any(|c| c.trim().eq_ignore_ascii_case("chunked"))
+    });
+    if !chunked {
+        return String::from_utf8_lossy(rest).into_owned();
+    }
+    let mut body: Vec<u8> = Vec::new();
+    // chunk = <hex-size>[";" ext] CRLF payload CRLF
+    while let Some(size_end) = rest.windows(2).position(|w| w == b"\r\n") {
+        let hex = rest[..size_end]
+            .split(|b| *b == b';')
+            .next()
+            .unwrap_or(&rest[..size_end]);
+        let Ok(size) = usize::from_str_radix(std::str::from_utf8(hex).unwrap_or("").trim(), 16)
+        else {
+            break; // corrupted framing: return what was collected
+        };
+        rest = &rest[size_end + 2..];
+        if size == 0 {
+            break;
+        }
+        let take = size.min(rest.len());
+        body.extend_from_slice(&rest[..take]);
+        rest = &rest[take..];
+        if rest.starts_with(b"\r\n") {
+            rest = &rest[2..];
+        }
+        if take < size {
+            break; // truncated by the read cap
+        }
+    }
+    String::from_utf8_lossy(&body).into_owned()
 }
 
 /// `UnixStream::connect_timeout` equivalent (std provides none): non-blocking
@@ -442,35 +522,101 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     }
 
+    /// Read one request's headers off a stub-stream (until the blank line).
+    fn read_head(stream: &mut std::os::unix::net::UnixStream) -> Vec<u8> {
+        use std::io::Read;
+        let mut req = Vec::new();
+        let mut chunk = [0u8; 64];
+        loop {
+            let n = stream.read(&mut chunk).unwrap();
+            if n == 0 {
+                break;
+            }
+            req.extend_from_slice(&chunk[..n]);
+            if req.windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+        }
+        req
+    }
+
     #[test]
-    fn uds_probe_parses_status_line_and_body() {
-        use std::io::{Read, Write};
+    fn uds_probe_performs_ping_then_info_handshake() {
+        use std::io::Write;
         use std::os::unix::net::UnixListener;
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("srv.sock");
         let listener = UnixListener::bind(&sock).unwrap();
         let server = std::thread::spawn(move || {
+            // Realistic daemons honor `Connection: close`: one connection per
+            // request. /_ping first, then — only on a 200 ping — /info.
             let (mut stream, _) = listener.accept().unwrap();
-            let mut req = Vec::new();
-            let mut chunk = [0u8; 64];
-            loop {
-                let n = stream.read(&mut chunk).unwrap();
-                if n == 0 {
-                    break;
-                }
-                req.extend_from_slice(&chunk[..n]);
-                if req.windows(4).any(|w| w == b"\r\n\r\n") {
-                    break;
-                }
-            }
+            let req = read_head(&mut stream);
+            assert!(req.starts_with(b"GET /_ping"), "ping first: {req:?}");
             stream
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nhello")
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK")
                 .unwrap();
-            // dropping `stream` closes the socket ⇒ client's read_to_string hits EOF
+            drop(stream);
+            let (mut stream, _) = listener.accept().unwrap();
+            let req = read_head(&mut stream);
+            assert!(req.starts_with(b"GET /info"), "then /info: {req:?}");
+            stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+            ).unwrap();
+            // dropping `stream` closes the socket ⇒ client's read-to-EOF completes
         });
         let reply = RealOs.uds_probe(&sock, Duration::from_secs(2)).unwrap();
         assert_eq!(reply.status, 200);
         assert_eq!(reply.body, "hello");
         server.join().unwrap();
+    }
+
+    #[test]
+    fn uds_probe_ping_failure_skips_info_request() {
+        use std::io::Write;
+        use std::os::unix::net::UnixListener;
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("srv.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+        let server = std::thread::spawn(move || {
+            // Exactly one request is expected; a second GET would block the
+            // client's accept-side assertions forever ⇒ test timeout catches it.
+            let (mut stream, _) = listener.accept().unwrap();
+            let req = read_head(&mut stream);
+            assert!(req.starts_with(b"GET /_ping"));
+            stream
+                .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+        });
+        let reply = RealOs.uds_probe(&sock, Duration::from_secs(2)).unwrap();
+        assert_eq!(reply.status, 404); // ping status passthrough
+        assert!(reply.body.is_empty()); // /info never sent ⇒ no body
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn http_body_identity_and_chunked_framing() {
+        // close-delimited identity (docker's /info shape):
+        assert_eq!(http_body(b"HTTP/1.1 200 OK\r\n\r\nplain"), "plain");
+        // chunked (podman's /info shape), multi-chunk + trailer:
+        assert_eq!(
+            http_body(
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n3\r\n wo\r\n0\r\n\r\n"
+            ),
+            "hello wo"
+        );
+        // case-insensitive header, chunk extension, missing trailer CRLFs:
+        assert_eq!(
+            http_body(
+                b"HTTP/1.1 200 OK\r\ntransfer-encoding: Chunked\r\n\r\n3;a=b\r\nabc\r\n0\r\n"
+            ),
+            "abc"
+        );
+        // no headers at all ⇒ no body; unparseable chunk size ⇒ collected so far:
+        assert_eq!(http_body(b"none"), "");
+        assert_eq!(
+            http_body(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nab"),
+            "ab" // read cap truncated the 4-byte chunk after 2 bytes
+        );
     }
 }

@@ -14,12 +14,13 @@ pub trait Probe: Send + Sync {
 // Probe modules are appended here by their own tasks; rustfmt keeps these
 // declarations sorted alphabetically. The dispatch order (spec Global
 // Constraints: namespaces, uidmap, capabilities, seccomp, [syscall-probe], lsm,
-// vmm, cgroup, sockets, k8s, runtime) lives in `registry()` below.
+// vmm, sockets, cgroup, k8s, runtime) lives in `registry()` below.
 pub mod capabilities;
 pub mod cgroup;
 pub mod lsm;
 pub mod namespaces;
 pub mod seccomp;
+pub mod sockets;
 pub mod uidmap;
 pub mod vmm;
 
@@ -33,6 +34,7 @@ pub fn registry(_opts: &Opts) -> Vec<Arc<dyn Probe>> {
         Arc::new(seccomp::Seccomp),
         Arc::new(lsm::Lsm),
         Arc::new(vmm::Vmm),
+        Arc::new(sockets::Sockets),
         Arc::new(cgroup::Cgroup),
     ]
 }

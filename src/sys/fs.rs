@@ -1,3 +1,4 @@
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, PartialEq)]
@@ -32,7 +33,6 @@ impl PseudoFs {
     pub fn new(root: PathBuf) -> Self {
         Self { root }
     }
-    #[allow(dead_code)] // Still unused until the namespace probes (Task 9+).
     pub fn is_fixture(&self) -> bool {
         self.root != Path::new("/")
     }
@@ -54,6 +54,23 @@ impl PseudoFs {
     }
     pub fn exists(&self, abs: &str) -> bool {
         self.p(abs).exists()
+    }
+    /// Can `abs` be written? Two modes, per the probe contract: real roots
+    /// use `access(2)` with `W_OK` — opening a live AF_UNIX socket or FIFO
+    /// would connect or block; `access` never does. Fixture roots open the
+    /// joined path `O_WRONLY`: a regular-file socket stand-in counts as
+    /// writable exactly when it opens (matches the probe fixtures).
+    pub fn writable(&self, abs: &str) -> bool {
+        let p = self.p(abs);
+        if self.is_fixture() {
+            std::fs::OpenOptions::new().write(true).open(p).is_ok()
+        } else {
+            let Ok(c) = std::ffi::CString::new(p.as_os_str().as_bytes()) else {
+                return false; // embedded NUL: not a path libc can take
+            };
+            // SAFETY: `c` is a valid NUL-terminated C string; access only queries.
+            unsafe { libc::access(c.as_ptr(), libc::W_OK) == 0 }
+        }
     }
     #[allow(dead_code)] // Still unused until later probe tasks.
     pub fn list_dir(&self, abs: &str) -> Result<Vec<String>, ProbeIo> {
@@ -95,5 +112,38 @@ mod tests {
         std::fs::write(dir.path().join("proc/1/ns/pid"), "pid:[4026532192]").unwrap();
         let fs = PseudoFs::new(dir.path().into());
         assert_eq!(fs.read_link("/proc/1/ns/pid").unwrap(), "pid:[4026532192]");
+    }
+    #[test]
+    fn fixture_writable_tracks_open_write_access() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("writable"), "").unwrap();
+        std::fs::write(dir.path().join("readonly"), "").unwrap();
+        std::fs::set_permissions(
+            dir.path().join("readonly"),
+            std::fs::Permissions::from_mode(0o444),
+        )
+        .unwrap();
+        let fs = PseudoFs::new(dir.path().into());
+        assert!(fs.writable("/writable"));
+        assert!(!fs.writable("/missing")); // absent ⇒ not writable
+        if unsafe { libc::geteuid() } != 0 {
+            // root bypasses DAC: the 0444 split only means something unprivileged.
+            assert!(!fs.writable("/readonly")); // present-but-denied is its own state
+        }
+    }
+    #[test]
+    fn real_writable_uses_access_w_ok() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("sock-stand-in");
+        std::fs::write(&f, "").unwrap();
+        let fs = PseudoFs::real(); // root "/" ⇒ abs paths pass through unchanged
+        assert!(fs.writable(f.to_str().unwrap()));
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o444)).unwrap();
+        if unsafe { libc::geteuid() } != 0 {
+            assert!(!fs.writable(f.to_str().unwrap()));
+        }
+        assert!(!fs.writable("/definitely/not/here"));
     }
 }
