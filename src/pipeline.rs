@@ -431,6 +431,7 @@ mod tests {
                 "sockets",
                 "cgroup",
                 "k8s",
+                "runtime",
             ]
         );
     }

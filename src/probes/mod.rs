@@ -20,6 +20,7 @@ pub mod cgroup;
 pub mod k8s;
 pub mod lsm;
 pub mod namespaces;
+pub mod runtime;
 pub mod seccomp;
 pub mod sockets;
 pub mod uidmap;
@@ -38,5 +39,7 @@ pub fn registry(_opts: &Opts) -> Vec<Arc<dyn Probe>> {
         Arc::new(sockets::Sockets),
         Arc::new(cgroup::Cgroup),
         Arc::new(k8s::K8s),
+        // Last: it only fuses what the probes above accumulated.
+        Arc::new(runtime::Runtime),
     ]
 }

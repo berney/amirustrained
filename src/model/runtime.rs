@@ -20,6 +20,28 @@ pub enum RuntimeKind {
     Host,
 }
 
+impl RuntimeKind {
+    /// Stable lowercase name, used in verdict evidence strings. Kept in
+    /// lockstep with the serde (`kebab-case`) spelling the report schema emits,
+    /// so an evidence citation and the `runtime` field never disagree;
+    /// `as_str_matches_the_serde_name` pins that.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RuntimeKind::Docker => "docker",
+            RuntimeKind::Containerd => "containerd",
+            RuntimeKind::CriO => "cri-o",
+            RuntimeKind::Podman => "podman",
+            RuntimeKind::Kubernetes => "kubernetes",
+            RuntimeKind::Lxc => "lxc",
+            RuntimeKind::SystemdNspawn => "systemd-nspawn",
+            RuntimeKind::Firecracker => "firecracker",
+            RuntimeKind::Gvisor => "gvisor",
+            RuntimeKind::Kata => "kata",
+            RuntimeKind::Host => "host",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Signal {
     pub runtime: RuntimeKind,
@@ -51,4 +73,33 @@ pub struct Verdict {
     pub confidence: String,
     pub alternatives: Vec<Candidate>,
     pub evidence: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `as_str` is what verdict evidence cites and what the pod's underlying
+    /// runtime is reported as; serde is what the report wire format carries. If
+    /// they ever drift (a rename, a new variant), evidence would name a runtime
+    /// the `runtime` field could not deserialize back to.
+    #[test]
+    fn as_str_matches_the_serde_name() {
+        for k in [
+            RuntimeKind::Docker,
+            RuntimeKind::Containerd,
+            RuntimeKind::CriO,
+            RuntimeKind::Podman,
+            RuntimeKind::Kubernetes,
+            RuntimeKind::Lxc,
+            RuntimeKind::SystemdNspawn,
+            RuntimeKind::Firecracker,
+            RuntimeKind::Gvisor,
+            RuntimeKind::Kata,
+            RuntimeKind::Host,
+        ] {
+            let wire = serde_json::to_value(k).unwrap();
+            assert_eq!(wire.as_str(), Some(k.as_str()), "{k:?}");
+        }
+    }
 }
