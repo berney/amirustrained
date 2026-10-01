@@ -150,11 +150,17 @@ const SCENARIOS: &[Scenario] = &[
         // kubepods path (0.7) → medium, no underlying containerd/docker signal
         // in the tree, so `variant` stays empty and the k8s evidence line is
         // appended by the fusion layer. Seccomp is off (no runtime-default
-        // profile), the service account is mounted.
+        // profile), the service account is mounted. Default k8s pods use no
+        // user namespace, so the tree carries the identity uid_map/gid_map
+        // with `setgroups: allow` like the docker-default twin: a real scan
+        // reads them and AMR-008/011 fire — kubernetes is a shared-kernel
+        // containment.
         name: "k8s-pod",
         runtime: RuntimeKind::Kubernetes,
         confidence: "medium",
-        ids: &["AMR-005", "AMR-010", "AMR-012", "AMR-018"],
+        ids: &[
+            "AMR-005", "AMR-008", "AMR-010", "AMR-011", "AMR-012", "AMR-018",
+        ],
         root: true,
         landlock: Some(1),
         hypervisor: false,
@@ -164,25 +170,34 @@ const SCENARIOS: &[Scenario] = &[
         // Firecracker guest: hypervisor + empty DMI + /dev/vsock + kvm-clock
         // is a single 0.8 signal, and `confidence_of` reserves `high` for a
         // 0.9+ top score — so the composite reads `medium`, not the plan
-        // sketch's "high". The ladder is landed probe behaviour; a fixture must
-        // not buy its way up it, so the expectation follows the probe.
-        // No `status`/uid_map/cgroup-controller files: the guest is scanned as
-        // root with the capability and cgroup facts simply unknown, so only the
-        // sandbox note, the virtualization note and Landlock are reportable.
+        // sketch's "high". The ladder is landed probe behaviour; a fixture
+        // must not buy its way up it, so the expectation follows the probe.
+        // The tree carries the real root-in-guest baseline — Seccomp 0, full
+        // guest-root caps, NoNewPrivs 0, identity id mappings — and no
+        // container-gated rule fires because a VM verdict is not a
+        // shared-kernel containment (spec §6 erratum 2026-10-01, ReviewT26
+        // F3), not because the facts are unknown. The tree's own 5.10.195
+        // banner predates Landlock (merged in 5.13), so the probe reports
+        // unsupported: the virtualization note and the sandbox note are the
+        // whole reportable set.
         name: "firecracker",
         runtime: RuntimeKind::Firecracker,
         confidence: "medium",
-        ids: &["AMR-012", "AMR-013", "AMR-014"],
+        ids: &["AMR-013", "AMR-014"],
         root: true,
-        landlock: Some(1),
+        landlock: None,
         hypervisor: true,
         env: &[],
     },
     Scenario {
         // gVisor: `/proc/version` carrying the Sentry banner (0.9) → high. No
         // hypervisor bit (the sandbox is a kernel, not a VM), no Landlock in
-        // the 4.4-parity Sentry kernel: the strong-isolation note is the only
-        // finding, which is the corpus's "clean sandbox" case.
+        // the 4.4-parity Sentry kernel. The guest carries the same realistic
+        // root baseline as the firecracker twin (Seccomp 0, full guest-root
+        // caps, identity id mappings) and still reports only the
+        // strong-isolation note: the container-gated exposure is exempt at a
+        // VM verdict (spec §6 erratum 2026-10-01, ReviewT26 F3), not unknown
+        // — the corpus's "clean sandbox" case.
         name: "gvisor",
         runtime: RuntimeKind::Gvisor,
         confidence: "high",
@@ -196,15 +211,18 @@ const SCENARIOS: &[Scenario] = &[
         // `/lxc/<name>` (0.7) → medium. A privileged LXC hands its payload the
         // full kernel capability set, so CAP_SYS_MODULE is reportable here even
         // though the plan sketch listed only 005/018 — the fixture keeps the
-        // realistic caps and the assertion follows them. No LSM files at all in
-        // the tree: with nothing observable, AMR-002's MAC branch cannot cite an
-        // unconfined profile, AMR-006's absence branch cannot cite an LSM list,
-        // and AMR-016 refuses to claim a restraint it cannot evidence, so all
-        // three fail closed — the corpus's fail-closed-on-unknown case.
+        // realistic caps and the assertion follows them. Like k8s-pod it runs
+        // no user namespace: the identity uid_map/gid_map with `setgroups:
+        // allow` is what a real root scan reads, so AMR-008/011 belong in the
+        // pinned set. No LSM files at all in the tree: with nothing
+        // observable, AMR-002's MAC branch cannot cite an unconfined profile,
+        // AMR-006's absence branch cannot cite an LSM list, and AMR-016
+        // refuses to claim a restraint it cannot evidence, so all three fail
+        // closed — the corpus's fail-closed-on-unknown case.
         name: "lxc",
         runtime: RuntimeKind::Lxc,
         confidence: "medium",
-        ids: &["AMR-003", "AMR-005", "AMR-018"],
+        ids: &["AMR-003", "AMR-005", "AMR-008", "AMR-011", "AMR-018"],
         root: true,
         landlock: None,
         hypervisor: false,

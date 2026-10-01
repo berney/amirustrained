@@ -67,10 +67,10 @@ pub static RULES: &[Rule] = &[
         ],
         requires_root: false,
         // Membership in the §6 container-gated set (Rule::container_only
-        // mirrors the containerized() conjunct in check).
+        // mirrors the shared_kernel_containment() conjunct in check).
         container_only: true,
         check: |a| {
-            if !a.containerized() {
+            if !a.shared_kernel_containment() {
                 return None;
             }
             if !a.arr_has("capabilities", "effective", "cap_sys_admin")
@@ -106,7 +106,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: true,
         check: |a| {
-            if !a.containerized() {
+            if !a.shared_kernel_containment() {
                 return None;
             }
             if !a.arr_has("capabilities", "effective", "cap_sys_module") {
@@ -135,7 +135,7 @@ pub static RULES: &[Rule] = &[
         check: |a| {
             // Host PID ns is tautological on a bare host: the finding is about a
             // contained process that shares it.
-            if !a.containerized() {
+            if !a.shared_kernel_containment() {
                 return None;
             }
             // Host PID ns: own pid-ns inode matches pid 1's (`isolated.pid == false`).
@@ -176,7 +176,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: true,
         check: |a| {
-            if !a.containerized() {
+            if !a.shared_kernel_containment() {
                 return None;
             }
             let mode = a.fact("seccomp", "mode")?;
@@ -202,7 +202,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: true,
         check: |a| {
-            if !a.containerized() {
+            if !a.shared_kernel_containment() {
                 return None;
             }
             let aa = a.fact("lsm", "apparmor")?;
@@ -314,7 +314,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: true,
         check: |a| {
-            if !a.containerized() {
+            if !a.shared_kernel_containment() {
                 return None;
             }
             let f = a.fact("uidmap", "uidMap")?;
@@ -344,7 +344,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: true,
         check: |a| {
-            if !a.containerized() {
+            if !a.shared_kernel_containment() {
                 return None;
             }
             let f = a.fact("cgroup", "version")?;
@@ -371,7 +371,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: true,
         check: |a| {
-            if !a.containerized() {
+            if !a.shared_kernel_containment() {
                 return None;
             }
             if !a.arr_has("cgroup", "controllers", "pids") {
@@ -412,7 +412,7 @@ pub static RULES: &[Rule] = &[
             // init-ns gid_map is trivially `0 0 4294967295` with setgroups
             // allow — a constant on a bare host, same reasoning as the
             // AMR-003/004 gates.
-            if !a.containerized() {
+            if !a.shared_kernel_containment() {
                 return None;
             }
             let gid = a.fact("uidmap", "gidMap")?;
@@ -551,7 +551,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: true,
         check: |a| {
-            if !a.containerized() {
+            if !a.shared_kernel_containment() {
                 return None;
             }
             if !a.arr_has("capabilities", "effective", "cap_sys_admin") {
@@ -618,7 +618,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: true,
         check: |a| {
-            if !a.containerized() {
+            if !a.shared_kernel_containment() {
                 return None;
             }
             // Degraded pid-1 comparison leaves the fact null: unknown is not equal.
@@ -650,7 +650,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: true,
         check: |a| {
-            if !a.containerized() {
+            if !a.shared_kernel_containment() {
                 return None;
             }
             a.fact("capabilities", "noNewPrivs")
@@ -1911,6 +1911,142 @@ mod tests {
                     "{} and {} share a check",
                     a.id,
                     b.id
+                );
+            }
+        }
+    }
+
+    // ── ReviewT26 F3: VM-family verdicts are not shared-kernel containments ──
+
+    /// Every conjunct the container-gated rules ask for, so silence can only
+    /// come from the applicability gate: full-privilege CapEff (cap_sys_admin,
+    /// cap_sys_module, cap_sys_ptrace), seccomp disabled, an explicit aa
+    /// `unconfined` profile, identity id mappings with setgroups allow, cgroup
+    /// v1 with an unlimited pids controller, host pid-ns at Yama 0, the shared
+    /// host cgroup-ns, and a hypervisor witness. (AMR-016 is the deliberate
+    /// exception: the full AMR-002 combo is present, and its exact complement
+    /// is silent by design.)
+    fn fully_gated_open_facts() -> Vec<(&'static str, &'static str, serde_json::Value)> {
+        vec![
+            (
+                "capabilities",
+                "effective",
+                json!([
+                    "cap_chown",
+                    "cap_sys_admin",
+                    "cap_sys_module",
+                    "cap_sys_ptrace"
+                ]),
+            ),
+            ("capabilities", "noNewPrivs", json!(0)),
+            ("capabilities", "ptraceScope", json!(0)),
+            ("seccomp", "mode", json!("disabled")),
+            (
+                "lsm",
+                "apparmor",
+                json!({"profile": "unconfined", "mode": ""}),
+            ),
+            ("uidmap", "uidMap", map_rows(&[(0, 0, u32::MAX)])),
+            ("uidmap", "gidMap", map_rows(&[(0, 0, u32::MAX)])),
+            ("uidmap", "setgroups", json!("allow")),
+            ("cgroup", "version", json!(1)),
+            ("cgroup", "controllers", json!(["pids", "memory"])),
+            ("cgroup", "limits", json!({"pids": "max", "memory": "max"})),
+            (
+                "namespaces",
+                "isolated",
+                json!({"pid": false, "user": false}),
+            ),
+            ("namespaces", "cgroupNsSameAsInit", json!(true)),
+            (
+                "vmm",
+                "hypervisor",
+                json!({"present": true, "vendor": "KVMKVMKVM"}),
+            ),
+        ]
+    }
+
+    /// `report_with`'s grouping applied to an existing report: the VM-family
+    /// reports need the runtime probe's own verdict fact, which only
+    /// `verdict_report` emits, alongside the gated facts.
+    fn extend_with_facts(
+        r: &mut Report,
+        facts: &[(&'static str, &'static str, serde_json::Value)],
+    ) {
+        let mut by_probe: std::collections::BTreeMap<&str, Vec<Fact>> = Default::default();
+        for (p, k, v) in facts {
+            by_probe
+                .entry(p)
+                .or_default()
+                .push(Fact::ok(p, k, v.clone(), "test".into()));
+        }
+        for (p, fs) in by_probe {
+            let mut o = ProbeOutcome::empty(p);
+            o.facts = fs;
+            r.push_probe(o);
+        }
+    }
+
+    #[test]
+    fn vm_family_verdicts_quiet_every_container_only_rule() {
+        // Spec §6 erratum 2026-10-01 (ReviewT26 F3): the container gate is a
+        // SHARED-KERNEL containment verdict; firecracker/gVisor/kata close it
+        // even with every gated conjunct open.
+        for runtime in [
+            RuntimeKind::Firecracker,
+            RuntimeKind::Gvisor,
+            RuntimeKind::Kata,
+        ] {
+            let mut r = verdict_report(verdict(runtime));
+            extend_with_facts(&mut r, &fully_gated_open_facts());
+            for gated in RULES.iter().filter(|g| g.container_only) {
+                assert!(
+                    gated.evaluate(&r, true).is_none(),
+                    "{} must not fire under a {runtime:?} verdict",
+                    gated.id
+                );
+            }
+            // The J1 note leg keys on the same predicate: AMR-004 (the one
+            // requires_root gated rule) is inapplicable under a VM verdict,
+            // not unassessable — no insufficient-privilege note.
+            assert!(rule("AMR-004").evaluate(&r, false).is_none());
+        }
+    }
+
+    #[test]
+    fn shared_kernel_verdicts_fire_the_gated_rules_on_the_same_facts() {
+        // The mirror of the VM exemption: identical facts, container verdicts
+        // — the gate opens. One representative pinned per container verdict.
+        for (runtime, id) in [
+            (RuntimeKind::Docker, "AMR-003"),
+            (RuntimeKind::Podman, "AMR-008"),
+            (RuntimeKind::Lxc, "AMR-011"),
+            (RuntimeKind::Kubernetes, "AMR-018"),
+        ] {
+            let mut r = report_with(&fully_gated_open_facts());
+            r.verdict = Some(verdict(runtime));
+            assert!(
+                rule(id).evaluate(&r, true).is_some(),
+                "{id} must fire under a {runtime:?} verdict with the gated facts open"
+            );
+        }
+    }
+
+    #[test]
+    fn vm_family_verdicts_still_fire_the_013_and_014_info_notes() {
+        // The exemption's honest output: the virtualization note and the
+        // strong-isolation note stay reportable under VM verdicts.
+        for runtime in [
+            RuntimeKind::Firecracker,
+            RuntimeKind::Gvisor,
+            RuntimeKind::Kata,
+        ] {
+            let mut r = verdict_report(verdict(runtime));
+            extend_with_facts(&mut r, &fully_gated_open_facts());
+            for id in ["AMR-013", "AMR-014"] {
+                assert!(
+                    rule(id).evaluate(&r, false).is_some(),
+                    "{id} must fire under a {runtime:?} verdict"
                 );
             }
         }
