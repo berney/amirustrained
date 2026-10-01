@@ -251,13 +251,13 @@ fn looks_numeric(s: &str) -> bool {
     }
     // Digit separators combined with float/sexagesimal punctuation still
     // re-type (`1_0.5`->10.5, `1_0:30`->630, `1.5_0`->1.5). Over-approximate
-    // the numeric grammar: leading sign/digit, every byte in the int/float/
-    // sexagesimal charset. Strings with letters (x86_64, v1.2.3, 1_0_or_text)
-    // fall outside and stay plain.
+    // the numeric grammar: leading sign/digit/dot, every byte in the
+    // int/float/sexagesimal charset. Strings with letters (x86_64, v1.2.3,
+    // 1_0_or_text) fall outside and stay plain.
     if s.contains('_')
         && s.bytes()
             .next()
-            .is_some_and(|b| b.is_ascii_digit() || b == b'+' || b == b'-')
+            .is_some_and(|b| b.is_ascii_digit() || matches!(b, b'+' | b'-' | b'.'))
         && s.bytes().all(|b| {
             b.is_ascii_digit() || matches!(b, b'_' | b'.' | b':' | b'+' | b'-' | b'e' | b'E')
         })
@@ -422,6 +422,10 @@ flag: false
             ".nan",
             "2026-10-02",
             "2026-10-02T10:00:00Z",
+            "1_0.5",
+            "1.5_0",
+            "1_0:30",
+            ".1_0",
         ] {
             let out = emit_str(&serde_json::json!({ "k": s }), ColorSupport::Off);
             assert!(
