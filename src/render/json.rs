@@ -1,10 +1,17 @@
 use super::Renderer;
+use super::style::{self, ColorSupport};
 use crate::pipeline::Event;
 
 /// Bulk JSON renderer (spec §7 `json`): the whole report is the output, so
 /// streaming events are dropped and the single pretty document lands on
-/// `Summary`.
-pub struct Json;
+/// `Summary`. Colour is a post-render tokeniser over the pretty bytes
+/// ([`highlight`]) — never a second serializer, and the machine stream
+/// counterpart (`jsonl`) stays RAW by contract: it is a line protocol for
+/// `jq`/log shippers, so escape codes there would break every consumer,
+/// while pretty JSON is the human-facing document the user asked to paint.
+pub struct Json {
+    pub color: ColorSupport,
+}
 
 impl Renderer for Json {
     fn on_event(&mut self, w: &mut dyn std::io::Write, ev: &Event) -> std::io::Result<()> {
@@ -13,7 +20,8 @@ impl Renderer for Json {
         // the write is interrupted. Serde errors fold into IO (exit 2), the
         // same contract the other renderers use.
         if let Event::Summary { report, .. } = ev {
-            let mut s = serde_json::to_string_pretty(&**report).map_err(std::io::Error::other)?;
+            let doc = serde_json::to_string_pretty(&**report).map_err(std::io::Error::other)?;
+            let mut s = highlight(&doc, self.color);
             s.push('\n');
             w.write_all(s.as_bytes())?;
         }
@@ -22,6 +30,90 @@ impl Renderer for Json {
     fn finish(&mut self, _w: &mut dyn std::io::Write) -> std::io::Result<()> {
         Ok(())
     }
+}
+
+/// Post-render titanium tokeniser over `serde_json::to_string_pretty` output:
+/// keys electricBlue, strings titaniumGold, numbers warningAmber, bool/null
+/// readoutGreen, structural punctuation dimAluminum ([`style`] table). With
+/// [`ColorSupport::Off`] it is the identity — the byte-identical piped
+/// contract every cli/snapshot test relies on. Only pretty JSON goes through
+/// here; `jsonl` emits raw lines (see [`Json`]'s doc).
+pub fn highlight(src: &str, color: ColorSupport) -> String {
+    if color == ColorSupport::Off {
+        return src.to_owned();
+    }
+    let b = src.as_bytes();
+    let mut out = String::with_capacity(src.len() + src.len() / 4);
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'"' => {
+                let end = string_end(b, i);
+                let token = &src[i..end];
+                // A string is a key iff the next non-space byte is `:`.
+                let is_key = src[end..].bytes().find(|c| !c.is_ascii_whitespace()) == Some(b':');
+                let hex = if is_key {
+                    style::ELECTRIC_BLUE
+                } else {
+                    style::TITANIUM_GOLD
+                };
+                out.push_str(&color.fg(hex, token));
+                i = end;
+            }
+            b'{' | b'}' | b'[' | b']' | b',' | b':' => {
+                out.push_str(&color.fg(style::DIM_ALUMINUM, &src[i..i + 1]));
+                i += 1;
+            }
+            c if c == b'-' || c.is_ascii_digit() => {
+                let mut j = i + 1;
+                while j < b.len() && matches!(b[j], b'0'..=b'9' | b'.' | b'e' | b'E' | b'+' | b'-')
+                {
+                    j += 1;
+                }
+                out.push_str(&color.fg(style::WARNING_AMBER, &src[i..j]));
+                i = j;
+            }
+            b't' | b'f' | b'n' => {
+                // serde_json emits exactly true/false/null unquoted; the
+                // fallback keeps the scanner total for foreign input.
+                match ["true", "false", "null"]
+                    .iter()
+                    .find(|w| src[i..].starts_with(**w))
+                {
+                    Some(w) => {
+                        out.push_str(&color.fg(style::READOUT_GREEN, w));
+                        i += w.len();
+                    }
+                    None => {
+                        out.push(b[i] as char);
+                        i += 1;
+                    }
+                }
+            }
+            _ => {
+                // Outside strings only ASCII whitespace occurs in serde
+                // output, but stay UTF-8-total: advance one whole char.
+                let end = i + src[i..].chars().next().map_or(1, |c| c.len_utf8());
+                out.push_str(&src[i..end]);
+                i = end;
+            }
+        }
+    }
+    out
+}
+
+/// Index just past the closing quote of the string starting at `start`,
+/// honouring `\"` (and `\\`) escapes.
+fn string_end(b: &[u8], start: usize) -> usize {
+    let mut i = start + 1;
+    while i < b.len() {
+        match b[i] {
+            b'\\' => i += 2,
+            b'"' => return i + 1,
+            _ => i += 1,
+        }
+    }
+    i
 }
 
 #[cfg(test)]
@@ -77,7 +169,10 @@ mod tests {
     fn render(r: Report) -> String {
         let complete = r.scan.complete;
         let mut buf = vec![];
-        Json.on_event(
+        Json {
+            color: ColorSupport::Off,
+        }
+        .on_event(
             &mut buf,
             &Event::Summary {
                 verdict: r.verdict.clone(),
@@ -88,7 +183,11 @@ mod tests {
             },
         )
         .unwrap();
-        Json.finish(&mut buf).unwrap();
+        Json {
+            color: ColorSupport::Off,
+        }
+        .finish(&mut buf)
+        .unwrap();
         String::from_utf8(buf).unwrap()
     }
 
@@ -142,7 +241,9 @@ mod tests {
     #[test]
     fn json_ignores_non_summary() {
         let mut buf = vec![];
-        let mut r = Json;
+        let mut r = Json {
+            color: ColorSupport::Off,
+        };
         r.on_event(
             &mut buf,
             &Event::Meta {
@@ -191,5 +292,91 @@ mod tests {
             .map(|k| v["counts"][k].as_u64().unwrap())
             .sum();
         assert_eq!(emitted, total, "counts must tally every finding");
+    }
+
+    /// Remove every `ESC[ … m` run so content bytes can be compared exactly.
+    fn strip_sgr(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c != '\x1b' {
+                out.push(c);
+                continue;
+            }
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for t in chars.by_ref() {
+                    if t == 'm' {
+                        break;
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn highlight_is_identity_when_off() {
+        // The piped contract: off means byte-identical, not merely parseable.
+        let doc = serde_json::to_string_pretty(&serde_json::json!(
+            {"a": 1, "s": "x", "b": true, "n": null}
+        ))
+        .unwrap();
+        assert_eq!(highlight(&doc, ColorSupport::Off), doc);
+    }
+
+    #[test]
+    fn highlight_paints_each_token_class() {
+        let doc = serde_json::to_string_pretty(&fixture_report()).unwrap();
+        let on = highlight(&doc, ColorSupport::TrueColor);
+        assert!(on.contains(&style::fg(style::ELECTRIC_BLUE)), "keys blue");
+        assert!(
+            on.contains(&style::fg(style::TITANIUM_GOLD)),
+            "string values gold"
+        );
+        assert!(
+            on.contains(&style::fg(style::WARNING_AMBER)),
+            "numbers amber (schemaVersion)"
+        );
+        assert!(
+            on.contains(&style::fg(style::READOUT_GREEN)),
+            "bool/null green"
+        );
+        assert!(
+            on.contains(&style::fg(style::DIM_ALUMINUM)),
+            "punctuation dim"
+        );
+        // Colour never touches content bytes: stripping the SGR runs must
+        // rebuild the exact unstyled document (escape-bearing strings included).
+        assert_eq!(strip_sgr(&on), doc);
+        // Highlighting is not re-applied to its own output twice-over: keys
+        // still resolve blue once, and no nested wraps appear.
+        assert!(!on.contains("\x1b[38;2;0;180;255m\x1b[38;2;0;180;255m"));
+    }
+
+    #[test]
+    fn rendered_json_document_stays_valid_under_forced_colour() {
+        // The highlighter is cosmetic: even painted, stripping SGR runs must
+        // leave parseable pretty JSON for consumers that capture a tty.
+        let mut buf = vec![];
+        let r = fixture_report();
+        let complete = r.scan.complete;
+        Json {
+            color: ColorSupport::TrueColor,
+        }
+        .on_event(
+            &mut buf,
+            &Event::Summary {
+                verdict: r.verdict.clone(),
+                findings: r.findings.clone(),
+                counts: r.counts.clone(),
+                complete,
+                report: Box::new(r),
+            },
+        )
+        .unwrap();
+        let raw = String::from_utf8(buf).unwrap();
+        serde_json::from_str::<serde_json::Value>(&strip_sgr(&raw))
+            .expect("valid JSON after strip");
     }
 }

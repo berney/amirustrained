@@ -1,0 +1,557 @@
+---
+source: tests/scenarios.rs
+expression: text
+---
+schemaVersion: 1
+tool:
+  name: amirustrained
+  version: 0.1.0
+scan:
+  targetPid: <targetPid>
+  uid: <uid>
+  timestamp: <timestamp>
+  kernel: <kernel>
+  complete: true
+  probeTimeoutS: null
+verdict:
+  runtime: docker
+  variant: null
+  confidence: high
+  alternatives: []
+  evidence:
+  - docker namespaces.containerMarkers 0.60
+  - docker cgroup.pattern 0.80
+  - "environment: docker present (sockets.found)"
+probes:
+- name: namespaces
+  availability:
+    state: ok
+  facts:
+  - probe: namespaces
+    key: isolated
+    value:
+      cgroup: true
+      ipc: true
+      mnt: true
+      net: true
+      pid: true
+      pid_for_children: true
+      time: false
+      time_ns: false
+      user: false
+    source: /proc/<pid>/ns
+    status: ok
+  - probe: namespaces
+    key: inodes
+    value:
+      cgroup: cgroup:[4026532200]
+      ipc: ipc:[4026532201]
+      mnt: mnt:[4026532202]
+      net: net:[4026532203]
+      pid: pid:[4026532204]
+      pid_for_children: pid_for_children:[4026532204]
+      time: time:[4026531834]
+      time_ns: time_ns:[4026531834]
+      user: user:[4026531837]
+    source: /proc/<pid>/ns
+    status: ok
+  - probe: namespaces
+    key: cgroupNsSameAsInit
+    value: false
+    source: /proc/<pid>/ns/cgroup
+    status: ok
+  - probe: namespaces
+    key: containerMarkers
+    value:
+      dockerenv: true
+      containerEnv: null
+    source: /.dockerenv + env container
+    status: ok
+  timedOut: false
+- name: uidmap
+  availability:
+    state: ok
+  facts:
+  - probe: uidmap
+    key: uidMap
+    value:
+    - container: 0
+      host: 0
+      range: 4294967295
+    source: /proc/<pid>/uid_map
+    status: ok
+  - probe: uidmap
+    key: gidMap
+    value:
+    - container: 0
+      host: 0
+      range: 4294967295
+    source: /proc/<pid>/gid_map
+    status: ok
+  - probe: uidmap
+    key: setgroups
+    value: allow
+    source: /proc/<pid>/setgroups
+    status: ok
+  - probe: uidmap
+    key: rootless
+    value: false
+    source: /proc/<pid>/uid_map
+    status: ok
+  timedOut: false
+- name: capabilities
+  availability:
+    state: ok
+  facts:
+  - probe: capabilities
+    key: effective
+    value:
+    - cap_chown
+    - cap_dac_override
+    - cap_fowner
+    - cap_fsetid
+    - cap_kill
+    - cap_setgid
+    - cap_setuid
+    - cap_setpcap
+    - cap_net_bind_service
+    - cap_net_raw
+    - cap_sys_chroot
+    - cap_mknod
+    - cap_audit_write
+    - cap_setfcap
+    source: /proc/<pid>/status
+    status: ok
+  - probe: capabilities
+    key: permitted
+    value:
+    - cap_chown
+    - cap_dac_override
+    - cap_fowner
+    - cap_fsetid
+    - cap_kill
+    - cap_setgid
+    - cap_setuid
+    - cap_setpcap
+    - cap_net_bind_service
+    - cap_net_raw
+    - cap_sys_chroot
+    - cap_mknod
+    - cap_audit_write
+    - cap_setfcap
+    source: /proc/<pid>/status
+    status: ok
+  - probe: capabilities
+    key: inheritable
+    value: []
+    source: /proc/<pid>/status
+    status: ok
+  - probe: capabilities
+    key: bounding
+    value:
+    - cap_chown
+    - cap_dac_override
+    - cap_fowner
+    - cap_fsetid
+    - cap_kill
+    - cap_setgid
+    - cap_setuid
+    - cap_setpcap
+    - cap_net_bind_service
+    - cap_net_raw
+    - cap_sys_chroot
+    - cap_mknod
+    - cap_audit_write
+    - cap_setfcap
+    source: /proc/<pid>/status
+    status: ok
+  - probe: capabilities
+    key: ambient
+    value: []
+    source: /proc/<pid>/status
+    status: ok
+  - probe: capabilities
+    key: lastEffective
+    value: null
+    source: /proc/<pid>/status
+    status: degraded
+  - probe: capabilities
+    key: noNewPrivs
+    value: 0
+    source: /proc/<pid>/status
+    status: ok
+  - probe: capabilities
+    key: secureBits
+    value: null
+    source: /proc/<pid>/status
+    status: degraded
+  - probe: capabilities
+    key: ptraceScope
+    value: null
+    source: /proc/sys/kernel/yama/ptrace_scope
+    status: degraded
+  timedOut: false
+- name: seccomp
+  availability:
+    state: ok
+  facts:
+  - probe: seccomp
+    key: mode
+    value: filter
+    source: /proc/<pid>/status
+    status: ok
+  - probe: seccomp
+    key: filterCount
+    value: 3
+    source: /proc/<pid>/status
+    status: ok
+  - probe: seccomp
+    key: actions
+    value:
+      killProcess: true
+      killThread: true
+      trap: true
+      errno: true
+      log: true
+      trace: true
+      userNotif: true
+      probedOk: true
+    source: SECCOMP_GET_ACTION_AVAIL
+    status: ok
+  timedOut: false
+- name: lsm
+  availability:
+    state: ok
+  facts:
+  - probe: lsm
+    key: list
+    value:
+    - capability
+    - yama
+    - apparmor
+    - landlock
+    source: /sys/kernel/security/lsm
+    status: ok
+  - probe: lsm
+    key: apparmor
+    value:
+      profile: docker-default
+      mode: enforce
+    source: /proc/<pid>/attr/current
+    status: ok
+  - probe: lsm
+    key: selinux
+    value: null
+    source: /sys/fs/selinux/enforce
+    status: ok
+  - probe: lsm
+    key: lockdown
+    value: null
+    source: /sys/kernel/security/lockdown
+    status: ok
+  - probe: lsm
+    key: landlockAbi
+    value: 1
+    source: SYS_LANDLOCK_CREATE_RULESET
+    status: ok
+  timedOut: false
+- name: ebpf
+  availability:
+    state: ok
+  facts:
+  - probe: ebpf
+    key: knobs
+    value:
+      unprivilegedBpfDisabled: 0
+      lockdown: null
+    source: /proc/sys/kernel/unprivileged_bpf_disabled+/sys/kernel/security/lockdown
+    status: ok
+  - probe: ebpf
+    key: reachability
+    value:
+      capPathOpen: false
+      unprivilegedOpen: true
+    source: computed:capabilities.effective+lsm.lockdown
+    status: ok
+  timedOut: false
+- name: vmm
+  availability:
+    state: ok
+  facts:
+  - probe: vmm
+    key: hypervisor
+    value:
+      present: false
+      vendor: null
+    source: CPUID leaf 0x40000000
+    status: ok
+  - probe: vmm
+    key: dmi
+    value:
+      sysVendor: null
+      productName: null
+      biosVendor: null
+      boardVendor: null
+    source: /sys/class/dmi/id
+    status: ok
+  - probe: vmm
+    key: clocksource
+    value: null
+    source: current_clocksource
+    status: ok
+  - probe: vmm
+    key: vsock
+    value: false
+    source: /dev/vsock
+    status: ok
+  - probe: vmm
+    key: cpuHypervisorFlag
+    value: false
+    source: /proc/cpuinfo
+    status: ok
+  - probe: vmm
+    key: kernel
+    value: ""
+    source: /proc/version
+    status: ok
+  timedOut: false
+- name: sockets
+  availability:
+    state: ok
+  facts:
+  - probe: sockets
+    key: found
+    value:
+    - path: /run/docker.sock
+      writable: true
+      kind: docker
+      info: null
+    source: known runtime socket paths
+    status: ok
+  timedOut: false
+- name: cgroup
+  availability:
+    state: ok
+  facts:
+  - probe: cgroup
+    key: version
+    value: 2
+    source: /proc/<pid>/cgroup
+    status: ok
+  - probe: cgroup
+    key: path
+    value: /docker/135c8edb135c8edb135c8edb135c8edb135c8edb135c8edb135c8edb135c8edb
+    source: /proc/<pid>/cgroup
+    status: ok
+  - probe: cgroup
+    key: pattern
+    value: docker
+    source: /docker/135c8edb135c8edb135c8edb135c8edb135c8edb135c8edb135c8edb135c8edb
+    status: ok
+  - probe: cgroup
+    key: controllers
+    value:
+    - cpu
+    - cpuset
+    - io
+    - memory
+    - pids
+    source: /sys/fs/cgroup/cgroup.controllers
+    status: ok
+  - probe: cgroup
+    key: limits
+    value:
+      memory: max
+      pids: max
+    source: /sys/fs/cgroup/docker/135c8edb135c8edb135c8edb135c8edb135c8edb135c8edb135c8edb135c8edb
+    status: ok
+  timedOut: false
+- name: k8s
+  availability:
+    state: ok
+  facts:
+  - probe: k8s
+    key: inPod
+    value: false
+    source: env+sa+hostname heuristics
+    status: ok
+  - probe: k8s
+    key: namespace
+    value: null
+    source: /var/run/secrets/kubernetes.io/serviceaccount/namespace
+    status: ok
+  - probe: k8s
+    key: envHost
+    value: false
+    source: KUBERNETES_SERVICE_HOST
+    status: ok
+  - probe: k8s
+    key: serviceAccount
+    value: false
+    source: /var/run/secrets/kubernetes.io/serviceaccount
+    status: ok
+  - probe: k8s
+    key: qos
+    value: besteffort
+    source: /sys/fs/cgroup limits
+    status: ok
+  timedOut: false
+- name: runtime
+  availability:
+    state: ok
+  facts:
+  - probe: runtime
+    key: verdict
+    value:
+      runtime: docker
+      variant: null
+      confidence: high
+      alternatives: []
+      evidence:
+      - docker namespaces.containerMarkers 0.60
+      - docker cgroup.pattern 0.80
+      - "environment: docker present (sockets.found)"
+    source: signal aggregation
+    status: ok
+  timedOut: false
+findings:
+- rule: AMR-001
+  severity: critical
+  summary: Container runtime API socket is reachable and writable
+  why: "The Docker/Podman API is served by the runtime daemon as root: whoever can write to the socket can create a container that mounts the entire host filesystem with full privileges — one API call from contained user to host root (the docker.sock exposure class, cf. CVE-2019-5736-era runtime escapes)."
+  evidence:
+  - probe: sockets
+    key: found
+    value:
+    - path: /run/docker.sock
+      writable: true
+      kind: docker
+      info: null
+    source: known runtime socket paths
+    status: ok
+  remediation: Remove the socket mount from the workload; if the API is genuinely needed, broker it through a least-privilege proxy (docker-socket-proxy) exposing only the required endpoints, and restrict which users may reach it.
+  references:
+  - https://docs.docker.com/engine/security/socket-proxy/
+  - https://www.cyberark.com/resources/threat-research-blog/expose-docker-socket-by-accident
+- rule: AMR-008
+  severity: medium
+  summary: "User namespace keeps no identity isolation: uid_map is the full identity mapping"
+  why: "A single `0 0 4294967295` line maps every container uid onto the same host uid: uid 0 inside *is* uid 0 outside, so DAC checks agree with the host — a file this process may write by ownership, the host owner can write back. The namespace buys no identity isolation; it only satisfies the runtime's userns bookkeeping (spec §6: DAC root == host root)."
+  evidence:
+  - probe: uidmap
+    key: uidMap
+    value:
+    - container: 0
+      host: 0
+      range: 4294967295
+    source: /proc/<pid>/uid_map
+    status: ok
+  remediation: "Use a real user namespace: rootless runtime mode (podman) or `--userns-remap` (docker) places container uid 0 on an unprivileged subordinate range instead of the identity mapping."
+  references:
+  - https://man7.org/linux/man-pages/man7/id_mappings.7.html
+  - https://man7.org/linux/man-pages/man7/user_namespaces.7.html
+- rule: AMR-010
+  severity: low
+  summary: pids controller present but unlimited (pids.max = max)
+  why: "The pids controller is delegated to the container's scope yet capped at `max` — the kernel's spelling of unlimited: one contained fork bomb exhausts host PIDs and task_struct memory and wedges every other workload, the runtime itself included. The mitigation is present and switched off, not missing."
+  evidence:
+  - probe: cgroup
+    key: controllers
+    value:
+    - cpu
+    - cpuset
+    - io
+    - memory
+    - pids
+    source: /sys/fs/cgroup/cgroup.controllers
+    status: ok
+  - probe: cgroup
+    key: limits
+    value:
+      memory: max
+      pids: max
+    source: /sys/fs/cgroup/docker/135c8edb135c8edb135c8edb135c8edb135c8edb135c8edb135c8edb135c8edb
+    status: ok
+  remediation: Set a per-container pid limit (`--pids-limit` on docker/podman, or write `pids.max` in the container's scope) so a runaway stays inside its own slice.
+  references:
+  - https://man7.org/linux/man-pages/man7/cgroups.7.html
+  - https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html
+- rule: AMR-011
+  severity: medium
+  summary: gid_map maps host gid 0 while setgroups is not denied
+  why: "A gid_map line reaching host gid 0 hands the namespace root-group membership, and while `setgroups` reads `allow` any process can re-add groups — including gid 0 — so dropping them is not durable: whatever host root-group membership unlocks (group-writable root files, cron directories) is reachable again on a whim. Rootless runtimes write `deny` when they create the namespace for exactly this reason."
+  evidence:
+  - probe: uidmap
+    key: gidMap
+    value:
+    - container: 0
+      host: 0
+      range: 4294967295
+    source: /proc/<pid>/gid_map
+    status: ok
+  - probe: uidmap
+    key: setgroups
+    value: allow
+    source: /proc/<pid>/setgroups
+    status: ok
+  remediation: Write `deny` to the namespace's `setgroups` file (the rootless runtime default) and keep host gid 0 out of the gid_map — map only subordinate gid ranges.
+  references:
+  - https://man7.org/linux/man-pages/man2/setgroups.2.html
+  - https://man7.org/linux/man-pages/man7/id_mappings.7.html
+- rule: AMR-012
+  severity: info
+  summary: Landlock LSM available in this kernel (ABI version reported)
+  why: "The landlock(2) ruleset syscall answers with an ABI version, so the kernel offers in-process filesystem sandboxing that any workload here could use and nothing at kernel level stops the runtime from adopting it. Per-process Landlock domain state is not observable through procfs: this finding claims presence only, never disuse."
+  evidence:
+  - probe: lsm
+    key: landlockAbi
+    value: 1
+    source: SYS_LANDLOCK_CREATE_RULESET
+    status: ok
+  remediation: Informational — no action required. To confine a workload proactively, apply a Landlock ruleset to it (systemd `Landlock=` settings, or a landlock-aware launcher).
+  references:
+  - https://man7.org/linux/man-pages/man7/landlock.7.html
+  - https://www.kernel.org/doc/html/latest/userspace-api/landlock.html
+- rule: AMR-018
+  severity: low
+  summary: "NoNewPrivs unset: execve can still gain privileges"
+  why: "With NoNewPrivs 0 an execve inside the container may gain privileges via setuid bits or file capabilities: a suid-root helper inside the image steps contained uid → container-root, and whatever the container's (possibly broad) capability set then reaches becomes reachable. The flag is a one-way kernel lock on privilege acquisition for the whole process lifecycle. Every ordinary process on a bare host sits at 0 — a constant, not a finding there (spec row 214): gated."
+  evidence:
+  - probe: capabilities
+    key: noNewPrivs
+    value: 0
+    source: /proc/<pid>/status
+    status: ok
+  remediation: Run the workload with `--security-opt no-new-privileges` (docker/podman) or `NoNewPrivileges=yes` (systemd) unless it genuinely needs setuid transitions.
+  references:
+  - https://docs.docker.com/engine/reference/run/#runtime-privilege-and-linux-capabilities
+  - https://man7.org/linux/man-pages/man2/prctl.2.html
+- rule: AMR-019
+  severity: medium
+  summary: "Inside a shared-kernel container and unprivileged_bpf_disabled is 0 (or absent pre-5.13): any local uid can reach bpf() from a weak foothold"
+  why: "The knob decides whether callers without CAP_BPF/CAP_PERFMON may call bpf(): at 0 — or on legacy kernels that predate the knob, where nothing else gates the syscall — any local uid, including foothold uids that hold none of the container's capabilities, may load eBPF programs into the shared host kernel. The verifier and JIT have historically been a rich LPE bug class, so this is a kernel-attack-surface promise from the weakest position inside the containment. Gated per the §6 container-gate erratum (2026-10-01): on a bare host the state is a machine-wide sysctl an admin can read in one line, and under VM-family verdicts the guest bpf() hits the GUEST kernel — no host surface opens, the same reason the AMR-004-class host rules are exempt there."
+  evidence:
+  - probe: ebpf
+    key: reachability
+    value:
+      capPathOpen: false
+      unprivilegedOpen: true
+    source: computed:capabilities.effective+lsm.lockdown
+    status: ok
+  - probe: ebpf
+    key: knobs
+    value:
+      unprivilegedBpfDisabled: 0
+      lockdown: null
+    source: /proc/sys/kernel/unprivileged_bpf_disabled+/sys/kernel/security/lockdown
+    status: ok
+  remediation: Set `kernel.unprivileged_bpf_disabled = 1` (changeable) or `2` (immutable until reboot) via a host sysctl drop (e.g. /etc/sysctl.d/90-bpf.conf); the container image cannot set it — this is a host-level knob.
+  references:
+  - https://man7.org/linux/man-pages/man2/bpf.2.html
+  - https://www.kernel.org/doc/html/latest/admin-guide/sysctl/kernel.html#unprivileged-bpf-disabled
+counts:
+  critical: 1
+  high: 0
+  medium: 3
+  low: 2
+  info: 1

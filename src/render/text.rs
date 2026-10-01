@@ -1,4 +1,5 @@
 use super::Renderer;
+use super::style::{self, ColorSupport};
 use crate::model::{Counts, Finding, Severity, Verdict};
 use crate::pipeline::Event;
 
@@ -7,8 +8,9 @@ use crate::model::{ProbeOutcome, Report, RuntimeKind, ScanMeta, test_finding}; /
 
 pub struct Text {
     pub verbose: bool,
-    /// ANSI paint only when true (`make` derives it from tty/`--no-color`).
-    pub color: bool,
+    /// Titanium ANSI paint only when on (`make` derives it from
+    /// `style::detect`: tty stdout, no `--no-color`/`NO_COLOR`/`TERM=dumb`).
+    pub color: ColorSupport,
 }
 
 impl Renderer for Text {
@@ -56,21 +58,26 @@ impl Renderer for Text {
     }
 }
 
-/// Gutter label with its per-severity ANSI foreground (spec §9: bright-red,
-/// red, yellow, blue, cyan), wrapped only when color is enabled.
-fn gutter(sev: Severity, color: bool) -> String {
-    let (label, ansi) = match sev {
-        Severity::Critical => ("CRIT", "\x1b[91m"),
-        Severity::High => ("HIGH", "\x1b[31m"),
-        Severity::Medium => ("MED", "\x1b[33m"),
-        Severity::Low => ("LOW", "\x1b[34m"),
-        Severity::Info => ("INFO", "\x1b[36m"),
+/// Gutter label in the titanium severity colour ([`style`] table; Critical
+/// additionally bold), wrapped only when color is on.
+fn gutter(sev: Severity, color: ColorSupport) -> String {
+    let label = match sev {
+        Severity::Critical => "CRIT",
+        Severity::High => "HIGH",
+        Severity::Medium => "MED",
+        Severity::Low => "LOW",
+        Severity::Info => "INFO",
     };
-    if color {
-        format!("{ansi}{label}\x1b[0m")
-    } else {
-        label.to_string()
-    }
+    let prefix = format!(
+        "{}{}",
+        style::fg(style::severity_fg(sev)),
+        if style::severity_bold(sev) {
+            style::BOLD
+        } else {
+            ""
+        }
+    );
+    color.wrap(&prefix, label)
 }
 
 /// Slug lookup so a line reads `AMR-xxx slug: summary`; findings only ever
@@ -95,18 +102,26 @@ fn summary_block(
     counts: &Counts,
     complete: bool,
     timed_out: usize,
-    color: bool,
+    color: ColorSupport,
 ) -> std::io::Result<()> {
     if let Some(v) = verdict {
         writeln!(
             w,
             "runtime {} (confidence {})",
-            v.runtime.as_str(),
+            color.fg(style::verdict_fg(v.runtime), v.runtime.as_str()),
             v.confidence
         )?;
     }
     if !complete {
-        writeln!(w, "!! INCOMPLETE SCAN — {timed_out} probe(s) timed out !!")?;
+        let prefix = format!("{}{}", style::fg(style::ALERT_RED), style::BOLD);
+        writeln!(
+            w,
+            "{}",
+            color.wrap(
+                &prefix,
+                &format!("!! INCOMPLETE SCAN — {timed_out} probe(s) timed out !!")
+            )
+        )?;
     }
     let mut order: Vec<&Finding> = findings.iter().collect();
     // Stable sort keeps registry order inside each severity group.
@@ -159,7 +174,7 @@ mod tests {
         let mut buf = vec![];
         let mut r = Text {
             verbose: false,
-            color: false,
+            color: ColorSupport::Off,
         };
         r.on_event(&mut buf, &Event::Probe(ProbeOutcome::empty("uidmap")))
             .unwrap();
@@ -223,7 +238,7 @@ mod tests {
         }
     }
 
-    fn render_text(r: &Report, color: bool) -> String {
+    fn render_text(r: &Report, color: ColorSupport) -> String {
         let mut buf = vec![];
         Text {
             verbose: false,
@@ -236,7 +251,7 @@ mod tests {
 
     #[test]
     fn text_full_layout_snapshot() {
-        insta::assert_snapshot!(render_text(&summary_report(true), false), @r#"
+        insta::assert_snapshot!(render_text(&summary_report(true), ColorSupport::Off), @r#"
         runtime docker (confidence high)
 
         CRIT AMR-002 privileged-container: Privileged container: CAP_SYS_ADMIN, seccomp disabled, no MAC confinement
@@ -261,7 +276,7 @@ mod tests {
 
     #[test]
     fn text_incomplete_variant_snapshot() {
-        insta::assert_snapshot!(render_text(&summary_report(false), false), @r#"
+        insta::assert_snapshot!(render_text(&summary_report(false), ColorSupport::Off), @r#"
         runtime docker (confidence high)
         !! INCOMPLETE SCAN — 1 probe(s) timed out !!
 
@@ -285,16 +300,36 @@ mod tests {
     }
 
     #[test]
-    fn text_color_wraps_gutters_only_when_enabled() {
-        let s = render_text(&summary_report(true), true);
+    fn text_color_wraps_gutters_and_verdict_only_when_on() {
+        let s = render_text(&summary_report(true), ColorSupport::TrueColor);
         assert!(
-            s.contains("\x1b[91mCRIT\x1b[0m"),
-            "critical gutter must be bright red: {s}"
+            s.contains(&format!(
+                "{}{}CRIT{}",
+                style::fg(style::ALERT_RED),
+                style::BOLD,
+                style::RESET
+            )),
+            "critical gutter: bold alertRed: {s}"
         );
-        assert!(s.contains("\x1b[36mINFO\x1b[0m"), "info must be cyan: {s}");
         assert!(
-            !render_text(&summary_report(true), false).contains('\x1b'),
-            "color=false must emit no escape bytes"
+            s.contains(&format!(
+                "{}INFO{}",
+                style::fg(style::DIM_ALUMINUM),
+                style::RESET
+            )),
+            "info gutter: dimAluminum: {s}"
+        );
+        assert!(
+            s.contains(&format!(
+                "{}docker{}",
+                style::fg(style::ELECTRIC_BLUE),
+                style::RESET
+            )),
+            "docker verdict must be painted electricBlue: {s}"
+        );
+        assert!(
+            !render_text(&summary_report(true), ColorSupport::Off).contains('\x1b'),
+            "Off must emit no escape bytes"
         );
     }
 }

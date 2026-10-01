@@ -66,12 +66,36 @@ substitute for native testing of the sweep.
 
 ```sh
 amirustrained                                  # human-readable text report
+amirustrained --format yaml                    # full report as block YAML
 amirustrained --format json | jq '.findings[] | {rule, severity}'
 amirustrained --fail-on high                   # CI gate: exit 1 at High+ (any|info|low|medium|high|critical)
 amirustrained --probe-syscalls                 # opt-in: enumerate syscalls blocked by seccomp
 amirustrained --probe-ebpf                     # opt-in: really load a trivial eBPF program (see note)
 amirustrained -o report.sarif --format sarif   # for code-scanning pipelines
+amirustrained --format markdown --no-color     # plain bytes even on a terminal
 ```
+
+Six formats: `text` (default), `markdown`, `json`, `yaml`, `sarif`, `jsonl`.
+`--format yaml` is the complete report model as strict block YAML (2-space
+indent, PyYAML dash alignment; strings quoted only where a plain scalar could
+change meaning) — piped output round-trips through `yaml.safe_load`.
+
+## Colour
+
+`text`, `markdown`, `json` and `yaml` paint their output with the OMP
+**titanium** palette (severity ladder critical→red/high→amber/medium→gold/
+low+info→dim aluminium; verdict host→bright aluminium, container→electric
+blue, VM/sandbox→readout green; keys blue, quoted strings gold, scalars amber,
+bool/null green) — but only when **all** of:
+
+- stdout is a terminal (piping to `jq`, a pager, or a file yields byte-identical plain bytes),
+- `--no-color` is not given,
+- `NO_COLOR` is **absent** (mere presence counts, even `NO_COLOR=` — no-color.org),
+- `TERM` is not `dumb`.
+
+`jsonl` and `sarif` are machine streams and never paint. `-o FILE` never
+paints. Truecolor (`38;2;r;g;b`) is the only emission mode. Colour changes
+presentation only: exit codes and document semantics are identical on and off.
 
 `--probe-syscalls` risk note: it *executes* ~289 zero-argument syscalls on
 x86_64 (239 on aarch64, 238 on riscv64 — per-arch committed tables; other
@@ -180,10 +204,10 @@ scripts/live-smoke.sh                       # smoke the debug binary
 PROFILE=release scripts/live-smoke.sh       # …or the release binary
 ```
 
-The smoke script builds on demand, runs all five formats plus
-`--probe-syscalls`, and asserts the JSON contract (`schemaVersion 1`,
-`scan.complete`, all eleven default probes with `runtime` emitting the verdict, SARIF
-2.1.0). Its `--fail-on high ⇒ 1 / critical ⇒ 0` exit-code asserts are
+The smoke script builds on demand, runs the json/jsonl/sarif/markdown formats
+plus `--probe-syscalls`, and asserts the JSON contract (`schemaVersion 1`,
+`scan.complete`, all eleven default probes with `runtime` emitting the verdict,
+SARIF 2.1.0). Its `--fail-on high ⇒ 1 / critical ⇒ 0` exit-code asserts are
 **this-host** posture claims, so it is a local smoke, not portable CI.
 
 ## Security notes

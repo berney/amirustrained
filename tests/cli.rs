@@ -15,6 +15,21 @@ fn version_flag_prints_semver() {
         .stdout(predicates::str::contains("amirustrained 0.1.0"));
 }
 
+#[test]
+fn help_lists_every_format_including_yaml() {
+    // User 2026-10-02: `--format yaml` is a first-class, advertised option -
+    // the whole value list must be visible in --help, never hidden.
+    let (code, out) = run(&["--help"]);
+    assert_eq!(code, 0);
+    for f in ["text", "markdown", "json", "yaml", "sarif", "jsonl"] {
+        assert!(out.contains(f), "--help must advertise format {f}: {out}");
+    }
+    assert!(
+        out.contains("--no-color"),
+        "--help must advertise the colour override: {out}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Process contract helpers.
 //
@@ -63,7 +78,7 @@ const LEVELS: &[(&str, &[&str])] = &[
 fn bogus_format_exits_2() {
     Command::cargo_bin("amirustrained")
         .unwrap()
-        .args(["--format", "yaml"])
+        .args(["--format", "xml"])
         .assert()
         .code(2)
         .stderr(predicates::str::contains("unknown format"));

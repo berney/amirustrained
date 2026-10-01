@@ -11,7 +11,7 @@ use clap::Parser;
 )]
 pub struct Cli {
     // Flags are wired for real in Task 7; parse them now so --help is stable.
-    /// text | markdown | json | sarif | jsonl
+    /// text | markdown | json | yaml | sarif | jsonl
     #[arg(long, default_value = "text")]
     pub format: String,
     #[arg(long, short)]
@@ -128,6 +128,7 @@ pub enum Format {
     Text,
     Markdown,
     Json,
+    Yaml,
     Sarif,
     Jsonl,
 }
@@ -139,6 +140,7 @@ impl std::str::FromStr for Format {
             "text" => Format::Text,
             "markdown" => Format::Markdown,
             "json" => Format::Json,
+            "yaml" => Format::Yaml,
             "sarif" => Format::Sarif,
             "jsonl" => Format::Jsonl,
             _ => return Err(()),
@@ -190,8 +192,8 @@ mod tests {
     fn misuse_names_the_offending_value() {
         // These strings are the exit-2 stderr contract; `--fail-on` value
         // parsing grows in Task 25, so the wording is load-bearing.
-        let err = Opts::from_cli(&cli("yaml", None, None)).unwrap_err();
-        assert_eq!(err.to_string(), "unknown format 'yaml'");
+        let err = Opts::from_cli(&cli("xml", None, None)).unwrap_err();
+        assert_eq!(err.to_string(), "unknown format 'xml'");
         let err = Opts::from_cli(&cli("text", Some("apocalypse"), None)).unwrap_err();
         assert_eq!(err.to_string(), "unknown fail-on level 'apocalypse'");
     }
@@ -243,6 +245,16 @@ mod tests {
         // The public long form really is `--probe-ebpf`.
         let parsed = Cli::try_parse_from(["amirustrained", "--probe-ebpf"]).unwrap();
         assert!(parsed.probe_ebpf);
+    }
+
+    #[test]
+    fn yaml_is_a_first_class_format() {
+        // User 2026-10-02: `yaml` is a real format everywhere - parse,
+        // mapping, and the --help value list (cli test guards help).
+        assert_eq!(
+            Opts::from_cli(&cli("yaml", None, None)).unwrap().0,
+            Format::Yaml
+        );
     }
 
     #[test]

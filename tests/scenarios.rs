@@ -576,7 +576,7 @@ fn normalize_pids(text: &str) -> String {
 /// evidence, the counts footer and the completion line.
 #[test]
 fn docker_privileged_text_output_snapshot() {
-    let mut renderer = render::make(Format::Text, false, false);
+    let mut renderer = render::make(Format::Text, false, render::style::ColorSupport::Off);
     let mut buf: Vec<u8> = Vec::new();
     let s = scenario("docker-privileged");
     let opts = Opts {
@@ -601,4 +601,57 @@ fn docker_privileged_text_output_snapshot() {
     renderer.finish(&mut buf).expect("text renderer flushes");
     let text = String::from_utf8(buf).expect("renderer output is utf-8");
     insta::assert_snapshot!(normalize_pids(&text));
+}
+
+/// The scan-meta block names the machine and the moment, none of it the
+/// fixture: timestamp, kernel, uid and targetPid are placeholdered so the
+/// snapshot pins the document shape and every fixture-derived fact. The
+/// two-space anchor is deliberate — deeper indents are evidence keys (a
+/// `uid=0` style fact would sit further in), only the scan block puts these
+/// four directly under `scan:`.
+fn normalize_scan_meta(text: &str) -> String {
+    let mut out = text.to_string();
+    for key in ["timestamp", "kernel", "uid", "targetPid"] {
+        let pat = format!("\n  {key}: ");
+        if let Some(s) = out.find(&pat) {
+            let v = s + pat.len();
+            let e = out[v..].find('\n').map_or(out.len(), |n| v + n);
+            out.replace_range(v..e, &format!("<{key}>"));
+        }
+    }
+    out
+}
+
+/// docker-default through the shipped YAML renderer, colourless (piped
+/// contract): the whole report as strict block YAML, loadable verbatim by
+/// PyYAML (verified out-of-band; the snapshot is the byte-for-byte pin).
+#[test]
+fn docker_default_yaml_output_snapshot() {
+    let mut renderer = render::make(Format::Yaml, false, render::style::ColorSupport::Off);
+    let mut buf: Vec<u8> = Vec::new();
+    let s = scenario("docker-default");
+    let opts = Opts {
+        pid: None,
+        probe_syscalls: false,
+        probe_ebpf: false,
+        probe_timeout: None,
+        fail_on: None,
+        dump_filters: false,
+    };
+    pipeline::scan_with_probes(
+        Arc::new(PseudoFs::new(fixture_root(s.name))),
+        Arc::new(FixtureOs::new(s)),
+        &opts,
+        probes::registry(&opts),
+        &mut |ev| {
+            renderer
+                .on_event(&mut buf, ev)
+                .expect("yaml renderer writes to a Vec");
+        },
+    );
+    renderer.finish(&mut buf).expect("yaml renderer flushes");
+    let text = String::from_utf8(buf).expect("renderer output is utf-8");
+    assert!(!text.contains('\x1b'), "colourless output has no escapes");
+    let text = normalize_scan_meta(&normalize_pids(&text));
+    insta::assert_snapshot!(text);
 }
