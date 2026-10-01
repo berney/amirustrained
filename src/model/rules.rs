@@ -1,5 +1,5 @@
 use super::rule::{Assess, Rule};
-use super::{Fact, Finding, Report, RuntimeKind, Severity, Verdict};
+use super::{Fact, Finding, Report, RuntimeKind, Severity};
 
 /// Rule registry; Tasks 20-21 append entries (append-only in id-space, spec §6:
 /// insertion order is stable, ids need not sort numerically — see AMR-022).
@@ -503,7 +503,7 @@ pub static RULES: &[Rule] = &[
                 v.runtime,
                 RuntimeKind::Firecracker | RuntimeKind::Gvisor | RuntimeKind::Kata
             )
-            .then(|| vec![verdict_fact(v)])
+            .then(|| verdict_fact(a))?
         },
     },
     Rule {
@@ -527,7 +527,7 @@ pub static RULES: &[Rule] = &[
             // Plan amendment: Verdict::confidence is the string ladder
             // high|medium|low — match "low" exactly, never a numeric < 0.5.
             let v = a.report.verdict.as_ref()?;
-            (v.confidence == "low").then(|| vec![verdict_fact(v)])
+            (v.confidence == "low").then(|| verdict_fact(a))?
         },
     },
     Rule {
@@ -566,20 +566,29 @@ pub static RULES: &[Rule] = &[
             if amr002_combo {
                 return None;
             }
-            // Evidence: the grant plus whichever restraints are holding
-            // (non-null observables only — unknown is not a restraint).
-            let mut ev = vec![a.fact("capabilities", "effective")?.clone()];
-            ev.extend(a.fact("seccomp", "mode").cloned());
-            ev.extend(
-                a.fact("lsm", "apparmor")
-                    .filter(|f| !f.value.is_null())
-                    .cloned(),
-            );
-            ev.extend(
+            // Evidence: the grant plus whichever restraints are HOLDING. Unknown
+            // — absent, null, or seccomp `unknown` — is not a restraint, so with
+            // none observable the rule stays silent instead of asserting one it
+            // cannot cite (fail closed, as AMR-002's null-list branch does).
+            let restraints: Vec<Fact> = [
+                a.fact("seccomp", "mode")
+                    .filter(|f| matches!(f.value.as_str(), Some("filter") | Some("strict"))),
+                a.fact("lsm", "apparmor").filter(|f| {
+                    !f.value.is_null()
+                        && f.value.get("profile").and_then(|p| p.as_str()) != Some("unconfined")
+                }),
                 a.fact("lsm", "selinux")
-                    .filter(|f| !f.value.is_null())
-                    .cloned(),
-            );
+                    .filter(|f| f.value.get("mode").and_then(|m| m.as_str()) == Some("enforcing")),
+            ]
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect();
+            if restraints.is_empty() {
+                return None;
+            }
+            let mut ev = vec![a.fact("capabilities", "effective")?.clone()];
+            ev.extend(restraints);
             Some(ev)
         },
     },
@@ -685,20 +694,13 @@ fn mac_unconfining_fact(a: &Assess) -> Option<Fact> {
 }
 
 /// AMR-014/015 findings must cite evidence like every other rule (spec §6); their
-/// subject is the fusion verdict itself, so wrap it once in the fact shape of the
-/// `runtime` probe that produced it.
-fn verdict_fact(v: &Verdict) -> Fact {
-    Fact::ok(
-        "runtime",
-        "verdict",
-        serde_json::json!({
-            "runtime": v.runtime.as_str(),
-            "variant": v.variant,
-            "confidence": v.confidence,
-            "alternatives": v.alternatives,
-        }),
-        "runtime probe fusion verdict".into(),
-    )
+/// subject is the fusion verdict, which the `runtime` probe already reports as the
+/// Ok fact `runtime.verdict`. Cite that fact rather than re-wrapping the verdict: a
+/// hand-built clone would share its (probe, key) identity while disagreeing with it
+/// on `source` and value shape, and `pipeline.rs` derives `report.verdict` from this
+/// very fact, so it is present whenever the verdict is.
+fn verdict_fact(a: &Assess) -> Option<Vec<Fact>> {
+    a.fact("runtime", "verdict").cloned().map(|f| vec![f])
 }
 
 #[cfg(test)]
@@ -734,6 +736,23 @@ mod tests {
             alternatives: vec![],
             evidence: vec![],
         }
+    }
+
+    /// The Ok fact `probes/runtime.rs::run` emits (runtime.rs:242-247): the fused
+    /// verdict serialized whole under source "signal aggregation". AMR-014/015
+    /// cite this very fact, so test reports carry it alongside the typed verdict.
+    fn verdict_report(v: Verdict) -> Report {
+        let mut o = ProbeOutcome::empty("runtime");
+        o.facts.push(Fact::ok(
+            "runtime",
+            "verdict",
+            serde_json::to_value(&v).expect("Verdict is serializable"),
+            "signal aggregation".into(),
+        ));
+        let mut r = Report::blank(ScanMeta::stub(), 1);
+        r.push_probe(o);
+        r.verdict = Some(v);
+        r
     }
     fn rule(id: &str) -> &'static Rule {
         RULES.iter().find(|r| r.id == id).expect("rule registered")
@@ -1479,14 +1498,29 @@ mod tests {
             RuntimeKind::Gvisor,
             RuntimeKind::Kata,
         ] {
-            let mut r = Report::blank(ScanMeta::stub(), 1);
-            r.verdict = Some(verdict(runtime));
+            let r = verdict_report(verdict(runtime));
             let f = rule("AMR-014")
                 .evaluate(&r, false)
                 .expect("strong-isolation runtime must fire");
             assert_eq!(f.severity, Severity::Info);
+            // ReviewT21: evidence must be the runtime probe's own verdict fact —
+            // byte-identical to the emission in probes/runtime.rs: `source`
+            // "signal aggregation" and the full serialized Verdict shape.
             assert_eq!(f.evidence[0].probe, "runtime");
             assert_eq!(f.evidence[0].key, "verdict");
+            assert_eq!(f.evidence[0].source, "signal aggregation");
+            for key in [
+                "runtime",
+                "variant",
+                "confidence",
+                "alternatives",
+                "evidence",
+            ] {
+                assert!(
+                    f.evidence[0].value.get(key).is_some(),
+                    "verdict fact keeps the full serialized Verdict (missing {key})"
+                );
+            }
         }
     }
 
@@ -1514,13 +1548,13 @@ mod tests {
     fn amr015_fires_info_on_low_confidence_verdict() {
         // Plan amendment: the Verdict confidence is a string ladder
         // (high|medium|low) — "low" exactly, never a numeric < 0.5.
-        let mut r = Report::blank(ScanMeta::stub(), 1);
         let mut v = verdict(RuntimeKind::Lxc);
         v.confidence = "low".into();
-        r.verdict = Some(v);
+        let r = verdict_report(v);
         let f = rule("AMR-015").evaluate(&r, false).expect("low must fire");
         assert_eq!(f.severity, Severity::Info);
         assert_eq!(f.evidence[0].value["confidence"], "low");
+        assert_eq!(f.evidence[0].source, "signal aggregation");
     }
 
     #[test]
@@ -1537,6 +1571,12 @@ mod tests {
                 .evaluate(&Report::blank(ScanMeta::stub(), 1), false)
                 .is_none()
         );
+        // Fail closed: a verdict with no citable runtime.verdict fact stays silent.
+        let mut r = Report::blank(ScanMeta::stub(), 1);
+        let mut v = verdict(RuntimeKind::Lxc);
+        v.confidence = "low".into();
+        r.verdict = Some(v);
+        assert!(rule("AMR-015").evaluate(&r, false).is_none());
     }
 
     // ---------------------------------------------------------------- AMR-016
@@ -1588,6 +1628,51 @@ mod tests {
         let mut r = report_with(&facts);
         r.verdict = Some(verdict(RuntimeKind::Docker));
         assert!(rule("AMR-016").evaluate(&r, false).is_some());
+    }
+
+    #[test]
+    fn amr016_silent_when_lsm_degraded_and_seccomp_disabled() {
+        // ReviewT21 P2: a `--probe-timeout` dropped the lsm probe and seccomp
+        // reports "disabled" — no restraint is evidenced, so 016 must stay
+        // silent instead of asserting a restraint it cannot cite (fail closed,
+        // as AMR-002's null-list branch does).
+        let mut r = report_with(&[
+            ("capabilities", "effective", json!(["cap_sys_admin"])),
+            ("seccomp", "mode", json!("disabled")),
+        ]);
+        r.verdict = Some(verdict(RuntimeKind::Docker));
+        assert!(rule("AMR-016").evaluate(&r, false).is_none());
+    }
+
+    #[test]
+    fn amr016_evidence_cites_only_holding_restraints() {
+        // seccomp filter and SELinux enforcing hold; the present-but-unconfined
+        // AppArmor profile is NOT a restraint and must not be cited as one.
+        let mut facts = amr002_facts("filter", json!({"profile": "unconfined", "mode": ""}));
+        facts.extend(selinux_facts("enforcing"));
+        let mut r = report_with(&facts);
+        r.verdict = Some(verdict(RuntimeKind::Docker));
+        let f = rule("AMR-016").evaluate(&r, false).expect("must fire");
+        assert!(
+            f.evidence
+                .iter()
+                .any(|e| e.probe == "seccomp" && e.key == "mode")
+        );
+        assert!(
+            f.evidence
+                .iter()
+                .any(|e| e.probe == "lsm" && e.key == "selinux")
+        );
+        assert!(
+            !f.evidence
+                .iter()
+                .any(|e| e.probe == "lsm" && e.key == "apparmor"),
+            "unconfined AppArmor is not a holding restraint: {:?}",
+            f.evidence
+                .iter()
+                .map(|e| (&e.probe, &e.key))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
