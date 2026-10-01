@@ -558,7 +558,9 @@ pub static RULES: &[Rule] = &[
                 return None;
             }
             // Exact complement of AMR-002's AMENDED combo (seccomp mode 0 ∧
-            // MAC-unconfining per erratum ReviewT19 F3 — NOT the stale
+            // MAC-unconfining per erratum ReviewT19 F3 as amended 2026-10-01 —
+            // an aa `complain` profile counts as unconfining too, so
+            // aa-complain+seccomp=0 is likewise 002's territory — NOT the stale
             // AppArmor-only sketch): privileged-on-SELinux-permissive stays
             // 002's territory, quiet here.
             let amr002_combo =
@@ -666,16 +668,25 @@ pub fn evaluate_all(report: &Report, privileged: bool) -> Vec<Finding> {
 }
 
 /// Spec §6 erratum F3: MAC is not confining the task when AppArmor explicitly reports
-/// `unconfined`, or when no AppArmor fact applies (null value) and SELinux is permissive
+/// `unconfined` or a `complain`-mode profile (log-only, confines nothing — erratum
+/// 2026-10-01), or when no AppArmor fact applies (null value) and SELinux is permissive
 /// or absent from the active LSM list. An `enforcing` SELinux with AppArmor absent keeps
-/// the rule silent — fail closed on ambiguous stacks (null list). Returns the fact that
-/// DECIDED the leg (ReviewT19b-2): the aa witness on the unconfined branch, `lsm.selinux`
-/// on the permissive branch, `lsm.list` on the absent branch — AMR-002 cites it as
-/// evidence; AMR-016 takes the complement (`.is_none()`).
+/// the rule silent — fail closed on ambiguous stacks (null list) and on confining aa
+/// modes. Returns the fact that DECIDED the leg (ReviewT19b-2): the aa witness on the
+/// unconfined and complain branches, `lsm.selinux` on the permissive branch, `lsm.list`
+/// on the absent branch — AMR-002 cites it as evidence; AMR-016 takes the complement
+/// (`.is_none()`).
 fn mac_unconfining_fact(a: &Assess) -> Option<Fact> {
     let aa = a.fact("lsm", "apparmor")?;
     if let Some(profile) = aa.value.get("profile").and_then(|p| p.as_str()) {
-        return (profile == "unconfined").then(|| aa.clone());
+        // Erratum 2026-10-01 (ReviewT2324b DELTA-1): a `complain`-mode profile logs
+        // denials only and confines nothing, so it is MAC-unconfining like an
+        // explicit `unconfined` profile. Fail closed on every other mode: `enforce`
+        // and `kill` confine, and a missing/empty mode on a confined profile proves
+        // nothing (ReviewT21b's exact-string discipline).
+        return (profile == "unconfined"
+            || aa.value.get("mode").and_then(|m| m.as_str()) == Some("complain"))
+        .then(|| aa.clone());
     }
     if !aa.value.is_null() {
         return None;
@@ -1008,6 +1019,42 @@ mod tests {
         r.verdict = Some(verdict(RuntimeKind::Docker));
         let f = rule("AMR-002").evaluate(&r, false).expect("must fire");
         assert_eq!(f.evidence[2].key, "apparmor");
+    }
+
+    #[test]
+    fn amr002_fires_on_apparmor_complain_mode() {
+        // Erratum 2026-10-01 (ReviewT2324b DELTA-1): a `complain`-mode profile logs
+        // denials only and confines nothing, so seccomp disabled + aa complain +
+        // no SELinux is the `--privileged` posture — the High combo must fire and
+        // cite the aa witness. AMR-016 stays quiet: the complete combo is 002's
+        // territory, and 016 already refuses to call a complain profile a restraint.
+        let mut facts = amr002_facts(
+            "disabled",
+            json!({"profile": "docker-default", "mode": "complain"}),
+        );
+        facts.push(("lsm", "list", json!(["apparmor", "lockdown", "yama"])));
+        let mut r = report_with(&facts);
+        r.verdict = Some(verdict(RuntimeKind::Docker));
+        let f = rule("AMR-002")
+            .evaluate(&r, false)
+            .expect("complain-mode aa must count as MAC-unconfining");
+        assert_eq!(f.severity, Severity::High);
+        assert_eq!(
+            (f.evidence[2].probe.as_str(), f.evidence[2].key.as_str()),
+            ("lsm", "apparmor"),
+            "the complain-mode aa fact must be the cited MAC witness"
+        );
+        assert_eq!(f.evidence[2].value["mode"], "complain");
+        assert!(rule("AMR-016").evaluate(&r, false).is_none());
+        // Fail closed elsewhere: a confined profile with no mode string is not
+        // complain and not unconfined — the combo stays silent (ReviewT21b's
+        // exact-string discipline, applied to the 002 leg).
+        let mut r = report_with(&amr002_facts(
+            "disabled",
+            json!({"profile": "docker-default"}),
+        ));
+        r.verdict = Some(verdict(RuntimeKind::Docker));
+        assert!(rule("AMR-002").evaluate(&r, false).is_none());
     }
 
     // ---------------------------------------------------------------- AMR-003
