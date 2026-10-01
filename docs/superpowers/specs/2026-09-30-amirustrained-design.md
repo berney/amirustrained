@@ -194,10 +194,10 @@ Seed catalog (v1; registry is append-only in id-space):
 
 | id | slug | sev | condition (sketch) |
 |---|---|---|---|
-| AMR-001 | container-socket-exposed | critical | reachable, writable docker/podman socket (API peer is root); evidence includes SecurityOptions |
-| AMR-002 | privileged-container | high | CAP_SYS_ADMIN ∈ CapEff ∧ seccomp mode 0 ∧ AppArmor unconfined ∧ runtime detected |
-| AMR-003 | cap-sys-module | high | CAP_SYS_MODULE ∈ CapEff (module load ⇒ host root on unlocked kernels) |
-| AMR-004 | host-pid-ns-ptraceable | high | host PID ns ∧ (Yama ptrace_scope == 0 ∨ CAP_SYS_PTRACE ∈ CapEff) |
+| AMR-001 | container-socket-exposed | critical | reachable, writable docker/podman socket whose API peer is root (`info.rootless != true`; unknown peer treated as root — fail loud); evidence includes SecurityOptions. Peer confirmed rootless ⇒ **AMR-022**, not this rule *(erratum, ReviewT19 F2: rootless peer is the caller's own unprivileged uid; Critical overclaims host-root)* |
+| AMR-002 | privileged-container | high | CAP_SYS_ADMIN ∈ CapEff ∧ seccomp mode 0 ∧ **MAC unconfining** ∧ runtime detected. MAC unconfining = AppArmor profile `unconfined`, OR AppArmor absent (`apparmor` fact null) while SELinux permissive, unconfined, or absent from the active LSM list *(erratum, ReviewT19 F3: `--privileged` on SELinux-only hosts was invisible to the AppArmor-only conjunct)* |
+| AMR-003 | cap-sys-module | high | container detected ∧ CAP_SYS_MODULE ∈ CapEff (module load ⇒ host root on unlocked kernels). On a bare host CapEff is full by design for root and empty otherwise — the finding is about a contained process holding it *(erratum, ReviewT19 F1: ungated rule fired High at host-service state that moves no attacker)* |
+| AMR-004 | host-pid-ns-ptraceable | high | container detected ∧ host PID ns ∧ (Yama ptrace_scope == 0 ∨ CAP_SYS_PTRACE ∈ CapEff). Gated like its siblings: host PID ns is tautological on a bare host, and Yama 0 there is the pre-Yama same-uid baseline, not movement toward host root *(erratum, ReviewT19 F1)* |
 | AMR-005 | seccomp-disabled-in-container | medium | runtime detected ∧ seccomp mode 0 |
 | AMR-006 | apparmor-unconfined-in-container | medium | runtime detected ∧ AppArmor unconfined (or absent while LSMs active) |
 | AMR-007 | selinux-permissive-in-container | medium | SELinux context present ∧ permissive |
@@ -215,10 +215,16 @@ Seed catalog (v1; registry is append-only in id-space):
 | AMR-019 | bpf-unpriv-open | medium | verdict != host and `unprivileged_bpf_disabled` is 0 (or absent pre-5.13 knob): any local uid can reach `bpf()` from a weak foothold |
 | AMR-020 | cap-bpf-or-perfmon | low | `CapEff` includes `CAP_BPF` or `CAP_PERFMON`: program load / map read possible without full root |
 | AMR-021 | ebpf-load-succeeded | high | `--probe-ebpf` only: trivial program load succeeded while contained — `bpf()` reachable past seccomp/LSM/cap drops; kernel attack surface confirmed open |
+| AMR-022 | rootless-socket-exposed | high | writable docker/podman socket with `info.rootless == true`: the API peer is an unprivileged **host user**, so a contained attacker reaching it escapes to that uid (host files, cron, sudo if granted) — container→host-user escape, *not* a host-root promise *(ReviewT19 F2; id-space append 2026-10-01)* |
 
 Rules downgraded by privilege: where the assessment needs data an unprivileged run
 cannot read, the rule reports `info` with "insufficient privilege to assess" rather
-than firing or staying silent.
+than firing or staying silent. Mechanically: any rule with `requires_root: true`
+evaluated without privilege **always** emits that `info` finding, whether or not its
+inputs happened to be readable — root-gated inputs are usually unreadable, so a
+demote-only-on-fire rule would make the downgrade unreachable, i.e. plain silence
+*(erratum, ReviewT19 F4; the info note does not consult the unreadable inputs, so no
+`fact_any` accessor is needed)*.
 
 ## 7. Output formats
 
