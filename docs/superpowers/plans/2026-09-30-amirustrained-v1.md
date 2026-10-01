@@ -2462,15 +2462,19 @@ mod tests {
 - [ ] **Step 3: Implement**
 
 ```rust
-/// Canonical SKIP (spec §5 syscall-probe row, security review + live findings 2026-10-01):
-/// hang / exit / self-modifying / NULL-arg-acts-on-root / fd-0-relative /
-/// thread-exit bookkeeping / conditional-block.
+/// Canonical SKIP (spec §5 syscall-probe row, security review + round-3
+/// re-adjudication + live findings 2026-10-01): hang / exit / self-modifying /
+/// NULL-arg-acts-on-root / acts-on-root-or-owner / fd-0-relative /
+/// conditional-delay / thread-process bookkeeping. 45 entries; the swept
+/// complement (289) is frozen test-time as the `AUDITED_SWEPT` allow-list.
 pub const SKIP: &[&str] = &["rt_sigreturn", "select", "pause", "pselect6",
     "ppoll", "exit", "exit_group", "clone", "fork", "vfork", "seccomp",
     "ptrace", "umask", "setsid", "setpgid", "setgroups",
     "swapoff", "delete_module", "vhangup", "acct", "sethostname", "setdomainname",
-    "close", "fchmod", "fchown", "ftruncate", "finit_module", "set_tid_address",
-    "wait4", "waitid", "msgrcv", "accept", "accept4"];
+    "shmctl", "msgctl", "semctl", "kexec_load", "kexec_file_load",
+    "close", "fchmod", "fchown", "ftruncate", "finit_module", "shutdown",
+    "wait4", "waitid", "msgrcv", "accept", "accept4", "sync", "syncfs",
+    "set_tid_address", "alarm", "setitimer", "timer_settime", "timer_delete"];
 
 /// x86_64 number→name table. Generated ONCE, committed verbatim (pinned to the
 /// libc version in Cargo.lock). Generator — mechanical, zero decisions:

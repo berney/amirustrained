@@ -4,34 +4,48 @@
 //! (`ENOENT`, `EFAULT`, `EINVAL`, `E2BIG`, `ENOSYS`…) is "not blocked /
 //! indeterminate". Mirrors amicontained's sweep — parity over cleverness.
 //!
-//! SAFETY contract (security review 2026-10-01; canonical SKIP supersedes
-//! amicontained's hang list): the null-arg premise fails exactly where the
-//! capability check precedes argument validation and the NULL/zero branch
-//! is a DOCUMENTED ACTION. The canonical SKIP list removes three failure
-//! classes:
+//! SAFETY contract (security review 2026-10-01 + round-3 re-adjudication;
+//! canonical SKIP supersedes amicontained's hang list): the null-arg premise
+//! fails exactly where the guard (capability, ownership, or "object exists")
+//! passes before/independently of argument validation and the NULL/zero
+//! branch is a DOCUMENTED ACTION or a documented expense. SKIP classes:
 //!   1. never-returns — hang / exit / self-modifying: rt_sigreturn, select,
-//!      pause, pselect6, ppoll, exit, exit_group, clone, fork, vfork, seccomp.
-//!   2. acts-when-guard-passes — NULL is the real action, so a privileged
-//!      run mutates state: ptrace(TRACEME) self-attach, umask reset,
-//!      setsid/setpgid, setgroups(0), swapoff(NULL)=all swap off,
-//!      delete_module(NULL,0)=rmmod -a, vhangup(ctty), acct(NULL)=accounting
-//!      off, sethostname/setdomainname(len 0)=empty UTS name.
-//!   3. context-dependent, no root needed — fd-0-relative calls act on
-//!      stdin's file/pty (fchmod, fchown, ftruncate, finit_module), and
-//!      conditional waits block when the object exists (wait4, waitid,
-//!      msgrcv, accept, accept4).
+//!      pause, pselect6, ppoll, exit, exit_group, clone, fork, vfork,
+//!      seccomp, ptrace(TRACEME), umask reset, setsid/setpgid, setgroups(0).
+//!   2. acts-on-root — NULL is the real action once caps are held:
+//!      swapoff(NULL)=all swap off, delete_module(NULL,0)=rmmod -a,
+//!      vhangup(ctty), acct(NULL)=accounting off,
+//!      sethostname/setdomainname(len 0)=empty UTS name; kexec_load passes
+//!      validation with nr_segments 0 (replaces the pending reboot image).
+//!   3. acts-on-root-or-owner — shmctl/msgctl/semctl: IPC_RMID == 0 IGNORES
+//!      the buffer, so the sweep destroys SysV id-0 objects (any user's as
+//!      root, the invoker's own unprivileged; ids are reused, e.g.
+//!      PostgreSQL's first segment).
+//!   4. fd-0-relative — stdin is the state sink: close(0) poisons the slot
+//!      for every later fd creator and dfd/read(0) probe; fchmod, fchown,
+//!      ftruncate, finit_module act on stdin's file; shutdown(0, SHUT_RD)
+//!      irreversibly read-shuts a socket stdin.
+//!   5. conditional-delay — waits act when the object exists (wait4, waitid,
+//!      msgrcv, accept, accept4); sync/syncfs write back unconditionally and
+//!      can D-state past the ceiling.
+//!   6. thread/process bookkeeping — set_tid_address(0) silently deadlocks
+//!      pthread_join; alarm(0)/setitimer(NULL)/timer_settime(NULL)/
+//!      timer_delete(0) cancel or destroy the caller's (or id 0's) timers.
 //!
 //! Registered ONLY with `--probe-syscalls`; without `--probe-timeout` the
 //! CLI forces a 30 s ceiling (spec §5), so even a missed hazard degrades
-//! instead of hanging the scan. Sweep = 301 pure sysenter round-trips.
+//! instead of hanging the scan. Sweep = 289 pure sysenter round-trips.
 
 use crate::model::{Fact, ProbeOutcome};
 
-/// Canonical SKIP (spec §5 syscall-probe row, security review 2026-10-01):
-/// hang-class, exit-class, self-modifying, NULL-arg acts-on-root,
-/// fd-0-relative, conditional-block. Names grouped by class; every entry
-/// must exist in NAMES (pinned by test). Entries beyond the spec's 31 are
-/// review-approved additions (see the `REVIEW_ADDS` pin in the tests).
+/// Canonical SKIP (spec §5 syscall-probe row, security review 2026-10-01 +
+/// round-3 re-adjudication same day): hang / exit / self-modifying /
+/// NULL-arg acts-on-root / acts-on-root-or-owner / fd-0-relative /
+/// conditional-delay / thread-process bookkeeping. Names grouped by class;
+/// every entry must exist in NAMES and SKIP must EQUAL the canonical set
+/// (pinned by test). The swept complement is separately frozen as an
+/// allow-list in the test module (`AUDITED_SWEPT`): any regenerated NAMES
+/// entry joins the sweep only after human review adds it there.
 #[cfg(target_arch = "x86_64")]
 pub const SKIP: &[&str] = &[
     // hang-class
@@ -60,29 +74,65 @@ pub const SKIP: &[&str] = &[
     "acct",
     "sethostname",
     "setdomainname",
+    // acts-on-root-or-owner (review round 3, 2026-10-01; reverses the
+    // earlier verified-errno-only verdict - the argument is ABI-derived and
+    // skipping costs nothing): IPC_RMID == 0 is the one ctl command that
+    // IGNORES the buffer (man's canonical form is shmctl(id, IPC_RMID,
+    // NULL)), so the all-zero sweep becomes shmctl/msgctl(0, IPC_RMID,
+    // NULL) / semctl(0, 0, IPC_RMID) and DESTROYS the SysV object with id
+    // 0 - root destroys any user's, unprivileged passes ipcperms on its own
+    // (owner-write). Ids start at 0 and are reused: PostgreSQL's first
+    // shared segment, MySQL's semaphores.
+    "shmctl",
+    "msgctl",
+    "semctl",
+    // kexec_load with nr_segments == 0 passes validation after the
+    // CAP_SYS_BOOT check (kernel enforces only an UPPER bound), so a
+    // zero-segment load is well-formed and a root sweep would replace the
+    // pending kexec image. kexec_file_load skipped for symmetry (its
+    // unargued O_EXEC-EINVAL guard is not worth trusting).
+    "kexec_load",
+    "kexec_file_load",
     // fd-0-relative: stdin's file/pty is the state sink, no root needed.
     // close(0) is the trigger for fd-0 poisoning: it frees the slot, then
     // the sweep's own fd creators (inotify_init, timerfd_create, ...) claim
     // it, and any later dfd- or read(0)-based call acts on the replacement
-    // (inotify_read with count 0 waits forever).
+    // (inotify_read with count 0 waits forever). shutdown(0, SHUT_RD = 0)
+    // is legal and IRREVERSIBLE: it read-shuts stdin whenever fd 0 is a
+    // socket (relay shells like `exec 0<>/dev/tcp/...` lose their input).
     "close",
     "fchmod",
     "fchown",
     "ftruncate",
     "finit_module",
-    // conditional-block: acts/blocks only when the object exists
+    "shutdown",
+    // conditional-delay: acts/blocks/delays when the object exists (wait4,
+    // waitid, msgrcv, accept, accept4) or is unconditionally expensive -
+    // sync() takes no args and writebacks the WHOLE host; syncfs(0) does
+    // the same to fd 0's filesystem; both run in D state for unbounded
+    // time on loaded/remote filesystems and can outlive the 30 s ceiling.
     "wait4",
     "waitid",
     "msgrcv",
     "accept",
     "accept4",
-    // thread-exit bookkeeping (review addition 2026-10-01): set_tid_address(0)
-    // NULLs the caller's clear_child_tid, so the thread's exit never fires the
-    // futex wake pthread_join waits on - the joined thread vanishes from
-    // /proc while the joiner hangs forever (repro: spawn + syscall(218, 0) +
-    // join). The pipeline itself is immune (channel + recv_timeout), but the
-    // sweep must not poison other joiners in the process.
+    "sync",
+    "syncfs",
+    // thread/process bookkeeping: null-arg calls that quietly cancel or
+    // destroy the caller's (or id 0's) kernel bookkeeping objects.
+    // set_tid_address(0) NULLs the caller's clear_child_tid, so the thread's
+    // exit never fires the futex wake pthread_join waits on - the joined
+    // thread vanishes from /proc while the joiner hangs forever (repro:
+    // spawn + syscall(218, 0) + join). The pipeline itself is immune
+    // (channel + recv_timeout), but the sweep must not poison other joiners
+    // in the process. alarm(0) cancels any pending alarm; setitimer with a
+    // NULL/zeroed value disarms ITIMER_REAL; timer_settime(0, .., NULL, ..)
+    // disarms and timer_delete(0) destroys timer id 0.
     "set_tid_address",
+    "alarm",
+    "setitimer",
+    "timer_settime",
+    "timer_delete",
 ];
 
 /// x86_64 number→name table. Generated ONCE, committed verbatim (pinned to
@@ -580,51 +630,68 @@ mod tests {
 
     #[test]
     fn skip_list_is_the_canonical_set_and_shrinks_the_sweep() {
-        // Canonical list from spec §5 (security review 2026-10-01) plus
-        // reviewed additions: every name ∈ SKIP and ∈ NAMES, SKIP gained
-        // nothing beyond CANONICAL ∪ REVIEW_ADDS, and regenerating NAMES
-        // must not silently drop a protected name into the swept set.
+        // Canonical list from spec §5 (security review 2026-10-01 + review
+        // round 3): SKIP must EQUAL this set - nothing more (unreviewed
+        // entries), nothing less (a regenerated NAMES must not silently
+        // drop a protected name into the swept set). Every entry carries
+        // dated review evidence in the SKIP class comments.
         const CANONICAL: &[&str] = &[
+            // hang-class
             "rt_sigreturn",
             "select",
             "pause",
             "pselect6",
             "ppoll",
+            // exit-class
             "exit",
             "exit_group",
             "clone",
             "fork",
             "vfork",
+            // self-modifying
             "seccomp",
             "ptrace",
             "umask",
             "setsid",
             "setpgid",
             "setgroups",
+            // NULL-arg acts-on-root
             "swapoff",
             "delete_module",
             "vhangup",
             "acct",
             "sethostname",
             "setdomainname",
+            // acts-on-root-or-owner (review round 3)
+            "shmctl",
+            "msgctl",
+            "semctl",
+            "kexec_load",
+            "kexec_file_load",
+            // fd-0-relative
             "close",
             "fchmod",
             "fchown",
             "ftruncate",
             "finit_module",
+            "shutdown",
+            // conditional-delay
             "wait4",
             "waitid",
             "msgrcv",
             "accept",
             "accept4",
+            "sync",
+            "syncfs",
+            // thread/process bookkeeping
+            "set_tid_address",
+            "alarm",
+            "setitimer",
+            "timer_settime",
+            "timer_delete",
         ];
-        assert_eq!(CANONICAL.len(), 32);
-        // Beyond the spec's 31, both additions carry dated review evidence:
-        // close (fd-0 poisoning trigger, approved 2026-10-01) and
-        // set_tid_address (NULL clear_child_tid silently deadlocks any
-        // pthread_join in the process - see the SKIP comment).
-        const REVIEW_ADDS: &[&str] = &["set_tid_address"];
-        for s in CANONICAL.iter().chain(REVIEW_ADDS) {
+        assert_eq!(CANONICAL.len(), 45);
+        for s in CANONICAL {
             assert!(SKIP.contains(s), "protected name {s} missing from SKIP");
             assert!(
                 NAMES.iter().any(|(n, _)| n == s),
@@ -633,13 +700,17 @@ mod tests {
         }
         assert_eq!(
             SKIP.len(),
-            CANONICAL.len() + REVIEW_ADDS.len(),
+            CANONICAL.len(),
             "SKIP gained unreviewed entries"
+        );
+        assert!(
+            SKIP.iter().all(|s| CANONICAL.contains(s)),
+            "SKIP diverged from the canonical spec §5 set"
         );
         assert_eq!(
             NAMES.iter().filter(|(n, _)| !SKIP.contains(n)).count(),
-            301,
-            "swept set must be NAMES minus the 33 skipped"
+            289,
+            "swept set must be NAMES minus the 45 skipped"
         );
         // Why the live smoke never tripped classes 2-3 on this host: single
         // process (no children ⇒ wait4/waitid inert), stdin was a pipe
@@ -647,6 +718,335 @@ mod tests {
         // fchmod/fchown), no msg queue id 0 existed, and no capabilities
         // were held. The list is a contractual guarantee for arbitrary
         // (including root) runs, not an observation of one.
+    }
+
+    #[test]
+    fn swept_set_equals_the_frozen_audit_allow_list() {
+        // STRUCTURAL GUARD (review round 3, 2026-10-01): a test-time
+        // allow-list, not only a runtime deny-list. SKIP alone grows
+        // reactively, one review finding at a time; this freeze inverts the
+        // default - the swept set (NAMES minus SKIP) must EQUAL the frozen
+        // list below. Any regenerated NAMES entry (libc bump) joins the sweep
+        // after a human reviews its null-arg safety and adds it here.
+        // Grouping is by syscall-number chunk for diff readability only;
+        // membership in this set IS the reviewed verdict ("audited safe").
+        const AUDITED_SWEPT: &[&str] = &[
+            // nr 0-27
+            "read",
+            "write",
+            "open",
+            "stat",
+            "fstat",
+            "lstat",
+            "poll",
+            "lseek",
+            "mmap",
+            "mprotect",
+            "munmap",
+            "brk",
+            "rt_sigaction",
+            "rt_sigprocmask",
+            "ioctl",
+            "pread64",
+            "pwrite64",
+            "readv",
+            "writev",
+            "access",
+            "pipe",
+            "sched_yield",
+            "mremap",
+            "msync",
+            "mincore",
+            // nr 28-63
+            "madvise",
+            "shmget",
+            "shmat",
+            "dup",
+            "dup2",
+            "nanosleep",
+            "getitimer",
+            "getpid",
+            "sendfile",
+            "socket",
+            "connect",
+            "sendto",
+            "recvfrom",
+            "sendmsg",
+            "recvmsg",
+            "bind",
+            "listen",
+            "getsockname",
+            "getpeername",
+            "socketpair",
+            "setsockopt",
+            "getsockopt",
+            "execve",
+            "kill",
+            "uname",
+            // nr 64-94
+            "semget",
+            "semop",
+            "shmdt",
+            "msgget",
+            "msgsnd",
+            "fcntl",
+            "flock",
+            "fsync",
+            "fdatasync",
+            "truncate",
+            "getdents",
+            "getcwd",
+            "chdir",
+            "fchdir",
+            "rename",
+            "mkdir",
+            "rmdir",
+            "creat",
+            "link",
+            "unlink",
+            "symlink",
+            "readlink",
+            "chmod",
+            "chown",
+            "lchown",
+            // nr 96-124
+            "gettimeofday",
+            "getrlimit",
+            "getrusage",
+            "sysinfo",
+            "times",
+            "getuid",
+            "syslog",
+            "getgid",
+            "setuid",
+            "setgid",
+            "geteuid",
+            "getegid",
+            "getppid",
+            "getpgrp",
+            "setreuid",
+            "setregid",
+            "getgroups",
+            "setresuid",
+            "getresuid",
+            "setresgid",
+            "getresgid",
+            "getpgid",
+            "setfsuid",
+            "setfsgid",
+            "getsid",
+            // nr 125-149
+            "capget",
+            "capset",
+            "rt_sigpending",
+            "rt_sigtimedwait",
+            "rt_sigqueueinfo",
+            "rt_sigsuspend",
+            "sigaltstack",
+            "utime",
+            "mknod",
+            "uselib",
+            "personality",
+            "ustat",
+            "statfs",
+            "fstatfs",
+            "sysfs",
+            "getpriority",
+            "setpriority",
+            "sched_setparam",
+            "sched_getparam",
+            "sched_setscheduler",
+            "sched_getscheduler",
+            "sched_get_priority_max",
+            "sched_get_priority_min",
+            "sched_rr_get_interval",
+            "mlock",
+            // nr 150-181
+            "munlock",
+            "mlockall",
+            "munlockall",
+            "modify_ldt",
+            "pivot_root",
+            "_sysctl",
+            "prctl",
+            "arch_prctl",
+            "adjtimex",
+            "setrlimit",
+            "chroot",
+            "settimeofday",
+            "mount",
+            "umount2",
+            "swapon",
+            "reboot",
+            "iopl",
+            "ioperm",
+            "create_module",
+            "init_module",
+            "get_kernel_syms",
+            "query_module",
+            "quotactl",
+            "nfsservctl",
+            "getpmsg",
+            // nr 182-206
+            "putpmsg",
+            "afs_syscall",
+            "tuxcall",
+            "security",
+            "gettid",
+            "readahead",
+            "setxattr",
+            "lsetxattr",
+            "fsetxattr",
+            "getxattr",
+            "lgetxattr",
+            "fgetxattr",
+            "listxattr",
+            "llistxattr",
+            "flistxattr",
+            "removexattr",
+            "lremovexattr",
+            "fremovexattr",
+            "tkill",
+            "time",
+            "futex",
+            "sched_setaffinity",
+            "sched_getaffinity",
+            "set_thread_area",
+            "io_setup",
+            // nr 207-235
+            "io_destroy",
+            "io_getevents",
+            "io_submit",
+            "io_cancel",
+            "get_thread_area",
+            "lookup_dcookie",
+            "epoll_create",
+            "epoll_ctl_old",
+            "epoll_wait_old",
+            "remap_file_pages",
+            "getdents64",
+            "restart_syscall",
+            "semtimedop",
+            "fadvise64",
+            "timer_create",
+            "timer_gettime",
+            "timer_getoverrun",
+            "clock_settime",
+            "clock_gettime",
+            "clock_getres",
+            "clock_nanosleep",
+            "epoll_wait",
+            "epoll_ctl",
+            "tgkill",
+            "utimes",
+            // nr 236-262
+            "vserver",
+            "mbind",
+            "set_mempolicy",
+            "get_mempolicy",
+            "mq_open",
+            "mq_unlink",
+            "mq_timedsend",
+            "mq_timedreceive",
+            "mq_notify",
+            "mq_getsetattr",
+            "add_key",
+            "request_key",
+            "keyctl",
+            "ioprio_set",
+            "ioprio_get",
+            "inotify_init",
+            "inotify_add_watch",
+            "inotify_rm_watch",
+            "migrate_pages",
+            "openat",
+            "mkdirat",
+            "mknodat",
+            "fchownat",
+            "futimesat",
+            "newfstatat",
+            // nr 263-290
+            "unlinkat",
+            "renameat",
+            "linkat",
+            "symlinkat",
+            "readlinkat",
+            "fchmodat",
+            "faccessat",
+            "unshare",
+            "set_robust_list",
+            "get_robust_list",
+            "splice",
+            "tee",
+            "sync_file_range",
+            "vmsplice",
+            "move_pages",
+            "utimensat",
+            "epoll_pwait",
+            "signalfd",
+            "timerfd_create",
+            "eventfd",
+            "fallocate",
+            "timerfd_settime",
+            "timerfd_gettime",
+            "signalfd4",
+            "eventfd2",
+            // nr 291-318
+            "epoll_create1",
+            "dup3",
+            "pipe2",
+            "inotify_init1",
+            "preadv",
+            "pwritev",
+            "rt_tgsigqueueinfo",
+            "perf_event_open",
+            "recvmmsg",
+            "fanotify_init",
+            "fanotify_mark",
+            "prlimit64",
+            "name_to_handle_at",
+            "open_by_handle_at",
+            "clock_adjtime",
+            "sendmmsg",
+            "setns",
+            "getcpu",
+            "process_vm_readv",
+            "process_vm_writev",
+            "kcmp",
+            "sched_setattr",
+            "sched_getattr",
+            "renameat2",
+            "getrandom",
+            // nr 319-334
+            "memfd_create",
+            "bpf",
+            "execveat",
+            "userfaultfd",
+            "membarrier",
+            "mlock2",
+            "copy_file_range",
+            "preadv2",
+            "pwritev2",
+            "pkey_mprotect",
+            "pkey_alloc",
+            "pkey_free",
+            "statx",
+            "rseq",
+        ];
+        assert_eq!(AUDITED_SWEPT.len(), 289);
+        let mut swept: Vec<&str> = NAMES
+            .iter()
+            .filter(|(n, _)| !SKIP.contains(n))
+            .map(|(n, _)| *n)
+            .collect();
+        let mut audited = AUDITED_SWEPT.to_vec();
+        swept.sort_unstable();
+        audited.sort_unstable();
+        assert_eq!(
+            swept, audited,
+            "swept set drifted from the frozen allow-list - review each new \
+             syscall's null-arg safety before adding it here"
+        );
     }
 
     #[test]

@@ -18,7 +18,9 @@ pub struct Cli {
     pub output: Option<std::path::PathBuf>,
     #[arg(long)]
     pub probe_syscalls: bool,
-    #[arg(long)]
+    /// Seconds; 0 is rejected (would degrade every probe instantly while
+    /// the forced-ceiling sweep thread runs with no consumer).
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
     pub probe_timeout: Option<u64>,
     #[arg(long)]
     pub pid: Option<u32>,
@@ -212,5 +214,19 @@ mod tests {
         assert_eq!(opts.probe_timeout, Some(Duration::from_secs(5)));
         let (_, opts) = Opts::from_cli(&cli("text", None, None)).unwrap();
         assert_eq!(opts.probe_timeout, None);
+    }
+
+    #[test]
+    fn probe_timeout_zero_is_rejected_as_misuse() {
+        // `--probe-timeout 0` would degrade every probe instantly while the
+        // forced-ceiling sweep thread keeps firing syscalls with no consumer
+        // left reading its deadline. clap must reject it at parse time
+        // (exit 2 = misuse channel); 1 s must still parse.
+        use clap::error::ErrorKind;
+        let err = Cli::try_parse_from(["amirustrained", "--probe-timeout", "0"])
+            .expect_err("0 is not a legal probe timeout");
+        assert_eq!(err.kind(), ErrorKind::ValueValidation);
+        assert_eq!(err.exit_code(), 2);
+        assert!(Cli::try_parse_from(["amirustrained", "--probe-timeout", "1"]).is_ok());
     }
 }
