@@ -1,8 +1,8 @@
 use super::rule::{Assess, Rule};
 use super::{Finding, Report, Severity};
 
-/// Rule registry; Tasks 20-21 append entries in id order (append-only in
-/// id-space, spec §6). Batch 1: AMR-001..006.
+/// Rule registry; Tasks 20-21 append entries (append-only in id-space, spec §6:
+/// insertion order is stable, ids need not sort numerically — see AMR-022).
 pub static RULES: &[Rule] = &[
     Rule {
         id: "AMR-001",
@@ -252,6 +252,203 @@ pub static RULES: &[Rule] = &[
             let mut ev = f.clone();
             ev.value = serde_json::Value::Array(hits.into_iter().cloned().collect());
             Some(vec![ev])
+        },
+    },
+    // Task 20 batch: registry order is append-stable in insertion order, not
+    // numeric — AMR-022 keeps its id-space-append slot above these (spec §6).
+    Rule {
+        id: "AMR-007",
+        slug: "selinux-permissive-in-container",
+        severity: Severity::Medium,
+        summary: "SELinux context present while the policy runs permissive",
+        why: "Permissive SELinux logs denials but enforces none of them: the task's \
+              label is decorative, and every containment assumption that rests on \
+              mandatory access control is void — on RHEL-family hosts SELinux is the \
+              only active LSM, so permissive here means no MAC layer at all, while \
+              the audit log quietly accumulates the attacks that were not stopped.",
+        remediation: "Return SELinux to enforcing (`setenforce 1`, `enforcing=1` on the \
+                      kernel command line) and resolve the logged denials through an \
+                      `audit2allow` policy review instead of leaving the system \
+                      permissive; per-domain permissive is a debugging tool, not a \
+                      deployment mode.",
+        references: &["https://www.kernel.org/doc/html/latest/security/selinux/index.html"],
+        requires_root: false,
+        check: |a| {
+            // No containment gate (spec condition verbatim): permissive MAC on a
+            // bare host is a real hardening gap, not a tautology like AMR-003/004.
+            let f = a.fact("lsm", "selinux")?;
+            (f.value.get("mode").and_then(|m| m.as_str()) == Some("permissive"))
+                .then(|| vec![f.clone()])
+        },
+    },
+    Rule {
+        id: "AMR-008",
+        slug: "identity-uidmap",
+        severity: Severity::Medium,
+        summary: "User namespace keeps no identity isolation: uid_map is the full identity mapping",
+        why: "A single `0 0 4294967295` line maps every container uid onto the same \
+              host uid: uid 0 inside *is* uid 0 outside, so DAC checks agree with the \
+              host — a file this process may write by ownership, the host owner can \
+              write back. The namespace buys no identity isolation; it only satisfies \
+              the runtime's userns bookkeeping (spec §6: DAC root == host root).",
+        remediation: "Use a real user namespace: rootless runtime mode (podman) or \
+                      `--userns-remap` (docker) places container uid 0 on an \
+                      unprivileged subordinate range instead of the identity mapping.",
+        references: &[
+            "https://man7.org/linux/man-pages/man7/id_mappings.7.html",
+            "https://man7.org/linux/man-pages/man7/user_namespaces.7.html",
+        ],
+        requires_root: false,
+        check: |a| {
+            if !a.containerized() {
+                return None;
+            }
+            let f = a.fact("uidmap", "uidMap")?;
+            // Full-array equality: exactly one 0→0 full-range row is the
+            // no-userns-isolation layout; extra/partial rows are not.
+            let identity = serde_json::json!([{"container": 0, "host": 0, "range": u32::MAX}]);
+            (f.value == identity).then(|| vec![f.clone()])
+        },
+    },
+    Rule {
+        id: "AMR-009",
+        slug: "cgroup-v1-container",
+        severity: Severity::Low,
+        summary: "Container runs on the legacy cgroup v1 hierarchy",
+        why: "cgroup v1 carries the `release_agent`/`notify_on_release` host-exec \
+              interfaces behind the classic container escapes (CVE-2022-0492 and \
+              family): a task that can reach or remount a writable v1 hierarchy while \
+              holding CAP_SYS_ADMIN runs helpers on the host. v1 also lacks the \
+              userns-aware delegation that makes v2 safe to hand container slices over.",
+        remediation: "Boot/migrate the host to the unified hierarchy (cgroup v2 is the \
+                      default on every current distribution); where v1 is unavoidable, \
+                      mount the container's cgroupfs read-only.",
+        references: &[
+            "https://man7.org/linux/man-pages/man7/cgroups.7.html",
+            "https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html",
+        ],
+        requires_root: false,
+        check: |a| {
+            if !a.containerized() {
+                return None;
+            }
+            let f = a.fact("cgroup", "version")?;
+            (f.value.as_i64() == Some(1)).then(|| vec![f.clone()])
+        },
+    },
+    Rule {
+        id: "AMR-010",
+        slug: "no-pids-limit",
+        severity: Severity::Low,
+        summary: "pids controller present but unlimited (pids.max = max)",
+        why: "The pids controller is delegated to the container's scope yet capped at \
+              `max` — the kernel's spelling of unlimited: one contained fork bomb \
+              exhausts host PIDs and task_struct memory and wedges every other \
+              workload, the runtime itself included. The mitigation is present and \
+              switched off, not missing.",
+        remediation: "Set a per-container pid limit (`--pids-limit` on docker/podman, \
+                      or write `pids.max` in the container's scope) so a runaway stays \
+                      inside its own slice.",
+        references: &[
+            "https://man7.org/linux/man-pages/man7/cgroups.7.html",
+            "https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html",
+        ],
+        requires_root: false,
+        check: |a| {
+            if !a.containerized() {
+                return None;
+            }
+            if !a.arr_has("cgroup", "controllers", "pids") {
+                return None;
+            }
+            let limits = a.fact("cgroup", "limits")?;
+            if limits.value.get("pids").and_then(|p| p.as_str()) != Some("max") {
+                return None;
+            }
+            Some(vec![
+                a.fact("cgroup", "controllers")?.clone(),
+                limits.clone(),
+            ])
+        },
+    },
+    Rule {
+        id: "AMR-011",
+        slug: "gid-map-includes-0",
+        severity: Severity::Medium,
+        summary: "gid_map maps host gid 0 while setgroups is not denied",
+        why: "A gid_map line reaching host gid 0 hands the namespace root-group \
+              membership, and while `setgroups` reads `allow` any process can re-add \
+              groups — including gid 0 — so dropping them is not durable: whatever \
+              host root-group membership unlocks (group-writable root files, cron \
+              directories) is reachable again on a whim. Rootless runtimes write \
+              `deny` when they create the namespace for exactly this reason.",
+        remediation: "Write `deny` to the namespace's `setgroups` file (the rootless \
+                      runtime default) and keep host gid 0 out of the gid_map — map \
+                      only subordinate gid ranges.",
+        references: &[
+            "https://man7.org/linux/man-pages/man2/setgroups.2.html",
+            "https://man7.org/linux/man-pages/man7/id_mappings.7.html",
+        ],
+        requires_root: false,
+        check: |a| {
+            // Ungated per spec text: a host-gid-0 grant with setgroups allowed
+            // moves toward root wherever the layout is found.
+            let gid = a.fact("uidmap", "gidMap")?;
+            let maps_host_root = gid.value.as_array().is_some_and(|rows| {
+                rows.iter()
+                    .any(|r| r.get("host").and_then(|h| h.as_i64()) == Some(0))
+            });
+            if !maps_host_root {
+                return None;
+            }
+            let setgroups = a.fact("uidmap", "setgroups")?;
+            (setgroups.value.as_str() == Some("allow"))
+                .then(|| vec![gid.clone(), setgroups.clone()])
+        },
+    },
+    Rule {
+        id: "AMR-012",
+        slug: "landlock-abi-available",
+        severity: Severity::Info,
+        summary: "Landlock LSM available in this kernel (ABI version reported)",
+        why: "The landlock(2) ruleset syscall answers with an ABI version, so the \
+              kernel offers in-process filesystem sandboxing that any workload here \
+              could use and nothing at kernel level stops the runtime from adopting \
+              it. Per-process Landlock domain state is not observable through \
+              procfs: this finding claims presence only, never disuse.",
+        remediation: "Informational — no action required. To confine a workload \
+                      proactively, apply a Landlock ruleset to it (systemd \
+                      `Landlock=` settings, or a landlock-aware launcher).",
+        references: &[
+            "https://man7.org/linux/man-pages/man7/landlock.7.html",
+            "https://www.kernel.org/doc/html/latest/userspace-api/landlock.html",
+        ],
+        requires_root: false,
+        check: |a| {
+            a.fact("lsm", "landlockAbi")
+                .filter(|f| f.value.as_i64().is_some_and(|v| v >= 1))
+                .map(|f| vec![f.clone()])
+        },
+    },
+    Rule {
+        id: "AMR-013",
+        slug: "virtualized",
+        severity: Severity::Info,
+        summary: "Running on a hypervisor (VMM boundary detected)",
+        why: "CPUID reports a hypervisor interface: this environment sits inside a \
+              virtual machine. Context, not a defect — the escape path out of a \
+              guest crosses the VMM attack surface, a different exploit class under \
+              a different patch authority than the kernel or container boundary, so \
+              isolation and hardening claims should be scoped accordingly.",
+        remediation: "Informational — no action required. Where the threat model \
+                      cares about the boundary, assess the hypervisor host separately \
+                      from this guest.",
+        references: &["https://www.kernel.org/doc/html/latest/virt/kvm/index.html"],
+        requires_root: false,
+        check: |a| {
+            a.fact("vmm", "hypervisor")
+                .filter(|f| f.value.get("present") == Some(&serde_json::Value::Bool(true)))
+                .map(|f| vec![f.clone()])
         },
     },
 ];
@@ -757,6 +954,221 @@ mod tests {
         assert!(rule("AMR-006").evaluate(&r, false).is_none());
     }
 
+    // ---------------------------------------------------------------- AMR-007
+
+    #[test]
+    fn amr007_fires_medium_on_permissive_selinux_without_containment_gate() {
+        // Spec condition is `context present ∧ permissive` only: permissive MAC
+        // on a bare host is a true hardening gap (spec wins over the plan gate).
+        let mut r = report_with(&selinux_facts("permissive"));
+        r.verdict = Some(verdict(RuntimeKind::Host));
+        let f = rule("AMR-007").evaluate(&r, false).expect("must fire");
+        assert_eq!(f.severity, Severity::Medium);
+        assert_eq!(f.evidence[0].key, "selinux");
+    }
+
+    #[test]
+    fn amr007_quiet_when_enforcing() {
+        let r = report_with(&selinux_facts("enforcing"));
+        assert!(rule("AMR-007").evaluate(&r, false).is_none());
+    }
+
+    #[test]
+    fn amr007_quiet_when_context_or_mode_absent() {
+        // Non-SELinux hosts emit an Ok-status null; a masked enforce file
+        // leaves `mode` null. Neither satisfies "context present ∧ permissive".
+        let r = report_with(&[("lsm", "selinux", serde_json::Value::Null)]);
+        assert!(rule("AMR-007").evaluate(&r, false).is_none());
+        let r = report_with(&[(
+            "lsm",
+            "selinux",
+            json!({"context": "docker_t", "mode": null}),
+        )]);
+        assert!(rule("AMR-007").evaluate(&r, false).is_none());
+    }
+
+    // ---------------------------------------------------------------- AMR-008
+
+    /// The exact `uidmap` map emission (probes/uidmap.rs: MapRow rows
+    /// `{container, host, range}`).
+    fn map_rows(rows: &[(u32, u32, u32)]) -> serde_json::Value {
+        serde_json::Value::Array(
+            rows.iter()
+                .map(|&(container, host, range)| {
+                    json!({"container": container, "host": host, "range": range})
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn amr008_fires_on_full_identity_uidmap_in_container() {
+        let mut r = report_with(&[("uidmap", "uidMap", map_rows(&[(0, 0, u32::MAX)]))]);
+        r.verdict = Some(verdict(RuntimeKind::Docker));
+        let f = rule("AMR-008").evaluate(&r, false).expect("must fire");
+        assert_eq!(f.severity, Severity::Medium);
+        assert_eq!(f.evidence[0].key, "uidMap");
+    }
+
+    #[test]
+    fn amr008_quiet_on_rootless_subordinate_rows() {
+        let mut r = report_with(&[("uidmap", "uidMap", map_rows(&[(0, 100000, 65536)]))]);
+        r.verdict = Some(verdict(RuntimeKind::Podman));
+        assert!(rule("AMR-008").evaluate(&r, false).is_none());
+    }
+
+    #[test]
+    fn amr008_quiet_on_host_verdict() {
+        // A bare host's uid_map is the identity mapping by design: gated.
+        let mut r = report_with(&[("uidmap", "uidMap", map_rows(&[(0, 0, u32::MAX)]))]);
+        r.verdict = Some(verdict(RuntimeKind::Host));
+        assert!(rule("AMR-008").evaluate(&r, false).is_none());
+    }
+
+    // ---------------------------------------------------------------- AMR-009
+
+    #[test]
+    fn amr009_fires_low_on_cgroup_v1_in_container() {
+        let mut r = report_with(&[("cgroup", "version", json!(1))]);
+        r.verdict = Some(verdict(RuntimeKind::Lxc));
+        let f = rule("AMR-009").evaluate(&r, false).expect("must fire");
+        assert_eq!(f.severity, Severity::Low);
+        assert_eq!(f.evidence[0].key, "version");
+    }
+
+    #[test]
+    fn amr009_quiet_on_unified_v2() {
+        let mut r = report_with(&[("cgroup", "version", json!(2))]);
+        r.verdict = Some(verdict(RuntimeKind::Docker));
+        assert!(rule("AMR-009").evaluate(&r, false).is_none());
+    }
+
+    #[test]
+    fn amr009_quiet_on_host_verdict() {
+        let mut r = report_with(&[("cgroup", "version", json!(1))]);
+        r.verdict = Some(verdict(RuntimeKind::Host));
+        assert!(rule("AMR-009").evaluate(&r, false).is_none());
+    }
+
+    // ---------------------------------------------------------------- AMR-010
+
+    fn amr010_report(controllers: serde_json::Value, limits: serde_json::Value) -> Report {
+        let mut r = report_with(&[
+            ("cgroup", "controllers", controllers),
+            ("cgroup", "limits", limits),
+        ]);
+        r.verdict = Some(verdict(RuntimeKind::Docker));
+        r
+    }
+
+    #[test]
+    fn amr010_fires_low_when_pids_controller_present_but_unlimited() {
+        let r = amr010_report(
+            json!(["cpu", "memory", "pids"]),
+            json!({"memory": "max", "pids": "max"}),
+        );
+        let f = rule("AMR-010").evaluate(&r, false).expect("must fire");
+        assert_eq!(f.severity, Severity::Low);
+        // Evidence carries both the controller list and the unlimited limit.
+        let keys: Vec<&str> = f.evidence.iter().map(|e| e.key.as_str()).collect();
+        assert_eq!(keys, ["controllers", "limits"]);
+    }
+
+    #[test]
+    fn amr010_quiet_when_pids_limited() {
+        let r = amr010_report(json!(["pids"]), json!({"pids": "2048"}));
+        assert!(rule("AMR-010").evaluate(&r, false).is_none());
+    }
+
+    #[test]
+    fn amr010_quiet_without_pids_controller() {
+        // lxc fixture shape: no pids controller — absence is not "unlimited".
+        let r = amr010_report(json!(["cpu", "memory"]), json!({}));
+        assert!(rule("AMR-010").evaluate(&r, false).is_none());
+    }
+
+    // ---------------------------------------------------------------- AMR-011
+
+    fn amr011_report(gid_rows: serde_json::Value, setgroups: &str) -> Report {
+        report_with(&[
+            ("uidmap", "gidMap", gid_rows),
+            ("uidmap", "setgroups", json!(setgroups)),
+        ])
+    }
+
+    #[test]
+    fn amr011_fires_medium_on_host0_gid_row_with_setgroups_allow() {
+        // Ungated per spec text; severity is medium (spec), not the plan's info.
+        let r = amr011_report(map_rows(&[(0, 0, 1)]), "allow");
+        let f = rule("AMR-011").evaluate(&r, false).expect("must fire");
+        assert_eq!(f.severity, Severity::Medium);
+        // Evidence is BOTH facts: the mapping and the non-denial.
+        let keys: Vec<&str> = f.evidence.iter().map(|e| e.key.as_str()).collect();
+        assert_eq!(keys, ["gidMap", "setgroups"]);
+    }
+
+    #[test]
+    fn amr011_quiet_when_setgroups_denied() {
+        let r = amr011_report(map_rows(&[(0, 0, 1)]), "deny");
+        assert!(rule("AMR-011").evaluate(&r, false).is_none());
+    }
+
+    #[test]
+    fn amr011_quiet_without_host0_row() {
+        let r = amr011_report(map_rows(&[(0, 100000, 65536)]), "allow");
+        assert!(rule("AMR-011").evaluate(&r, false).is_none());
+    }
+
+    // ---------------------------------------------------------------- AMR-012
+
+    #[test]
+    fn amr012_fires_info_at_abi_boundary() {
+        let r = report_with(&[("lsm", "landlockAbi", json!(1))]);
+        let f = rule("AMR-012")
+            .evaluate(&r, false)
+            .expect("abi 1 must fire");
+        assert_eq!(f.severity, Severity::Info);
+        assert_eq!(f.evidence[0].key, "landlockAbi");
+    }
+
+    #[test]
+    fn amr012_quiet_when_abi_null_zero_or_absent() {
+        // Unsupported syscall / absent securityfs: Ok-status null (probes/lsm.rs).
+        let r = report_with(&[("lsm", "landlockAbi", serde_json::Value::Null)]);
+        assert!(rule("AMR-012").evaluate(&r, false).is_none());
+        let r = report_with(&[("lsm", "landlockAbi", json!(0))]);
+        assert!(rule("AMR-012").evaluate(&r, false).is_none());
+        assert!(
+            rule("AMR-012")
+                .evaluate(&Report::blank(ScanMeta::stub(), 1), false)
+                .is_none()
+        );
+    }
+
+    // ---------------------------------------------------------------- AMR-013
+
+    #[test]
+    fn amr013_fires_info_when_hypervisor_present() {
+        let r = report_with(&[(
+            "vmm",
+            "hypervisor",
+            json!({"present": true, "vendor": "KVM"}),
+        )]);
+        let f = rule("AMR-013").evaluate(&r, false).expect("must fire");
+        assert_eq!(f.severity, Severity::Info);
+        assert_eq!(f.evidence[0].value["vendor"], "KVM");
+    }
+
+    #[test]
+    fn amr013_quiet_on_bare_hw() {
+        let r = report_with(&[(
+            "vmm",
+            "hypervisor",
+            json!({"present": false, "vendor": null}),
+        )]);
+        assert!(rule("AMR-013").evaluate(&r, false).is_none());
+    }
+
     // ------------------------------------------------------------ cross-cutting
 
     #[test]
@@ -782,12 +1194,15 @@ mod tests {
     }
 
     #[test]
-    fn registry_is_id_ordered_and_unique() {
+    fn registry_order_is_exact_and_unique() {
         let ids: Vec<&str> = RULES.iter().map(|r| r.id).collect();
+        // Registry order is append-stable, not numeric: AMR-022 was an
+        // id-space append (ReviewT19 F2) and keeps its slot.
         assert_eq!(
             ids,
             [
-                "AMR-001", "AMR-002", "AMR-003", "AMR-004", "AMR-005", "AMR-006", "AMR-022"
+                "AMR-001", "AMR-002", "AMR-003", "AMR-004", "AMR-005", "AMR-006", "AMR-022",
+                "AMR-007", "AMR-008", "AMR-009", "AMR-010", "AMR-011", "AMR-012", "AMR-013",
             ]
         );
     }
