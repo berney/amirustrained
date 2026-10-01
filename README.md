@@ -43,6 +43,7 @@ amirustrained                                  # human-readable text report
 amirustrained --format json | jq '.findings[] | {rule, severity}'
 amirustrained --fail-on high                   # CI gate: exit 1 at High+ (any|info|low|medium|high|critical)
 amirustrained --probe-syscalls                 # opt-in: enumerate syscalls blocked by seccomp
+amirustrained --probe-ebpf                     # opt-in: really load a trivial eBPF program (see note)
 amirustrained -o report.sarif --format sarif   # for code-scanning pipelines
 ```
 
@@ -51,6 +52,18 @@ return `EPERM`/`EACCES`. The list is audited and hang/EPERM-safe, but the binary
 **not** be installed setuid-root or with file capabilities: under such a launch the
 zero-arg credential syscalls would succeed and convert the process's real/saved ids
 to root. Nothing in this project packages those bits.
+
+`--probe-ebpf` risk & cleanup note: it issues one real `bpf(BPF_PROG_LOAD)` with a
+tracepoint program embedded in the binary (`bpf/prebuilt/hello.bpf.o`: zero maps, zero
+helpers, never attached — it can never execute). A load **succeeds** only if this
+process may load programs: CAP_BPF+CAP_PERFMON or CAP_SYS_ADMIN, i.e. effectively root;
+every refusal is decoded into `ebpf.load` (`eperm-no-caps`, `eperm-unpriv-disabled`,
+`eacces-lsm`, `eopnotsupp`, `verifier-reject`, …) instead of a bare error. Nothing is
+ever pinned under `/sys/fs/bpf`: the program fd closes on drop right after the verdict,
+and even a crash closes it at process exit, so the kernel frees the program — no
+leftover state is structurally possible and no unload CLI exists. Rebuilding the
+embedded object is a nightly-only contributor path (`bash bpf/build.sh`); the normal
+stable/musl build just embeds the committed artifact.
 
 `--fixture-root <DIR>` (hidden, for tests) relocates every pseudo-file read under
 `<DIR>/proc`, `<DIR>/sys`, … — the whole fixture corpus (9 scenarios, golden tests)
@@ -65,7 +78,7 @@ runs on it.
 | `capabilities` | own all 6 cap sets, NoNewPrivs, Yama scope | + other `--pid` targets | Yama knob absent |
 | `seccomp` | mode, filter count, action matrix | + raw BPF filter dump (`SECCOMP_GET_FILTER`) | pre-4.14 kernel ⇒ mode-only |
 | `lsm` | LSM list, AppArmor/SELinux state, lockdown, Landlock ABI | — | each knob reported present/absent independently |
-| `ebpf` | `unprivileged_bpf_disabled` + lockdown knobs; computed bpf() reachability (zero syscalls — the real load probe is the future `--probe-ebpf`) | — | capabilities facts absent ⇒ `reachability` degraded (knobs still reported) |
+| `ebpf` | `unprivileged_bpf_disabled` + lockdown knobs; computed bpf() reachability (zero syscalls — the real load probe is the opt-in `--probe-ebpf`) | — | capabilities facts absent ⇒ `reachability` degraded (knobs still reported) |
 | `vmm` | CPUID, DMI (public fields), clocksource, vsock | — | restricted DMI ⇒ fewer signatures |
 | `cgroup` | own cgroup path, controllers, limits | — | v1 or v2, both handled |
 | `sockets` | candidate socket probe + `GET /info` over UDS | — | socket absent/unwritable ⇒ quiet (environment-only evidence) |
@@ -73,6 +86,8 @@ runs on it.
 | `runtime` | composite fusion of all the above | — | low-confidence verdict ⇒ AMR-015 tells you to audit manually |
 
 `--probe-syscalls` adds the `syscall-probe` event to the stream (see risk note above).
+`--probe-ebpf` adds the `ebpf-load` event (fact namespace `ebpf.load`); it is the only
+code path that touches `bpf(2)`, and success there is what arms AMR-021.
 
 ## Exit codes
 
@@ -120,11 +135,12 @@ report `info` + "insufficient privilege to assess" when run unprivileged.
 | AMR-018 | `no-new-privs-unset` | low | NoNewPrivs unset: execve can still gain privileges |
 | AMR-019 | `bpf-unpriv-open` | medium | Inside a shared-kernel container and unprivileged_bpf_disabled is 0 (or absent pre-5.13): any local uid can reach bpf() from a weak foothold — shares the container gate, so VM-family verdicts are exempt (guest bpf() is guest-kernel-local; spec §6 erratum 2026-10-01) |
 | AMR-020 | `cap-bpf-or-perfmon` | low | CapEff includes CAP_BPF or CAP_PERFMON: program load / map read possible without full root |
+| AMR-021 | `ebpf-load-succeeded` | high | `--probe-ebpf` only: trivial program load succeeded while in a shared-kernel container — `bpf()` reachable past seccomp/LSM/cap drops; kernel attack surface confirmed open *(same container gate: silent at Host verdicts — root loading is ordinary there — and at VM-family verdicts — the program lands in the guest kernel; spec §6 erratum 2026-10-01)* |
 | AMR-022 | `rootless-socket-exposed` | high | Rootless container runtime API socket is reachable and writable (escape to an unprivileged host uid — not a host-root promise) |
 
-*Notes:* the one remaining planned id is AMR-021 (eBPF program load), which will
-fire only when the opt-in `--probe-ebpf` load probe succeeds; the id-space is
-append-only.
+*Notes:* the 22-id v1 catalog is complete; the id-space is append-only. AMR-021 is
+the only rule whose evidence requires an opt-in probe (`--probe-ebpf`): without the
+flag the fact never exists and the rule can never fire.
 
 ## Development
 
@@ -144,6 +160,9 @@ The smoke script builds on demand, runs all five formats plus
 
 The binary is read-only with respect to the system: it never writes files (except
 `-o`), never changes kernel state. The only syscalls with any effect are the opt-in
-`--probe-syscalls` null-arg probes and `seccomp(GET_ACTION_AVAIL)`, which is inert.
+`--probe-syscalls` null-arg probes, `seccomp(GET_ACTION_AVAIL)` (inert), and — with
+`--probe-ebpf` — a single `bpf(BPF_PROG_LOAD)` whose program is never pinned, never
+attached and fd-dropped before the process exits (crash included: exit closes fds and
+the kernel frees the program).
 Findings are evidence-cited facts, and anything the tool cannot assess at the
 current privilege level says so instead of overclaiming.

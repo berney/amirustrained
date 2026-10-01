@@ -18,6 +18,13 @@ pub struct Cli {
     pub output: Option<std::path::PathBuf>,
     #[arg(long)]
     pub probe_syscalls: bool,
+    /// Opt-in REAL eBPF program load via aya (embedded object, one
+    /// BPF_PROG_LOAD). Succeeds only when the caller can load programs
+    /// (CAP_BPF/CAP_SYS_ADMIN — effectively root); every denial is decoded
+    /// into `ebpf.load`. Nothing is pinned; loaded state dies with the
+    /// process (src/probes/ebpf_load.rs).
+    #[arg(long)]
+    pub probe_ebpf: bool,
     /// Seconds; 0 is rejected (would degrade every probe instantly while
     /// the forced-ceiling sweep thread runs with no consumer).
     #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
@@ -43,6 +50,7 @@ pub struct Cli {
 pub struct Opts {
     pub pid: Option<u32>,
     pub probe_syscalls: bool,
+    pub probe_ebpf: bool,
     pub probe_timeout: Option<Duration>,
     pub fail_on: Option<Severity>,
     pub dump_filters: bool,
@@ -101,6 +109,7 @@ impl Opts {
             Opts {
                 pid: c.pid,
                 probe_syscalls: c.probe_syscalls,
+                probe_ebpf: c.probe_ebpf,
                 probe_timeout: match (c.probe_syscalls, c.probe_timeout) {
                     // An explicit value stays authoritative; the sweep
                     // alone never runs without a ceiling (spec §5).
@@ -146,6 +155,7 @@ mod tests {
             format: format.to_owned(),
             output: None,
             probe_syscalls: false,
+            probe_ebpf: false,
             probe_timeout,
             pid: Some(7),
             fail_on: fail_on.map(str::to_owned),
@@ -214,6 +224,25 @@ mod tests {
         assert_eq!(opts.probe_timeout, Some(Duration::from_secs(5)));
         let (_, opts) = Opts::from_cli(&cli("text", None, None)).unwrap();
         assert_eq!(opts.probe_timeout, None);
+    }
+
+    #[test]
+    fn probe_ebpf_is_a_pure_opt_in_flag() {
+        // The load probe needs no ceiling machinery (a single syscall) and
+        // must not disturb the sweep rules: default off, flag maps through,
+        // and with the flag alone the timeout stays None.
+        let (_, opts) = Opts::from_cli(&cli("text", None, None)).unwrap();
+        assert!(!opts.probe_ebpf);
+        let c = Cli {
+            probe_ebpf: true,
+            ..cli("text", None, None)
+        };
+        let (_, opts) = Opts::from_cli(&c).unwrap();
+        assert!(opts.probe_ebpf);
+        assert_eq!(opts.probe_timeout, None);
+        // The public long form really is `--probe-ebpf`.
+        let parsed = Cli::try_parse_from(["amirustrained", "--probe-ebpf"]).unwrap();
+        assert!(parsed.probe_ebpf);
     }
 
     #[test]

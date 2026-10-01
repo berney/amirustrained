@@ -747,6 +747,53 @@ pub static RULES: &[Rule] = &[
                 .map(|f| vec![f])
         },
     },
+    // Task 29: the confirmed-open kernel surface. Opt-in evidence only —
+    // the `ebpf.load` fact exists exactly when `--probe-ebpf` ran, and only
+    // an Ok-status `status == "ok"` counts (Report::fact filters degraded,
+    // so artifact-missing/parse-failed can never satisfy the check).
+    Rule {
+        id: "AMR-021",
+        slug: "ebpf-load-succeeded",
+        severity: Severity::High,
+        summary: "--probe-ebpf only: trivial program load succeeded in a \
+                  shared-kernel container — bpf() reachable past \
+                  seccomp/LSM/cap drops; kernel attack surface confirmed open",
+        why: "This is not a knob reading: the process actually loaded a \
+              program into the kernel via bpf(BPF_PROG_LOAD). Every gate a \
+              shared-kernel containment is supposed to provide — seccomp \
+              syscall filtering, capability drops, LSM, the \
+              unprivileged_bpf_disabled knob — demonstrably failed to stop \
+              this caller, and loaded code runs in kernel context, subject \
+              only to the verifier. Gated per the §6 container-gate erratum \
+              (2026-10-01): on a bare host load ability is ordinary root \
+              behavior the admin granted, and under VM-family verdicts the \
+              program lands in the GUEST kernel — the high severity is \
+              specifically about the SHARED host kernel being reachable \
+              from inside a containment.",
+        remediation: "From the containment side: drop CAP_BPF and \
+                      CAP_SYS_ADMIN (`--cap-drop ALL` + re-add), keep \
+                      seccomp on the default profile (it blocks bpf()), \
+                      confine with LSM. From the host side: set \
+                      `kernel.unprivileged_bpf_disabled = 2` (immutable \
+                      until reboot) and audit why the container's gates \
+                      allowed the call at all — this finding means they \
+                      did not.",
+        references: &[
+            "https://man7.org/linux/man-pages/man2/bpf.2.html",
+            "https://docs.kernel.org/bpf/verifier/index.html",
+        ],
+        requires_root: false,
+        container_only: true,
+        check: |a| {
+            if !a.shared_kernel_containment() {
+                return None;
+            }
+            a.fact("ebpf", "load")
+                .filter(|f| f.value.get("status").and_then(serde_json::Value::as_str) == Some("ok"))
+                .cloned()
+                .map(|f| vec![f])
+        },
+    },
 ];
 
 pub fn evaluate_all(report: &Report, privileged: bool) -> Vec<Finding> {
@@ -1980,13 +2027,14 @@ mod tests {
         let ids: Vec<&str> = RULES.iter().map(|r| r.id).collect();
         // Registry order is append-stable, not numeric: AMR-022 was an
         // id-space append (ReviewT19 F2) and keeps its slot; Task 21 appended
-        // 014–018 after AMR-013, Task 28 appended 019–020 after those.
+        // 014–018 after AMR-013, Task 28 appended 019–020, Task 29 021.
         assert_eq!(
             ids,
             [
                 "AMR-001", "AMR-002", "AMR-003", "AMR-004", "AMR-005", "AMR-006", "AMR-022",
                 "AMR-007", "AMR-008", "AMR-009", "AMR-010", "AMR-011", "AMR-012", "AMR-013",
                 "AMR-014", "AMR-015", "AMR-016", "AMR-017", "AMR-018", "AMR-019", "AMR-020",
+                "AMR-021",
             ]
         );
     }
@@ -2297,5 +2345,64 @@ mod tests {
         let mut r = Report::blank(ScanMeta::stub(), 1);
         r.verdict = Some(verdict(RuntimeKind::Docker));
         assert!(rule("AMR-020").evaluate(&r, true).is_none());
+    }
+
+    // ── Task 29: AMR-021 confirmed-open kernel surface ────────────────────
+
+    #[test]
+    fn amr021_fires_only_on_a_confirmed_load_in_a_shared_kernel_container() {
+        let mut r = report_with(&[(
+            "ebpf",
+            "load",
+            json!({"status": "ok", "errno": null, "message": null}),
+        )]);
+        r.verdict = Some(verdict(RuntimeKind::Podman));
+        let f = rule("AMR-021")
+            .evaluate(&r, false)
+            .expect("a real load in a shared-kernel container is high");
+        assert_eq!(f.severity, Severity::High);
+        assert_eq!(f.evidence[0].probe, "ebpf");
+        assert_eq!(f.evidence[0].key, "load");
+    }
+
+    #[test]
+    fn amr021_silent_on_denials_and_without_the_opt_in_fact() {
+        for denial in [
+            json!({"status": "eperm-no-caps", "errno": 1, "message": null}),
+            json!({"status": "verifier-reject", "errno": 22, "message": "R1 !read_ok"}),
+            json!({"status": "artifact-missing", "errno": null, "message": null}),
+            json!({"status": "object-parse-failed", "errno": null, "message": "bad"}),
+        ] {
+            let mut r = report_with(&[("ebpf", "load", denial)]);
+            r.verdict = Some(verdict(RuntimeKind::Docker));
+            assert!(
+                rule("AMR-021").evaluate(&r, false).is_none(),
+                "only a completed load may fire"
+            );
+        }
+        // The common case: no --probe-ebpf, no fact.
+        let mut r = Report::blank(ScanMeta::stub(), 1);
+        r.verdict = Some(verdict(RuntimeKind::Docker));
+        assert!(rule("AMR-021").evaluate(&r, false).is_none());
+    }
+
+    #[test]
+    fn amr021_silent_at_host_and_vm_verdicts_even_with_load_ok() {
+        // The §6 erratum in its sharpest form: the SAME confirmed load is
+        // high inside a shared-kernel container, ordinary on a host (root
+        // was root), and guest-kernel-local under firecracker/gVisor/kata.
+        for runtime in [
+            RuntimeKind::Host,
+            RuntimeKind::Firecracker,
+            RuntimeKind::Gvisor,
+            RuntimeKind::Kata,
+        ] {
+            let mut r = report_with(&[("ebpf", "load", json!({"status": "ok"}))]);
+            r.verdict = Some(verdict(runtime));
+            assert!(
+                rule("AMR-021").evaluate(&r, true).is_none(),
+                "AMR-021 must stay silent under a {runtime:?} verdict"
+            );
+        }
     }
 }

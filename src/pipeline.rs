@@ -226,6 +226,7 @@ mod tests {
         let opts = Opts {
             pid: None,
             probe_syscalls: false,
+            probe_ebpf: false,
             dump_filters: false,
             probe_timeout: Some(std::time::Duration::from_millis(50)),
             fail_on: None,
@@ -256,6 +257,7 @@ mod tests {
         let opts = Opts {
             pid: None,
             probe_syscalls: false,
+            probe_ebpf: false,
             dump_filters: false,
             probe_timeout: None,
             fail_on: None,
@@ -327,6 +329,7 @@ mod tests {
         let opts = Opts {
             pid: Some(std::process::id()),
             probe_syscalls: false,
+            probe_ebpf: false,
             dump_filters: false,
             probe_timeout: None,
             fail_on: None,
@@ -371,6 +374,7 @@ mod tests {
         let opts = Opts {
             pid: None,
             probe_syscalls: false,
+            probe_ebpf: false,
             dump_filters: false,
             probe_timeout: None,
             fail_on: None,
@@ -397,6 +401,7 @@ mod tests {
         let opts = Opts {
             pid: None,
             probe_syscalls: false,
+            probe_ebpf: false,
             dump_filters: false,
             probe_timeout: Some(std::time::Duration::from_secs(5)),
             fail_on: None,
@@ -450,6 +455,7 @@ mod tests {
         let opts = Opts {
             pid: None,
             probe_syscalls: false,
+            probe_ebpf: false,
             dump_filters: false,
             probe_timeout: Some(std::time::Duration::from_secs(5)),
             fail_on: None,
@@ -466,6 +472,7 @@ mod tests {
         let opts = Opts {
             pid: None,
             probe_syscalls: false,
+            probe_ebpf: false,
             dump_filters: false,
             probe_timeout: None,
             fail_on: None,
@@ -500,6 +507,7 @@ mod tests {
         let opts = Opts {
             pid: None,
             probe_syscalls: true,
+            probe_ebpf: false,
             dump_filters: false,
             probe_timeout: None,
             fail_on: None,

@@ -18,3 +18,21 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+
+  # The BPF object embedded via include_bytes! is committed (bpf/prebuilt/) so
+  # the default build stays stable-only; this job is the provenance gate:
+  # rebuild from bpf/ sources and fail on any diff against the committed .o.
+  eBPF-object:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - name: Install bpf-linker
+        run: cargo install bpf-linker --locked
+      - name: Rebuild and diff against the committed object
+        run: |
+          bash bpf/build.sh
+          git diff --exit-code bpf/prebuilt/ || {
+            echo "ERROR: bpf/prebuilt/hello.bpf.o is stale — run 'bash bpf/build.sh' and commit"; exit 1; }

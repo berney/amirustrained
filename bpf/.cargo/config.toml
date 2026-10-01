@@ -1,0 +1,10 @@
+# Nightly-only: bpfel-unknown-none is Tier 3, so core comes from build-std
+# and the linker is bpf-linker (https://github.com/aya-rs/bpf-linker).
+[build]
+target = "bpfel-unknown-none"
+
+[target.bpfel-unknown-none]
+linker = "bpf-linker"
+
+[unstable]
+build-std = ["core"]

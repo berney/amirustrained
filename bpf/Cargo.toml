@@ -1,0 +1,21 @@
+# Standalone workspace: the root crate is built with stable + musl and must
+# never see nightly-only `-Z build-std` flags. This directory builds ONLY via
+# `bpf/build.sh` (nightly + bpf-linker); the checked-in object under
+# `prebuilt/` is what the main binary embeds with include_bytes!.
+[workspace]
+
+[package]
+name = "hello-bpf"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[dependencies]
+aya-ebpf = "0.2"
+
+[profile.release]
+# bpf-linker 0.11 rejects Rust's `s` level: O2 is the supported size mode.
+opt-level = 2
+lto = true
+panic = "abort"

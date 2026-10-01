@@ -372,6 +372,7 @@ fn scan(s: &Scenario) -> Report {
     let opts = Opts {
         pid: None,
         probe_syscalls: false,
+        probe_ebpf: false,
         probe_timeout: None,
         fail_on: None,
         dump_filters: false,
@@ -581,6 +582,7 @@ fn docker_privileged_text_output_snapshot() {
     let opts = Opts {
         pid: None,
         probe_syscalls: false,
+        probe_ebpf: false,
         probe_timeout: None,
         fail_on: None,
         dump_filters: false,

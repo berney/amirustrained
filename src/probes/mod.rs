@@ -18,6 +18,7 @@ pub trait Probe: Send + Sync {
 pub mod capabilities;
 pub mod cgroup;
 pub mod ebpf;
+pub mod ebpf_load;
 pub mod k8s;
 pub mod lsm;
 pub mod namespaces;
@@ -40,11 +41,18 @@ pub fn registry(opts: &Opts) -> Vec<Arc<dyn Probe>> {
     if opts.probe_syscalls {
         probes.push(Arc::new(syscall_probe::SyscallProbe));
     }
-    let tail: Vec<Arc<dyn Probe>> = vec![
-        Arc::new(lsm::Lsm),
-        // Reads the eBPF knobs files directly and fuses the capabilities and
-        // lockdown facts the probes above already accumulated (`cx.prior`).
-        Arc::new(ebpf::Ebpf),
+    probes.push(Arc::new(lsm::Lsm));
+    // Reads the eBPF knobs files directly and fuses the capabilities and
+    // lockdown facts the probes above already accumulated (`cx.prior`).
+    probes.push(Arc::new(ebpf::Ebpf));
+    // The REAL load probe is opt-in (spec §6 AMR-021: "--probe-ebpf only"):
+    // one BPF_PROG_LOAD with the embedded object, nothing pinned. Slotted
+    // right after the knobs probe so its classification can read the fresh
+    // `ebpf.knobs` fact from `cx.prior`.
+    if opts.probe_ebpf {
+        probes.push(Arc::new(ebpf_load::EbpfLoad));
+    }
+    let rest: Vec<Arc<dyn Probe>> = vec![
         Arc::new(vmm::Vmm),
         Arc::new(sockets::Sockets),
         Arc::new(cgroup::Cgroup),
@@ -52,6 +60,6 @@ pub fn registry(opts: &Opts) -> Vec<Arc<dyn Probe>> {
         // Last: it only fuses what the probes above accumulated.
         Arc::new(runtime::Runtime),
     ];
-    probes.extend(tail);
+    probes.extend(rest);
     probes
 }
