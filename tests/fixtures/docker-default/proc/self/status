@@ -1,0 +1,7 @@
+Name:	server
+Seccomp:	2
+Seccomp_filters:	3
+CapEff:	00000000a80425fb
+CapPrm:	00000000a80425fb
+CapBnd:	00000000a80425fb
+NoNewPrivs:	0

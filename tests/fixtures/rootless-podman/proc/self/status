@@ -1,0 +1,6 @@
+Name:	app
+Seccomp:	0
+CapEff:	00000000a80425fb
+CapPrm:	00000000a80425fb
+CapBnd:	00000000a80425fb
+NoNewPrivs:	0

@@ -1,0 +1,6 @@
+Name:	server
+Seccomp:	0
+CapEff:	000001ffffffffff
+CapPrm:	000001ffffffffff
+CapBnd:	000001ffffffffff
+NoNewPrivs:	0

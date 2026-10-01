@@ -1,0 +1,7 @@
+Name:	sshd
+Seccomp:	2
+Seccomp_filters:	1
+CapEff:	0000000000000000
+CapPrm:	0000000000000000
+CapBnd:	0000000000000000
+NoNewPrivs:	1

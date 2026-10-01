@@ -1,0 +1,72 @@
+---
+source: tests/scenarios.rs
+expression: normalize_pids(&text)
+---
+probe namespaces: ok
+probe uidmap: ok
+probe capabilities: ok
+probe seccomp: ok
+probe lsm: ok
+probe vmm: ok
+probe sockets: ok
+probe cgroup: ok
+probe k8s: ok
+probe runtime: ok
+runtime docker (confidence high)
+
+CRIT AMR-001 container-socket-exposed: Container runtime API socket is reachable and writable
+  why: The Docker/Podman API is served by the runtime daemon as root: whoever can write to the socket can create a container that mounts the entire host filesystem with full privileges — one API call from contained user to host root (the docker.sock exposure class, cf. CVE-2019-5736-era runtime escapes).
+  fix: Remove the socket mount from the workload; if the API is genuinely needed, broker it through a least-privilege proxy (docker-socket-proxy) exposing only the required endpoints, and restrict which users may reach it.
+    - sockets.found = [{"path":"/run/docker.sock","writable":true,"kind":"docker","info":null}] (known runtime socket paths)
+
+HIGH AMR-002 privileged-container: Privileged container: CAP_SYS_ADMIN, seccomp disabled, no MAC confinement
+  why: This is the `--privileged` signature: CAP_SYS_ADMIN plus no seccomp filter plus nothing confining the task with mandatory access control — an explicit AppArmor `unconfined` profile, or no AppArmor while SELinux is permissive or absent from the active LSM stack. Mount filesystems, reach raw devices, drive cgroup release_agent — the container boundary is nominal and kernel-interface exploits run unopposed by every mitigation the runtime would provide.
+  fix: Drop `--privileged` and CAP_SYS_ADMIN; keep the runtime's default seccomp and AppArmor profiles and add back only the specific capabilities the workload needs.
+    - capabilities.effective = ["cap_chown","cap_dac_override","cap_dac_read_search","cap_fowner","cap_fsetid","cap_kill","cap_setgid","cap_setuid","cap_setpcap","cap_linux_immutable","cap_net_bind_service","cap_net_broadcast","cap_net_admin","cap_net_raw","cap_ipc_lock","cap_ipc_owner","cap_sys_module","cap_sys_rawio","cap_sys_chroot","cap_sys_ptrace","cap_sys_pacct","cap_sys_admin","cap_sys_boot","cap_sys_nice","cap_sys_resource","cap_sys_time","cap_sys_tty_config","cap_mknod","cap_lease","cap_audit_write","cap_audit_control","cap_setfcap","cap_mac_override","cap_mac_admin","cap_syslog","cap_wake_alarm","cap_block_suspend","cap_audit_read","cap_perfmon","cap_bpf","cap_checkpoint_restore"] (/proc/<pid>/status)
+    - seccomp.mode = "disabled" (/proc/<pid>/status)
+    - lsm.apparmor = {"profile":"unconfined","mode":""} (/proc/<pid>/attr/current)
+
+HIGH AMR-003 cap-sys-module: CAP_SYS_MODULE in the effective capability set
+  why: CAP_SYS_MODULE allows inserting kernel modules — arbitrary code executing in ring 0 on the host kernel, where container isolation no longer applies at all. It is almost never intended inside a container.
+  fix: Drop CAP_SYS_MODULE (`--cap-drop CAP_SYS_MODULE`) and consider host-side module signature enforcement (`module.sig_enforce=1`).
+    - capabilities.effective = ["cap_chown","cap_dac_override","cap_dac_read_search","cap_fowner","cap_fsetid","cap_kill","cap_setgid","cap_setuid","cap_setpcap","cap_linux_immutable","cap_net_bind_service","cap_net_broadcast","cap_net_admin","cap_net_raw","cap_ipc_lock","cap_ipc_owner","cap_sys_module","cap_sys_rawio","cap_sys_chroot","cap_sys_ptrace","cap_sys_pacct","cap_sys_admin","cap_sys_boot","cap_sys_nice","cap_sys_resource","cap_sys_time","cap_sys_tty_config","cap_mknod","cap_lease","cap_audit_write","cap_audit_control","cap_setfcap","cap_mac_override","cap_mac_admin","cap_syslog","cap_wake_alarm","cap_block_suspend","cap_audit_read","cap_perfmon","cap_bpf","cap_checkpoint_restore"] (/proc/<pid>/status)
+
+MED AMR-005 seccomp-disabled-in-container: Seccomp filter disabled inside a container
+  why: With seccomp mode 0 every syscall the kernel implements is reachable from container processes; the mitigation that normally removes the kernel entry points behind container escapes (fsconfig/af_packet class, CVE-2022-0185 and friends) is switched off.
+  fix: Start the container with the runtime's default seccomp profile (`--security-opt seccomp=runtime/default`) and extend a custom profile only for calls the workload genuinely needs.
+    - seccomp.mode = "disabled" (/proc/<pid>/status)
+
+MED AMR-006 apparmor-unconfined-in-container: AppArmor mandatory access control not applied inside a container
+  why: The runtime's default AppArmor profile blocks file and proc writes and privileged operations that seccomp alone lets through; an unconfined profile — or no AppArmor in an otherwise LSM-enforced kernel — drops the last mandatory-access layer between the workload and the host kernel.
+  fix: Remove `--security-opt apparmor=unconfined` so the runtime-default profile applies; if AppArmor is absent while other LSMs are active, enable it on the host (`apparmor=1 security=apparmor`) instead of running unconfined.
+    - lsm.apparmor = {"profile":"unconfined","mode":""} (/proc/<pid>/attr/current)
+
+MED AMR-008 identity-uidmap: User namespace keeps no identity isolation: uid_map is the full identity mapping
+  why: A single `0 0 4294967295` line maps every container uid onto the same host uid: uid 0 inside *is* uid 0 outside, so DAC checks agree with the host — a file this process may write by ownership, the host owner can write back. The namespace buys no identity isolation; it only satisfies the runtime's userns bookkeeping (spec §6: DAC root == host root).
+  fix: Use a real user namespace: rootless runtime mode (podman) or `--userns-remap` (docker) places container uid 0 on an unprivileged subordinate range instead of the identity mapping.
+    - uidmap.uidMap = [{"container":0,"host":0,"range":4294967295}] (/proc/<pid>/uid_map)
+
+MED AMR-011 gid-map-includes-0: gid_map maps host gid 0 while setgroups is not denied
+  why: A gid_map line reaching host gid 0 hands the namespace root-group membership, and while `setgroups` reads `allow` any process can re-add groups — including gid 0 — so dropping them is not durable: whatever host root-group membership unlocks (group-writable root files, cron directories) is reachable again on a whim. Rootless runtimes write `deny` when they create the namespace for exactly this reason.
+  fix: Write `deny` to the namespace's `setgroups` file (the rootless runtime default) and keep host gid 0 out of the gid_map — map only subordinate gid ranges.
+    - uidmap.gidMap = [{"container":0,"host":0,"range":4294967295}] (/proc/<pid>/gid_map)
+    - uidmap.setgroups = "allow" (/proc/<pid>/setgroups)
+
+LOW AMR-010 no-pids-limit: pids controller present but unlimited (pids.max = max)
+  why: The pids controller is delegated to the container's scope yet capped at `max` — the kernel's spelling of unlimited: one contained fork bomb exhausts host PIDs and task_struct memory and wedges every other workload, the runtime itself included. The mitigation is present and switched off, not missing.
+  fix: Set a per-container pid limit (`--pids-limit` on docker/podman, or write `pids.max` in the container's scope) so a runaway stays inside its own slice.
+    - cgroup.controllers = ["cpu","cpuset","io","memory","pids"] (/sys/fs/cgroup/cgroup.controllers)
+    - cgroup.limits = {"memory":"max","pids":"max"} (/sys/fs/cgroup/docker/135c8edb135c8edb135c8edb135c8edb135c8edb135c8edb135c8edb135c8edb)
+
+LOW AMR-018 no-new-privs-unset: NoNewPrivs unset: execve can still gain privileges
+  why: With NoNewPrivs 0 an execve inside the container may gain privileges via setuid bits or file capabilities: a suid-root helper inside the image steps contained uid → container-root, and whatever the container's (possibly broad) capability set then reaches becomes reachable. The flag is a one-way kernel lock on privilege acquisition for the whole process lifecycle. Every ordinary process on a bare host sits at 0 — a constant, not a finding there (spec row 214): gated.
+  fix: Run the workload with `--security-opt no-new-privileges` (docker/podman) or `NoNewPrivileges=yes` (systemd) unless it genuinely needs setuid transitions.
+    - capabilities.noNewPrivs = 0 (/proc/<pid>/status)
+
+INFO AMR-012 landlock-abi-available: Landlock LSM available in this kernel (ABI version reported)
+  why: The landlock(2) ruleset syscall answers with an ABI version, so the kernel offers in-process filesystem sandboxing that any workload here could use and nothing at kernel level stops the runtime from adopting it. Per-process Landlock domain state is not observable through procfs: this finding claims presence only, never disuse.
+  fix: Informational — no action required. To confine a workload proactively, apply a Landlock ruleset to it (systemd `Landlock=` settings, or a landlock-aware launcher).
+    - lsm.landlockAbi = 1 (SYS_LANDLOCK_CREATE_RULESET)
+
+10 findings (c1 h2 m4 l2 i1)
+scan complete

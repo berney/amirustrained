@@ -1,0 +1,4 @@
+processor	: 0
+vendor_id	: GenuineIntel
+model name	: Intel(R) Xeon(R) Platinum 8259CL CPU @ 2.50GHz
+flags		: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx pdpe1gb rdtscp lm constant_param hypervisor arch_capabilities

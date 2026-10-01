@@ -1,0 +1,6 @@
+Name:	bash
+Seccomp:	0
+CapEff:	0000003fffffffff
+CapPrm:	0000003fffffffff
+CapBnd:	0000003fffffffff
+NoNewPrivs:	0
