@@ -573,10 +573,12 @@ pub static RULES: &[Rule] = &[
             let restraints: Vec<Fact> = [
                 a.fact("seccomp", "mode")
                     .filter(|f| matches!(f.value.as_str(), Some("filter") | Some("strict"))),
-                a.fact("lsm", "apparmor").filter(|f| {
-                    !f.value.is_null()
-                        && f.value.get("profile").and_then(|p| p.as_str()) != Some("unconfined")
-                }),
+                // ReviewT21b: complain-mode profiles log only and confine
+                // nothing — only `enforce` holds. The probe always emits a mode
+                // ("" for an unconfined task, probes/lsm.rs), so requiring the
+                // exact string also subsumes the null-value and unconfined legs.
+                a.fact("lsm", "apparmor")
+                    .filter(|f| f.value.get("mode").and_then(|m| m.as_str()) == Some("enforce")),
                 a.fact("lsm", "selinux")
                     .filter(|f| f.value.get("mode").and_then(|m| m.as_str()) == Some("enforcing")),
             ]
@@ -1672,6 +1674,56 @@ mod tests {
                 .iter()
                 .map(|e| (&e.probe, &e.key))
                 .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn amr016_complain_profile_not_a_restraint() {
+        // ReviewT21b: a complain-mode profile logs only and confines nothing;
+        // counting it as holding would let a cap_sys_admin container claim a
+        // restraint that holds no syscall, mount, or device. With seccomp
+        // disabled and SELinux absent no restraint holds — silent (fail closed).
+        let mut r = report_with(&amr002_facts(
+            "disabled",
+            json!({"profile": "docker-default", "mode": "complain"}),
+        ));
+        r.verdict = Some(verdict(RuntimeKind::Docker));
+        assert!(rule("AMR-016").evaluate(&r, false).is_none());
+        // With a seccomp filter present the rule fires, but only seccomp may
+        // be cited — the complain profile must not appear among the restraints.
+        let mut r = report_with(&amr002_facts(
+            "filter",
+            json!({"profile": "docker-default", "mode": "complain"}),
+        ));
+        r.verdict = Some(verdict(RuntimeKind::Docker));
+        let f = rule("AMR-016").evaluate(&r, false).expect("must fire");
+        assert!(
+            !f.evidence
+                .iter()
+                .any(|e| e.probe == "lsm" && e.key == "apparmor"),
+            "complain AppArmor is not a holding restraint: {:?}",
+            f.evidence
+                .iter()
+                .map(|e| (&e.probe, &e.key))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn amr016_fires_when_only_apparmor_enforce_holds() {
+        // The positive leg: an enforcing profile DOES confine, so with seccomp
+        // disabled the enforce mode alone is a citable holding restraint.
+        let mut r = report_with(&amr002_facts(
+            "disabled",
+            json!({"profile": "docker-default", "mode": "enforce"}),
+        ));
+        r.verdict = Some(verdict(RuntimeKind::Docker));
+        let f = rule("AMR-016").evaluate(&r, false).expect("must fire");
+        assert!(
+            f.evidence
+                .iter()
+                .any(|e| e.probe == "lsm" && e.key == "apparmor"),
+            "enforce-mode AppArmor must be cited as holding"
         );
     }
 
