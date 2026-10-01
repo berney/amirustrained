@@ -180,6 +180,32 @@ fn output_file_gets_the_report_and_stdout_stays_empty() {
 }
 
 #[test]
+fn output_file_never_receives_ansi_escapes() {
+    // ReviewT2324: the tty probe answers for stdout, so `color` must be off
+    // whenever the sink is a `-o` file — even from a terminal run, the report
+    // file must hold plain bytes. (Under the harness stdout is a pipe anyway;
+    // this pins the sink-aware precedence against regressions.)
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("report.txt");
+    let out = Command::cargo_bin("amirustrained")
+        .unwrap()
+        .args(["-o", path.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let bytes = fs::read(&path).unwrap();
+    assert!(
+        !bytes.contains(&0x1b),
+        "text report file must contain no ESC bytes"
+    );
+    assert!(String::from_utf8_lossy(&bytes).contains("scan complete"));
+}
+
+#[test]
 fn verbose_text_adds_the_meta_header() {
     let (code, stdout) = run(&["--verbose"]);
     assert_eq!(code, 0);
@@ -196,6 +222,21 @@ fn quiet_text_omits_the_meta_header() {
 }
 
 #[test]
+fn piped_text_stdout_carries_no_ansi_escapes() {
+    // The harness gives the child a pipe: `is_terminal()` is false, so the
+    // renderer must emit plain bytes — `--no-color`/`NO_COLOR` change nothing
+    // about that, and neither does the verbosity level.
+    for args in [&[] as &[&str], &["--verbose"]] {
+        let (code, stdout) = run(args);
+        assert_eq!(code, 0);
+        assert!(
+            !stdout.contains('\x1b'),
+            "piped text stdout must contain no ESC bytes: {args:?}"
+        );
+    }
+}
+
+#[test]
 fn markdown_format_renders_the_report_document() {
     let (code, stdout) = run(&["--format", "markdown"]);
     assert_eq!(code, 0);
@@ -206,7 +247,7 @@ fn markdown_format_renders_the_report_document() {
         "markdown output: {stdout}"
     );
     assert!(
-        stdout.ends_with("scan complete\n") || stdout.ends_with(")\n"),
+        stdout.ends_with(")\n"),
         "markdown output must end on the counts line: {stdout}"
     );
 }

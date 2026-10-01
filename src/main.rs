@@ -45,8 +45,12 @@ fn main() -> ExitCode {
     // ANSI paint only for an interactive stdout that asked for it (spec §9):
     // `--no-color` is the explicit switch, `NO_COLOR` (no-color.org) the
     // session-wide one, and a non-tty consumer gets the identical plain bytes.
+    // `-o file` is never an interactive sink (ReviewT2324): the tty test is
+    // about stdout, and honoring it for a file sink would paint escape codes
+    // into the report.
     let color = !cli.no_color
         && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
+        && cli.output.is_none()
         && std::io::stdout().is_terminal();
     let mut renderer = render::make(fmt, cli.verbose, color);
     let mut out: Box<dyn std::io::Write> = match &cli.output {
