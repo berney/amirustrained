@@ -92,7 +92,7 @@ pub struct Rule {
     /// containment: the rule is inapplicable there, not unassessable. The flag MUST mirror gate
     /// membership: socket rules 001/022 are false by design (they fire on a
     /// host verdict too, applicability never false), and the ungated specs
-    /// AMR-007/012/013/014/015 are false.
+    /// AMR-007/012/013/014/015/020 are false.
     pub container_only: bool,
     /// `Some(evidence)` fires the rule; `None` stays silent.
     pub check: fn(&Assess) -> Option<Vec<Fact>>,

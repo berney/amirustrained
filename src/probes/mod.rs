@@ -14,9 +14,10 @@ pub trait Probe: Send + Sync {
 // Probe modules are appended here by their own tasks; rustfmt keeps these
 // declarations sorted alphabetically. The dispatch order (spec Global
 // Constraints: namespaces, uidmap, capabilities, seccomp, [syscall-probe], lsm,
-// vmm, sockets, cgroup, k8s, runtime) lives in `registry()` below.
+// ebpf, vmm, sockets, cgroup, k8s, runtime) lives in `registry()` below.
 pub mod capabilities;
 pub mod cgroup;
+pub mod ebpf;
 pub mod k8s;
 pub mod lsm;
 pub mod namespaces;
@@ -41,6 +42,9 @@ pub fn registry(opts: &Opts) -> Vec<Arc<dyn Probe>> {
     }
     let tail: Vec<Arc<dyn Probe>> = vec![
         Arc::new(lsm::Lsm),
+        // Reads the eBPF knobs files directly and fuses the capabilities and
+        // lockdown facts the probes above already accumulated (`cx.prior`).
+        Arc::new(ebpf::Ebpf),
         Arc::new(vmm::Vmm),
         Arc::new(sockets::Sockets),
         Arc::new(cgroup::Cgroup),

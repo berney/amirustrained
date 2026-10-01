@@ -7,6 +7,7 @@ probe uidmap: ok
 probe capabilities: ok
 probe seccomp: ok
 probe lsm: ok
+probe ebpf: ok
 probe vmm: ok
 probe sockets: ok
 probe cgroup: ok
@@ -52,6 +53,12 @@ MED AMR-011 gid-map-includes-0: gid_map maps host gid 0 while setgroups is not d
     - uidmap.gidMap = [{"container":0,"host":0,"range":4294967295}] (/proc/<pid>/gid_map)
     - uidmap.setgroups = "allow" (/proc/<pid>/setgroups)
 
+MED AMR-019 bpf-unpriv-open: Inside a shared-kernel container and unprivileged_bpf_disabled is 0 (or absent pre-5.13): any local uid can reach bpf() from a weak foothold
+  why: The knob decides whether callers without CAP_BPF/CAP_PERFMON may call bpf(): at 0 — or on legacy kernels that predate the knob, where nothing else gates the syscall — any local uid, including foothold uids that hold none of the container's capabilities, may load eBPF programs into the shared host kernel. The verifier and JIT have historically been a rich LPE bug class, so this is a kernel-attack-surface promise from the weakest position inside the containment. Gated per the §6 container-gate erratum (2026-10-01): on a bare host the state is a machine-wide sysctl an admin can read in one line, and under VM-family verdicts the guest bpf() hits the GUEST kernel — no host surface opens, the same reason the AMR-004-class host rules are exempt there.
+  fix: Set `kernel.unprivileged_bpf_disabled = 1` (changeable) or `2` (immutable until reboot) via a host sysctl drop (e.g. /etc/sysctl.d/90-bpf.conf); the container image cannot set it — this is a host-level knob.
+    - ebpf.reachability = {"capPathOpen":true,"unprivilegedOpen":true} (computed:capabilities.effective+lsm.lockdown)
+    - ebpf.knobs = {"unprivilegedBpfDisabled":0,"lockdown":null} (/proc/sys/kernel/unprivileged_bpf_disabled+/sys/kernel/security/lockdown)
+
 LOW AMR-010 no-pids-limit: pids controller present but unlimited (pids.max = max)
   why: The pids controller is delegated to the container's scope yet capped at `max` — the kernel's spelling of unlimited: one contained fork bomb exhausts host PIDs and task_struct memory and wedges every other workload, the runtime itself included. The mitigation is present and switched off, not missing.
   fix: Set a per-container pid limit (`--pids-limit` on docker/podman, or write `pids.max` in the container's scope) so a runaway stays inside its own slice.
@@ -63,10 +70,15 @@ LOW AMR-018 no-new-privs-unset: NoNewPrivs unset: execve can still gain privileg
   fix: Run the workload with `--security-opt no-new-privileges` (docker/podman) or `NoNewPrivileges=yes` (systemd) unless it genuinely needs setuid transitions.
     - capabilities.noNewPrivs = 0 (/proc/<pid>/status)
 
+LOW AMR-020 cap-bpf-or-perfmon: CapEff includes CAP_BPF or CAP_PERFMON: program load / map read possible without full root
+  why: CAP_BPF alone grants eBPF program load and map creation; CAP_PERFMON (5.8+) grants map read access and perf-attached probing — either short-circuits the full-root assumption, and together they are nearly the whole BPF surface without CAP_SYS_ADMIN or uid 0. Loaded programs execute with kernel privileges the seccomp/caps posture otherwise confines everything else to. Ungated per spec §6: a capability this process holds is exposure wherever it sits (a trivially full root CapEff satisfies it too — severity low is calibrated to that noise floor).
+  fix: Drop CAP_BPF/CAP_PERFMON unless the workload genuinely runs eBPF: `--cap-drop ALL` then re-add what is needed (docker/podman), `securityContext.capabilities.drop` (k8s), or `CapabilityBoundingSet=` (systemd).
+    - capabilities.effective = ["cap_chown","cap_dac_override","cap_dac_read_search","cap_fowner","cap_fsetid","cap_kill","cap_setgid","cap_setuid","cap_setpcap","cap_linux_immutable","cap_net_bind_service","cap_net_broadcast","cap_net_admin","cap_net_raw","cap_ipc_lock","cap_ipc_owner","cap_sys_module","cap_sys_rawio","cap_sys_chroot","cap_sys_ptrace","cap_sys_pacct","cap_sys_admin","cap_sys_boot","cap_sys_nice","cap_sys_resource","cap_sys_time","cap_sys_tty_config","cap_mknod","cap_lease","cap_audit_write","cap_audit_control","cap_setfcap","cap_mac_override","cap_mac_admin","cap_syslog","cap_wake_alarm","cap_block_suspend","cap_audit_read","cap_perfmon","cap_bpf","cap_checkpoint_restore"] (/proc/<pid>/status)
+
 INFO AMR-012 landlock-abi-available: Landlock LSM available in this kernel (ABI version reported)
   why: The landlock(2) ruleset syscall answers with an ABI version, so the kernel offers in-process filesystem sandboxing that any workload here could use and nothing at kernel level stops the runtime from adopting it. Per-process Landlock domain state is not observable through procfs: this finding claims presence only, never disuse.
   fix: Informational — no action required. To confine a workload proactively, apply a Landlock ruleset to it (systemd `Landlock=` settings, or a landlock-aware launcher).
     - lsm.landlockAbi = 1 (SYS_LANDLOCK_CREATE_RULESET)
 
-10 findings (c1 h2 m4 l2 i1)
+12 findings (c1 h2 m5 l3 i1)
 scan complete

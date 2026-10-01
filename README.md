@@ -2,8 +2,8 @@
 
 **Runtime introspection & LPE-posture reporter.** A modern Rust container-runtime
 posture auditor from the local-privilege-escalation / hardening point of view: it
-fuses ten kernel-interface probes (namespaces, uidmap, capabilities, seccomp, LSM,
-VMM, cgroup, sockets, k8s, runtime) into a *self-containment fingerprint* and grades
+fuses eleven kernel-interface probes (namespaces, uidmap,
+capabilities, seccomp, LSM, eBPF, VMM, cgroup, sockets, k8s, runtime) into a single verdict:
 what an attacker already inside your environment gains from it. The fingerprint is
 evidence-scored, not socket-guessing: a `host` verdict means **not contained even
 when podman/docker sockets are present** — a reachable runtime socket only proves a
@@ -31,6 +31,10 @@ cargo install --path .
 # (opt-level z applies to release only) is fine for smokes; release is fat-LTO,
 # single-codegen, stripped (~900 KiB).
 ```
+
+> One-time prerequisite: `rustup target add x86_64-unknown-linux-musl` —
+> `.cargo/config.toml` sets the musl target repo-wide, and a fresh toolchain
+> without the target installed fails with E0463.
 
 ## Usage
 
@@ -61,6 +65,7 @@ runs on it.
 | `capabilities` | own all 6 cap sets, NoNewPrivs, Yama scope | + other `--pid` targets | Yama knob absent |
 | `seccomp` | mode, filter count, action matrix | + raw BPF filter dump (`SECCOMP_GET_FILTER`) | pre-4.14 kernel ⇒ mode-only |
 | `lsm` | LSM list, AppArmor/SELinux state, lockdown, Landlock ABI | — | each knob reported present/absent independently |
+| `ebpf` | `unprivileged_bpf_disabled` + lockdown knobs; computed bpf() reachability (zero syscalls — the real load probe is the future `--probe-ebpf`) | — | capabilities facts absent ⇒ `reachability` degraded (knobs still reported) |
 | `vmm` | CPUID, DMI (public fields), clocksource, vsock | — | restricted DMI ⇒ fewer signatures |
 | `cgroup` | own cgroup path, controllers, limits | — | v1 or v2, both handled |
 | `sockets` | candidate socket probe + `GET /info` over UDS | — | socket absent/unwritable ⇒ quiet (environment-only evidence) |
@@ -87,9 +92,11 @@ probe facts (e.g. `namespaces` on a hardened host) stay visible in each probe's
 ## Rule catalog (v1)
 
 Severity = how much closer to host root the state puts an attacker already inside
-the environment. Container-gated rules stay silent at a `host` verdict (a constant
-there is zero movement); rules needing root report `info` + "insufficient privilege
-to assess" when run unprivileged.
+the environment. Container-gated rules stay silent unless the verdict is a
+shared-kernel containment — i.e. at a `host` verdict and at VM-family verdicts
+(firecracker, gVisor, kata), where the guest kernel/identity makes the
+finding's rationale false (spec §6 erratum 2026-10-01). Rules needing root
+report `info` + "insufficient privilege to assess" when run unprivileged.
 
 | id | slug | severity | summary |
 |---|---|---|---|
@@ -111,10 +118,13 @@ to assess" when run unprivileged.
 | AMR-016 | `cap-sys-admin-no-combo` | medium | CAP_SYS_ADMIN held while some runtime restraints remain active (complement of AMR-002's amended combo — a `complain` profile is never counted as a restraint) |
 | AMR-017 | `cgroupns-host` | info | Container shares the host cgroup namespace |
 | AMR-018 | `no-new-privs-unset` | low | NoNewPrivs unset: execve can still gain privileges |
+| AMR-019 | `bpf-unpriv-open` | medium | Inside a shared-kernel container and unprivileged_bpf_disabled is 0 (or absent pre-5.13): any local uid can reach bpf() from a weak foothold — shares the container gate, so VM-family verdicts are exempt (guest bpf() is guest-kernel-local; spec §6 erratum 2026-10-01) |
+| AMR-020 | `cap-bpf-or-perfmon` | low | CapEff includes CAP_BPF or CAP_PERFMON: program load / map read possible without full root |
 | AMR-022 | `rootless-socket-exposed` | high | Rootless container runtime API socket is reachable and writable (escape to an unprivileged host uid — not a host-root promise) |
 
-AMR-019/020/021 (eBPF exposure rules, `--probe-ebpf`) land with the eBPF tier and
-are not in the v1 registry; the id-space is append-only.
+*Notes:* the one remaining planned id is AMR-021 (eBPF program load), which will
+fire only when the opt-in `--probe-ebpf` load probe succeeds; the id-space is
+append-only.
 
 ## Development
 
@@ -126,7 +136,7 @@ PROFILE=release scripts/live-smoke.sh       # …or the release binary
 
 The smoke script builds on demand, runs all five formats plus
 `--probe-syscalls`, and asserts the JSON contract (`schemaVersion 1`,
-`scan.complete`, all ten default probes with `runtime` emitting the verdict, SARIF
+`scan.complete`, all eleven default probes with `runtime` emitting the verdict, SARIF
 2.1.0). Its `--fail-on high ⇒ 1 / critical ⇒ 0` exit-code asserts are
 **this-host** posture claims, so it is a local smoke, not portable CI.
 

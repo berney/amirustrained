@@ -84,7 +84,10 @@ const SCENARIOS: &[Scenario] = &[
         // signal at all, so the host fallback plus the hypervisor-ruled-out
         // confidence. Every container-gated rule is silent here, which is the
         // point of the scenario: the identity uid_map, `NoNewPrivs 0` and the
-        // init-ns cgroup equality are host constants, not findings.
+        // init-ns cgroup equality are host constants, not findings. Knob
+        // posture `unprivileged_bpf_disabled 1` + lockdown `[none]`: read
+        // silently — the host gate silences AMR-019 and an empty CapEff holds
+        // no CAP_BPF/CAP_PERFMON for AMR-020.
         name: "bare-host",
         runtime: RuntimeKind::Host,
         confidence: "high",
@@ -98,12 +101,16 @@ const SCENARIOS: &[Scenario] = &[
         // `/docker/<64 hex>` (0.8) + `/.dockerenv` (0.6) = 1.4 → high.
         // Default seccomp filter and the `docker-default` enforce profile keep
         // AMR-002/005/006/016 silent; the identity id mappings, the unlimited
-        // pids controller and the writable docker.sock are the exposure.
+        // pids controller and the writable docker.sock are the exposure. The
+        // classic-host eBPF posture (`unprivileged_bpf_disabled 0`, lockdown
+        // not exposed to the container) opens bpf() to any uid → AMR-019; the
+        // docker-default cap set has no CAP_BPF/CAP_PERFMON, so AMR-020
+        // stays silent.
         name: "docker-default",
         runtime: RuntimeKind::Docker,
         confidence: "high",
         ids: &[
-            "AMR-001", "AMR-008", "AMR-010", "AMR-011", "AMR-012", "AMR-018",
+            "AMR-001", "AMR-008", "AMR-010", "AMR-011", "AMR-012", "AMR-018", "AMR-019",
         ],
         root: true,
         landlock: Some(1),
@@ -114,13 +121,15 @@ const SCENARIOS: &[Scenario] = &[
         // Same tree, `--privileged`: seccomp mode 0 + `unconfined` + full caps
         // is the AMR-002 signature, so AMR-016 (its weaker sibling) goes quiet
         // and CAP_SYS_MODULE joins the list. AppArmor absence is not the MAC
-        // witness here: the profile literally says unconfined.
+        // witness here: the profile literally says unconfined. The knob stays
+        // open (0) → AMR-019, and the full 41-bit CapEff includes
+        // CAP_BPF/CAP_PERFMON → AMR-020.
         name: "docker-privileged",
         runtime: RuntimeKind::Docker,
         confidence: "high",
         ids: &[
             "AMR-001", "AMR-002", "AMR-003", "AMR-005", "AMR-006", "AMR-008", "AMR-010", "AMR-011",
-            "AMR-012", "AMR-018",
+            "AMR-012", "AMR-018", "AMR-019", "AMR-020",
         ],
         root: true,
         landlock: Some(1),
@@ -134,7 +143,9 @@ const SCENARIOS: &[Scenario] = &[
         // fails against a fixture stand-in, so AMR-001's fail-loud branch is
         // what fires: AMR-022 needs a live reply saying `rootless: true`.
         // `setgroups deny` silences AMR-011 while the sub-range uid_map
-        // silences AMR-008 — rootless isolation working as intended.
+        // silences AMR-008 — rootless isolation working as intended. The host
+        // knob is 2 (immutable until reboot), so the unprivileged bpf() path
+        // is closed and neither eBPF rule fires.
         name: "rootless-podman",
         runtime: RuntimeKind::Podman,
         confidence: "medium",
@@ -153,8 +164,8 @@ const SCENARIOS: &[Scenario] = &[
         // profile), the service account is mounted. Default k8s pods use no
         // user namespace, so the tree carries the identity uid_map/gid_map
         // with `setgroups: allow` like the docker-default twin: a real scan
-        // reads them and AMR-008/011 fire — kubernetes is a shared-kernel
-        // containment.
+        // containment. Knob 2 (hardened node) closes unprivileged bpf(), and
+        // the default-cap pod set carries no CAP_BPF → neither eBPF rule.
         name: "k8s-pod",
         runtime: RuntimeKind::Kubernetes,
         confidence: "medium",
@@ -179,7 +190,12 @@ const SCENARIOS: &[Scenario] = &[
         // F3), not because the facts are unknown. The tree's own 5.10.195
         // banner predates Landlock (merged in 5.13), so the probe reports
         // unsupported: the virtualization note and the sandbox note are the
-        // whole reportable set.
+        // whole reportable set. The erratum's fixture proof: the guest knob
+        // is open (0), so the posture alone would hand AMR-019 its conjunct
+        // — VM verdicts are exempt (guest bpf() is guest-kernel-local); and
+        // the guest-root CapEff is the legacy 38-bit pre-5.8 mask, which
+        // decodes WITHOUT CAP_BPF/CAP_PERFMON, so AMR-020 stays quiet on
+        // fact, not on gate.
         name: "firecracker",
         runtime: RuntimeKind::Firecracker,
         confidence: "medium",
@@ -197,7 +213,8 @@ const SCENARIOS: &[Scenario] = &[
         // caps, identity id mappings) and still reports only the
         // strong-isolation note: the container-gated exposure is exempt at a
         // VM verdict (spec §6 erratum 2026-10-01, ReviewT26 F3), not unknown
-        // — the corpus's "clean sandbox" case.
+        // — the corpus's "clean sandbox" case, open knob (0) and all: the
+        // same VM-exemption + legacy-38-bit-CapEff reasoning as firecracker.
         name: "gvisor",
         runtime: RuntimeKind::Gvisor,
         confidence: "high",
@@ -218,11 +235,15 @@ const SCENARIOS: &[Scenario] = &[
         // observable, AMR-002's MAC branch cannot cite an unconfined profile,
         // AMR-006's absence branch cannot cite an LSM list, and AMR-016
         // refuses to claim a restraint it cannot evidence, so all three fail
-        // closed — the corpus's fail-closed-on-unknown case.
+        // closed — the corpus's fail-closed-on-unknown case. The shared-kernel
+        // knob is open (0) → AMR-019 fires here; the legacy 38-bit caps mask
+        // predates CAP_BPF/CAP_PERFMON, so AMR-020 stays silent.
         name: "lxc",
         runtime: RuntimeKind::Lxc,
         confidence: "medium",
-        ids: &["AMR-003", "AMR-005", "AMR-008", "AMR-011", "AMR-018"],
+        ids: &[
+            "AMR-003", "AMR-005", "AMR-008", "AMR-011", "AMR-018", "AMR-019",
+        ],
         root: true,
         landlock: None,
         hypervisor: false,
@@ -234,7 +255,9 @@ const SCENARIOS: &[Scenario] = &[
         // container markers → Host verdict; AMR-004/017/018 are gated off
         // rather than reported as a bare-host tautology, AMR-007 needs a
         // permissive SELinux this stack does not have, and the one thing left
-        // to say is the ungated Landlock-availability note.
+        // to say is the ungated Landlock-availability note. eBPF knobs 2 +
+        // lockdown integrity: unprivileged bpf() closed outright, the host
+        // gate silences AMR-019 anyway, empty CapEff silences AMR-020.
         name: "hardened-host",
         runtime: RuntimeKind::Host,
         confidence: "high",
@@ -508,7 +531,7 @@ fn docker_defaults_cli_json_matches_the_corpus_scenario() {
         .collect();
     assert_eq!(
         fixture_decided,
-        ["AMR-008", "AMR-010", "AMR-011", "AMR-018"],
+        ["AMR-008", "AMR-010", "AMR-011", "AMR-018", "AMR-019"],
         "fixture-decided findings over CLI: {ids:?}"
     );
     // Exactly one of the socket pair, whichever way the live handshake went:

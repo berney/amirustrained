@@ -658,6 +658,95 @@ pub static RULES: &[Rule] = &[
                 .map(|f| vec![f.clone()])
         },
     },
+    // Task 28 batch: the eBPF exposure pair. AMR-019 joins the shared-kernel
+    // container gate (spec §6 row + erratum 2026-10-01: guest bpf() is
+    // guest-kernel-local under VM verdicts); AMR-020 stays ungated per its §6
+    // row — a held capability is exposure wherever the process sits.
+    Rule {
+        id: "AMR-019",
+        slug: "bpf-unpriv-open",
+        severity: Severity::Medium,
+        summary: "Inside a shared-kernel container and unprivileged_bpf_disabled \
+                  is 0 (or absent pre-5.13): any local uid can reach bpf() from a \
+                  weak foothold",
+        why: "The knob decides whether callers without CAP_BPF/CAP_PERFMON may \
+              call bpf(): at 0 — or on legacy kernels that predate the knob, \
+              where nothing else gates the syscall — any local uid, including \
+              foothold uids that hold none of the container's capabilities, may \
+              load eBPF programs into the shared host kernel. The verifier and \
+              JIT have historically been a rich LPE bug class, so this is a \
+              kernel-attack-surface promise from the weakest position inside \
+              the containment. Gated per the §6 container-gate erratum \
+              (2026-10-01): on a bare host the state is a machine-wide sysctl \
+              an admin can read in one line, and under VM-family verdicts the \
+              guest bpf() hits the GUEST kernel — no host surface opens, the \
+              same reason the AMR-004-class host rules are exempt there.",
+        remediation: "Set `kernel.unprivileged_bpf_disabled = 1` (changeable) \
+                      or `2` (immutable until reboot) via a host sysctl drop \
+                      (e.g. /etc/sysctl.d/90-bpf.conf); the container image \
+                      cannot set it — this is a host-level knob.",
+        references: &[
+            "https://man7.org/linux/man-pages/man2/bpf.2.html",
+            "https://www.kernel.org/doc/html/latest/admin-guide/sysctl/kernel.html#unprivileged-bpf-disabled",
+        ],
+        requires_root: false,
+        container_only: true,
+        check: |a| {
+            if !a.shared_kernel_containment() {
+                return None;
+            }
+            let r = a.fact("ebpf", "reachability")?;
+            if r.value
+                .get("unprivilegedOpen")
+                .and_then(serde_json::Value::as_bool)
+                != Some(true)
+            {
+                return None;
+            }
+            // The deciding computed fact, plus the raw knob posture it was
+            // derived from (present whenever the probe ran; optional leg).
+            let mut evidence = vec![r.clone()];
+            evidence.extend(a.fact("ebpf", "knobs").cloned());
+            Some(evidence)
+        },
+    },
+    Rule {
+        id: "AMR-020",
+        slug: "cap-bpf-or-perfmon",
+        severity: Severity::Low,
+        summary: "CapEff includes CAP_BPF or CAP_PERFMON: program load / map \
+                  read possible without full root",
+        why: "CAP_BPF alone grants eBPF program load and map creation; \
+              CAP_PERFMON (5.8+) grants map read access and perf-attached \
+              probing — either short-circuits the full-root assumption, and \
+              together they are nearly the whole BPF surface without \
+              CAP_SYS_ADMIN or uid 0. Loaded programs execute with kernel \
+              privileges the seccomp/caps posture otherwise confines \
+              everything else to. Ungated per spec §6: a capability this \
+              process holds is exposure wherever it sits (a trivially full \
+              root CapEff satisfies it too — severity low is calibrated to \
+              that noise floor).",
+        remediation: "Drop CAP_BPF/CAP_PERFMON unless the workload genuinely \
+                      runs eBPF: `--cap-drop ALL` then re-add what is needed \
+                      (docker/podman), `securityContext.capabilities.drop` \
+                      (k8s), or `CapabilityBoundingSet=` (systemd).",
+        references: &[
+            "https://man7.org/linux/man-pages/man7/capabilities.7.html",
+            "https://man7.org/linux/man-pages/man2/bpf.2.html",
+        ],
+        requires_root: false,
+        container_only: false,
+        check: |a| {
+            if !a.arr_has("capabilities", "effective", "cap_bpf")
+                && !a.arr_has("capabilities", "effective", "cap_perfmon")
+            {
+                return None;
+            }
+            a.fact("capabilities", "effective")
+                .cloned()
+                .map(|f| vec![f])
+        },
+    },
 ];
 
 pub fn evaluate_all(report: &Report, privileged: bool) -> Vec<Finding> {
@@ -1891,13 +1980,13 @@ mod tests {
         let ids: Vec<&str> = RULES.iter().map(|r| r.id).collect();
         // Registry order is append-stable, not numeric: AMR-022 was an
         // id-space append (ReviewT19 F2) and keeps its slot; Task 21 appended
-        // 014–018 after AMR-013.
+        // 014–018 after AMR-013, Task 28 appended 019–020 after those.
         assert_eq!(
             ids,
             [
                 "AMR-001", "AMR-002", "AMR-003", "AMR-004", "AMR-005", "AMR-006", "AMR-022",
                 "AMR-007", "AMR-008", "AMR-009", "AMR-010", "AMR-011", "AMR-012", "AMR-013",
-                "AMR-014", "AMR-015", "AMR-016", "AMR-017", "AMR-018",
+                "AMR-014", "AMR-015", "AMR-016", "AMR-017", "AMR-018", "AMR-019", "AMR-020",
             ]
         );
     }
@@ -1923,7 +2012,8 @@ mod tests {
     /// cap_sys_module, cap_sys_ptrace), seccomp disabled, an explicit aa
     /// `unconfined` profile, identity id mappings with setgroups allow, cgroup
     /// v1 with an unlimited pids controller, host pid-ns at Yama 0, the shared
-    /// host cgroup-ns, and a hypervisor witness. (AMR-016 is the deliberate
+    /// host cgroup-ns, the eBPF unprivileged load path open (knob 0), and a
+    /// hypervisor witness. (AMR-016 is the deliberate
     /// exception: the full AMR-002 combo is present, and its exact complement
     /// is silent by design.)
     fn fully_gated_open_facts() -> Vec<(&'static str, &'static str, serde_json::Value)> {
@@ -1962,6 +2052,16 @@ mod tests {
                 "vmm",
                 "hypervisor",
                 json!({"present": true, "vendor": "KVMKVMKVM"}),
+            ),
+            (
+                "ebpf",
+                "reachability",
+                json!({"capPathOpen": true, "unprivilegedOpen": true}),
+            ),
+            (
+                "ebpf",
+                "knobs",
+                json!({"unprivilegedBpfDisabled": 0, "lockdown": null}),
             ),
         ]
     }
@@ -2016,12 +2116,15 @@ mod tests {
     #[test]
     fn shared_kernel_verdicts_fire_the_gated_rules_on_the_same_facts() {
         // The mirror of the VM exemption: identical facts, container verdicts
-        // — the gate opens. One representative pinned per container verdict.
+        // — the gate opens. One representative pinned per container verdict,
+        // plus AMR-019 (Task 28) pinned on two of them.
         for (runtime, id) in [
             (RuntimeKind::Docker, "AMR-003"),
             (RuntimeKind::Podman, "AMR-008"),
             (RuntimeKind::Lxc, "AMR-011"),
             (RuntimeKind::Kubernetes, "AMR-018"),
+            (RuntimeKind::Docker, "AMR-019"),
+            (RuntimeKind::Podman, "AMR-019"),
         ] {
             let mut r = report_with(&fully_gated_open_facts());
             r.verdict = Some(verdict(runtime));
@@ -2050,5 +2153,149 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── Task 28: AMR-019/020 eBPF exposure ────────────────────────────────
+
+    fn ebpf_open_facts() -> Vec<(&'static str, &'static str, serde_json::Value)> {
+        vec![
+            (
+                "ebpf",
+                "reachability",
+                json!({"capPathOpen": true, "unprivilegedOpen": true}),
+            ),
+            (
+                "ebpf",
+                "knobs",
+                json!({"unprivilegedBpfDisabled": 0, "lockdown": null}),
+            ),
+        ]
+    }
+
+    #[test]
+    fn amr019_fires_in_shared_kernel_containers_with_the_unpriv_path_open() {
+        for runtime in [
+            RuntimeKind::Docker,
+            RuntimeKind::Podman,
+            RuntimeKind::Kubernetes,
+            RuntimeKind::Lxc,
+        ] {
+            let mut facts = ebpf_open_facts();
+            facts.push(("capabilities", "effective", json!(["cap_chown"])));
+            let mut r = report_with(&facts);
+            r.verdict = Some(verdict(runtime));
+            let f = rule("AMR-019")
+                .evaluate(&r, true)
+                .expect("must fire under a shared-kernel verdict");
+            assert_eq!(f.severity, Severity::Medium);
+            // Evidence: the deciding reachability fact, plus the raw knob
+            // posture it was computed from.
+            assert_eq!(f.evidence.len(), 2, "{runtime:?}");
+            assert_eq!(f.evidence[0].key, "reachability");
+            assert_eq!(f.evidence[1].key, "knobs");
+        }
+    }
+
+    #[test]
+    fn amr019_silent_when_the_unprivileged_path_is_closed_or_unknown() {
+        for (unpriv, label) in [
+            (json!(false), "knob 1/2 closed"),
+            (serde_json::Value::Null, "reachability null"),
+        ] {
+            let mut r = report_with(&[(
+                "ebpf",
+                "reachability",
+                json!({"capPathOpen": true, "unprivilegedOpen": unpriv}),
+            )]);
+            r.verdict = Some(verdict(RuntimeKind::Docker));
+            assert!(
+                rule("AMR-019").evaluate(&r, true).is_none(),
+                "AMR-019 must stay silent: {label}"
+            );
+        }
+        // Fact absent at all (eBPF probe degraded away): nothing to decide on.
+        let mut r = report_with(&[("capabilities", "effective", json!([]))]);
+        r.verdict = Some(verdict(RuntimeKind::Docker));
+        assert!(rule("AMR-019").evaluate(&r, true).is_none());
+        // Degraded-status reachability never satisfies the predicate either.
+        let mut r = Report::blank(ScanMeta::stub(), 1);
+        r.verdict = Some(verdict(RuntimeKind::Docker));
+        let mut o = ProbeOutcome::empty("ebpf");
+        o.facts.push(Fact::degraded(
+            "ebpf",
+            "reachability",
+            serde_json::Value::Null,
+            "test".into(),
+        ));
+        r.push_probe(o);
+        assert!(rule("AMR-019").evaluate(&r, true).is_none());
+    }
+
+    #[test]
+    fn amr019_silent_at_host_and_vm_verdicts_even_with_open_reachability() {
+        // Host gate + spec §6 erratum 2026-10-01: guest bpf() hits the guest
+        // kernel, so the same open posture that fires under Docker is quiet
+        // under Host and under every VM-family verdict.
+        for runtime in [
+            RuntimeKind::Host,
+            RuntimeKind::Firecracker,
+            RuntimeKind::Gvisor,
+            RuntimeKind::Kata,
+        ] {
+            let mut facts = ebpf_open_facts();
+            facts.push(("capabilities", "effective", json!(["cap_chown"])));
+            let mut r = report_with(&facts);
+            r.verdict = Some(verdict(runtime));
+            assert!(
+                rule("AMR-019").evaluate(&r, true).is_none(),
+                "AMR-019 must stay silent under a {runtime:?} verdict"
+            );
+        }
+    }
+
+    #[test]
+    fn amr020_fires_on_cap_bpf_or_cap_perfmon_anywhere() {
+        // Ungated per spec §6: a held capability is exposure wherever the
+        // process sits — host, container, or VM guest alike.
+        for runtime in [
+            RuntimeKind::Host,
+            RuntimeKind::Docker,
+            RuntimeKind::Firecracker,
+        ] {
+            for cap in ["cap_bpf", "cap_perfmon"] {
+                let mut r =
+                    report_with(&[("capabilities", "effective", json!(["cap_chown", cap]))]);
+                r.verdict = Some(verdict(runtime));
+                let f = rule("AMR-020")
+                    .evaluate(&r, true)
+                    .expect("must fire on an open cap");
+                assert_eq!(f.severity, Severity::Low);
+                assert_eq!(f.evidence.len(), 1);
+                assert_eq!(f.evidence[0].probe, "capabilities");
+                assert_eq!(f.evidence[0].key, "effective");
+            }
+        }
+    }
+
+    #[test]
+    fn amr020_silent_without_bpf_or_perfmon() {
+        // The full pre-5.8 root set (bits 0..37) predates CAP_BPF/CAP_PERFMON:
+        // exactly what a legacy guest-root CapEff decodes to, and no fire.
+        let mut r = report_with(&[(
+            "capabilities",
+            "effective",
+            json!([
+                "cap_sys_admin",
+                "cap_sys_module",
+                "cap_perf",
+                "cap_sys_ptrace"
+            ]),
+        )]);
+        r.verdict = Some(verdict(RuntimeKind::Docker));
+        assert!(rule("AMR-020").evaluate(&r, true).is_none());
+        // Fact absent: unknown is not held.
+        let mut r = Report::blank(ScanMeta::stub(), 1);
+        r.verdict = Some(verdict(RuntimeKind::Docker));
+        assert!(rule("AMR-020").evaluate(&r, true).is_none());
     }
 }
