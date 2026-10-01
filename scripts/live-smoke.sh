@@ -3,12 +3,13 @@
 # the default probes are read-only, and the opt-in --probe-syscalls sweep is
 # the EPERM-safe null-arg kind (spec §5/§8). Passes unprivileged.
 #
-# Honest scan.complete contract (verified in pipeline.rs): `scan.complete`
-# becomes true once the scan reaches Summary; degraded/unavailable probe
-# facts (e.g. `namespaces` degraded when pid-1 namespaces are unreadable on a
-# hardened host) and even timed-out probes NEVER flip it back. So the assert
-# below — complete == true — holds on any successful run, degraded probes or
-# not; probe quality is visible in each probe's `availability`, not here.
+# Honest scan.complete contract (spec §5, pipeline.rs): `scan.complete` is
+# false iff any probe timed out; degraded/unavailable probe facts (e.g.
+# `namespaces` degraded when pid-1 namespaces are unreadable on a hardened
+# host) do NOT flip it. So the assert below — complete == true — holds on any
+# successful run of this script: it never passes --probe-timeout, so the
+# timeout path is unreachable here (a panicking probe would, correctly, fail
+# the smoke). Probe quality is visible in each probe's `availability`.
 #
 # Usage: scripts/live-smoke.sh [PATH_TO_BINARY]
 #   or:  PROFILE=release scripts/live-smoke.sh
