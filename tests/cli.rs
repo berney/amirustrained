@@ -244,3 +244,80 @@ fn json_format_emits_one_pretty_report_document() {
         "no jsonl stream lines in bulk json"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Fixture-root end-to-end (Task 25).
+//
+// Under `--fixture-root` the path probes see only the fixture: a regular-file
+// `docker.sock` stand-in yields a writable entry (fixture mode tests O_WRONLY
+// on the joined path), its handshake fails so `info` is null, and AMR-001
+// fires fail-loud (unknown peer treated as root). The verdict stays `host`,
+// which keeps every `container_only` rule silent, so nothing but the fixture
+// decides the fail-on boundary below. The single host input is the uds
+// handshake against the literal `/run/docker.sock`; its outcome only fills
+// `info` and cannot demote AMR-001 (no root daemon declares rootless there).
+// ---------------------------------------------------------------------------
+
+/// `run` with the fixture root prepended.
+fn in_fixture(root: &std::path::Path, extra: &[&str]) -> (i32, String) {
+    let mut args = vec!["--fixture-root", root.to_str().unwrap()];
+    args.extend_from_slice(extra);
+    run(&args)
+}
+
+#[test]
+fn fail_on_trips_against_fixture_socket() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("run")).unwrap();
+    fs::write(dir.path().join("run/docker.sock"), "").unwrap();
+
+    // Plain scan: exit 0 regardless of findings (spec exit-code table), and
+    // the finding severity is the rule's ACTUAL Critical — AMR-001 is not
+    // `requires_root`, so no privilege demotion touches it.
+    let (code, stdout) = in_fixture(dir.path(), &["--format", "json"]);
+    assert_eq!(code, 0, "a completed scan exits 0 even with findings");
+    let v: Value = serde_json::from_str(&stdout).expect("one json document");
+    let findings = v["findings"].as_array().unwrap();
+    let amr001 = findings
+        .iter()
+        .find(|f| f["rule"] == "AMR-001")
+        .unwrap_or_else(|| panic!("writable docker.sock must induce AMR-001: {findings:?}"));
+    assert_eq!(
+        amr001["severity"], "critical",
+        "fail-on compares final severities; the fixture finding stays Critical"
+    );
+
+    // Reality check against the plan sketch: AMR-001 is Critical, not High,
+    // so `--fail-on high` trips it — and `--fail-on critical` trips too, the
+    // boundary met EXACTLY (`f.severity >= lvl` on the finding's final
+    // severity; Critical >= Critical). The exit-0 side of that boundary is
+    // pinned by the clean fixture below.
+    let (code, _) = in_fixture(dir.path(), &["--fail-on", "high"]);
+    assert_eq!(code, 1, "a Critical finding must trip --fail-on high");
+    let (code, _) = in_fixture(dir.path(), &["--fail-on", "critical"]);
+    assert_eq!(
+        code, 1,
+        "a Critical finding meets the critical threshold exactly"
+    );
+}
+
+#[test]
+fn clean_fixture_stays_under_the_fail_on_thresholds() {
+    // The exit-0 side of the critical boundary: no socket stand-in means no
+    // AMR-001, and the host verdict keeps every High-or-worse
+    // (`container_only`) rule silent — only sub-High findings can appear, so
+    // both thresholds pass.
+    let dir = tempfile::tempdir().unwrap();
+    let (code, stdout) = in_fixture(dir.path(), &["--format", "json"]);
+    assert_eq!(code, 0);
+    let v: Value = serde_json::from_str(&stdout).expect("one json document");
+    let findings = v["findings"].as_array().unwrap();
+    assert!(
+        !findings.iter().any(|f| f["rule"] == "AMR-001"),
+        "no socket in the fixture, no AMR-001: {findings:?}"
+    );
+    for level in ["high", "critical"] {
+        let (code, _) = in_fixture(dir.path(), &["--fail-on", level]);
+        assert_eq!(code, 0, "the clean fixture must not trip --fail-on {level}");
+    }
+}
