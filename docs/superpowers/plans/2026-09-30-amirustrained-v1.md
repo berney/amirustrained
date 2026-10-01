@@ -2462,14 +2462,14 @@ mod tests {
 - [ ] **Step 3: Implement**
 
 ```rust
-/// Canonical SKIP (spec §5 syscall-probe row, security review 2026-10-01):
+/// Canonical SKIP (spec §5 syscall-probe row, security review + live findings 2026-10-01):
 /// hang / exit / self-modifying / NULL-arg-acts-on-root / fd-0-relative /
-/// conditional-block.
+/// thread-exit bookkeeping / conditional-block.
 pub const SKIP: &[&str] = &["rt_sigreturn", "select", "pause", "pselect6",
     "ppoll", "exit", "exit_group", "clone", "fork", "vfork", "seccomp",
     "ptrace", "umask", "setsid", "setpgid", "setgroups",
     "swapoff", "delete_module", "vhangup", "acct", "sethostname", "setdomainname",
-    "close", "fchmod", "fchown", "ftruncate", "finit_module",
+    "close", "fchmod", "fchown", "ftruncate", "finit_module", "set_tid_address",
     "wait4", "waitid", "msgrcv", "accept", "accept4"];
 
 /// x86_64 number→name table. Generated ONCE, committed verbatim (pinned to the
