@@ -180,7 +180,10 @@ pub fn scan_with_probes(
     }
     report.findings = crate::model::rules::evaluate_all(&report, os.is_root());
     report.compute_counts();
-    report.scan.complete = true;
+    // Spec §5: a timed-out probe leaves its data unknown, so the scan only
+    // completes when no probe timed out. Degraded/unavailable facts (data
+    // definitively absent) never flip the flag.
+    report.scan.complete = !report.probes.iter().any(|p| p.timed_out);
     sink(&Event::Summary {
         verdict: report.verdict.clone(),
         findings: report.findings.clone(),
@@ -237,7 +240,14 @@ mod tests {
         assert!(matches!(slow.availability, Availability::Unavailable(_)));
         let fast = report.probes.iter().find(|p| p.name == "fast").unwrap();
         assert!(!fast.timed_out);
-        assert!(report.scan.complete);
+        // Spec §5: any timed_out probe marks the scan incomplete.
+        assert!(!report.scan.complete);
+        // The Summary event must carry the same flag as the returned report.
+        assert!(
+            events.last().unwrap().contains("complete: false"),
+            "summary event must say complete:false: {:?}",
+            events.last()
+        );
     }
     #[test]
     fn events_are_emitted_in_meta_probe_summary_order() {
@@ -408,6 +418,46 @@ mod tests {
                 .iter()
                 .any(|p| p.name == "fast" && !p.timed_out)
         );
+        // The panic lands on the shared timed_out degraded path, so spec §5
+        // marks the scan incomplete even though it ran through to the summary.
+        assert!(!report.scan.complete);
+    }
+
+    #[test]
+    fn degraded_only_scan_stays_complete() {
+        struct Hushed;
+        impl Probe for Hushed {
+            fn name(&self) -> &'static str {
+                "hushed"
+            }
+            fn run(&self, _cx: &Ctx) -> ProbeOutcome {
+                // Data definitively absent: a degraded probe carrying an
+                // unavailable fact is a complete scan — only timed_out flips it.
+                ProbeOutcome {
+                    availability: Availability::Degraded("comparison skipped".into()),
+                    ..ProbeOutcome::empty("hushed")
+                }
+                .with_fact(Fact::unavailable(
+                    "hushed",
+                    "ns.pid",
+                    "stat".into(),
+                    Some(2),
+                ))
+            }
+        }
+        let fs = Arc::new(PseudoFs::real());
+        let os: Arc<dyn OsApi> = Arc::new(RealOs);
+        let opts = Opts {
+            pid: None,
+            probe_syscalls: false,
+            dump_filters: false,
+            probe_timeout: Some(std::time::Duration::from_secs(5)),
+            fail_on: None,
+        };
+        let report = scan_with_probes(fs, os, &opts, vec![Arc::new(Hushed)], &mut |_| {});
+        let hushed = report.probes.iter().find(|p| p.name == "hushed").unwrap();
+        assert!(matches!(hushed.availability, Availability::Degraded(_)));
+        assert!(!hushed.timed_out);
         assert!(report.scan.complete);
     }
 

@@ -36,8 +36,17 @@ impl Renderer for Text {
                 findings,
                 counts,
                 complete,
-                ..
-            } => summary_block(w, verdict.as_ref(), findings, counts, *complete, self.color)?,
+                report,
+            } => summary_block(
+                w,
+                verdict.as_ref(),
+                findings,
+                counts,
+                *complete,
+                // Spec §5: a non-complete scan only ever means timed-out probes.
+                report.probes.iter().filter(|p| p.timed_out).count(),
+                self.color,
+            )?,
             _ => {}
         }
         Ok(())
@@ -73,16 +82,19 @@ fn slug_of(id: &str) -> &'static str {
         .map_or("-", |r| r.slug)
 }
 
-/// Spec §9 summary layout: verdict line, INCOMPLETE banner directly below it,
-/// findings severity-descending (the sort is stable, so registry order
-/// survives within a group), each finding preceded by a blank line, then the
-/// counts footer and — only for a complete scan — the completion line.
+/// Spec §9 summary layout: verdict line, timeout-count INCOMPLETE banner
+/// directly below it when the scan did not complete (spec §5: that only ever
+/// means timed-out probes), findings severity-descending (the sort is stable,
+/// so registry order survives within a group), each finding preceded by a
+/// blank line, then the counts footer and — only for a complete scan — the
+/// completion line.
 fn summary_block(
     w: &mut dyn std::io::Write,
     verdict: Option<&Verdict>,
     findings: &[Finding],
     counts: &Counts,
     complete: bool,
+    timed_out: usize,
     color: bool,
 ) -> std::io::Result<()> {
     if let Some(v) = verdict {
@@ -94,7 +106,7 @@ fn summary_block(
         )?;
     }
     if !complete {
-        writeln!(w, "!! INCOMPLETE SCAN — see degraded probes above !!")?;
+        writeln!(w, "!! INCOMPLETE SCAN — {timed_out} probe(s) timed out !!")?;
     }
     let mut order: Vec<&Finding> = findings.iter().collect();
     // Stable sort keeps registry order inside each severity group.
@@ -187,6 +199,15 @@ mod tests {
             test_finding("AMR-022", Severity::Info),
             test_finding("AMR-007", Severity::Info),
         ];
+        if !complete {
+            // Spec §5: incompleteness is driven by timed-out probes; the
+            // banner below counts them.
+            r.probes.push(ProbeOutcome {
+                timed_out: true,
+                availability: crate::model::Availability::Unavailable("timed out".into()),
+                ..ProbeOutcome::empty("slow")
+            });
+        }
         r.scan.complete = complete;
         r.compute_counts();
         r
@@ -242,7 +263,7 @@ mod tests {
     fn text_incomplete_variant_snapshot() {
         insta::assert_snapshot!(render_text(&summary_report(false), false), @r#"
         runtime docker (confidence high)
-        !! INCOMPLETE SCAN — see degraded probes above !!
+        !! INCOMPLETE SCAN — 1 probe(s) timed out !!
 
         CRIT AMR-002 privileged-container: Privileged container: CAP_SYS_ADMIN, seccomp disabled, no MAC confinement
           why: This is the `--privileged` signature: CAP_SYS_ADMIN plus no seccomp filter plus nothing confining the task with mandatory access control — an explicit AppArmor `unconfined` profile, or no AppArmor while SELinux is permissive or absent from the active LSM stack. Mount filesystems, reach raw devices, drive cgroup release_agent — the container boundary is nominal and kernel-interface exploits run unopposed by every mitigation the runtime would provide.

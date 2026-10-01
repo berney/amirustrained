@@ -78,9 +78,11 @@ runs on it.
 | 2 | CLI misuse (bad `--format`/`--fail-on`) or output-IO failure |
 | 3 | internal error (a bug; probes must never produce this) |
 
-`scan.complete` is `true` once the scan reaches its summary; degraded or
-unavailable probe facts (e.g. `namespaces` on a hardened host) are visible in each
-probe's `availability` and never flip the scan to incomplete.
+`scan.complete` is `true` only when the scan reaches its summary with no probe
+timed out: a per-probe timeout (`--probe-timeout`) yields a `timed_out` probe and
+`complete: false` while the scan continues (spec §5). Degraded or unavailable
+probe facts (e.g. `namespaces` on a hardened host) stay visible in each probe's
+`availability` and never flip the scan to incomplete.
 
 ## Rule catalog (v1)
 

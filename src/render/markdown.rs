@@ -28,12 +28,20 @@ fn section_title(sev: Severity) -> &'static str {
     }
 }
 
-/// Spec §9 markdown document: title, verdict table, degraded-probe list, one
-/// `## SEVERITY` section per non-empty group (findings keep registry order
-/// inside a section), counts line.
+/// Spec §9 markdown document: title, an incomplete banner when the scan did
+/// not complete (spec §5: only ever timed-out probes), verdict table,
+/// degraded-probe list, one `## SEVERITY` section per non-empty group
+/// (findings keep registry order inside a section), counts line.
 fn document(w: &mut dyn std::io::Write, r: &Report) -> std::io::Result<()> {
     writeln!(w, "# amirustrained report")?;
     writeln!(w)?;
+    // Spec §5: an incomplete scan only ever means timed-out probes; state it
+    // rather than leaving readers to infer it from the degraded list.
+    if !r.scan.complete {
+        let timed_out = r.probes.iter().filter(|p| p.timed_out).count();
+        writeln!(w, "scan incomplete: {timed_out} probe(s) timed out")?;
+        writeln!(w)?;
+    }
     if let Some(v) = &r.verdict {
         writeln!(w, "| runtime | variant | confidence |")?;
         writeln!(w, "|---|---|---|")?;
@@ -209,5 +217,35 @@ mod tests {
             .on_event(&mut buf, &Event::Probe(ProbeOutcome::empty("uidmap")))
             .unwrap();
         assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn markdown_flags_timed_out_scan_as_incomplete() {
+        let mut r = fixture();
+        r.scan.complete = false;
+        r.probes.push(ProbeOutcome {
+            timed_out: true,
+            availability: Availability::Unavailable("timed out".into()),
+            ..ProbeOutcome::empty("slow")
+        });
+        let mut buf = vec![];
+        Markdown
+            .on_event(
+                &mut buf,
+                &Event::Summary {
+                    verdict: r.verdict.clone(),
+                    findings: r.findings.clone(),
+                    counts: r.counts.clone(),
+                    complete: false,
+                    report: Box::new(r),
+                },
+            )
+            .unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(
+            s.lines()
+                .any(|l| l == "scan incomplete: 1 probe(s) timed out"),
+            "incomplete scan must state the timed-out count: {s}"
+        );
     }
 }
