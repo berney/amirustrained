@@ -1,0 +1,38 @@
+name: Release (musl)
+
+# Native musl cross-free build: the x86_64-unknown-linux-musl target ships a
+# self-contained musl libc in the Rust distribution, so this produces a
+# static-pie ELF that runs on any x86_64 Linux host regardless of its libc.
+# The CI test job lives in ci.yml and stays untouched here.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  musl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install musl tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - name: Build release for musl target
+        run: cargo build --release --target x86_64-unknown-linux-musl
+      - name: Verify static link
+        run: |
+          out=$(file target/x86_64-unknown-linux-musl/release/amirustrained)
+          echo "$out"
+          echo "$out" | grep -qE 'static(-pie)? linked|statically linked' \
+            || { echo "ERROR: binary is not statically linked" >&2; exit 1; }
+      - name: Package artifact
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          tar -C target/x86_64-unknown-linux-musl/release \
+              -czf "amirustrained-${version}-x86_64-musl.tar.gz" amirustrained
+      - uses: actions/upload-artifact@v4
+        with:
+          name: amirustrained-musl
+          path: amirustrained-*-x86_64-musl.tar.gz

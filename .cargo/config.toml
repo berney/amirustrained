@@ -1,0 +1,7 @@
+# Plain `cargo build` / `cargo test` produce a STATIC musl ELF, not a glibc one.
+# Rust ships a self-contained musl libc for x86_64-unknown-linux-musl, so no
+# musl-gcc/system package is required; the result runs on any x86_64 Linux host
+# regardless of the host's libc. Binaries therefore land under
+# target/x86_64-unknown-linux-musl/{debug,release}/amirustrained.
+[build]
+target = "x86_64-unknown-linux-musl"
