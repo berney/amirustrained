@@ -229,7 +229,15 @@ container-gated rule (`container_only: true` on `Rule`, set by its membership in
 §6 catalog's container rules) at a Host verdict is inapplicable, not unassessable, and
 stays silent. Suppression MUST NOT key on `check() == None` (indistinguishable from
 unreadable inputs; would reopen the F4 hole) — only on the declared flag plus the
-verdict.
+verdict. **Amendment *(erratum 2026-10-01, ReviewT26 F3)*:** a rule is container-gated
+only at a *shared-kernel* containment verdict: verdict != Host AND verdict not in the
+VM-family {firecracker, gVisor, kata}. Every container-gated rule's rationale (identity
+uid_map == HOST root, CAP_SYS_MODULE ⇒ HOST kernel, host pid-ns ptrace, host-visibility
+cgroupns) is false across a VM boundary — the guest kernel and the guest identity are
+not the host's, and a VM verdict's honest output is the AMR-013/014 info notes. Nesting
+is unaffected: the verdict is the innermost containment (docker-in-firecracker ⇒ docker
+verdict, gated). The verdict test above is the same predicate: at a VM-family verdict a
+`container_only` rule is inapplicable — note suppressed — exactly as at Host.
 
 ## 7. Output formats
 
