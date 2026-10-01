@@ -197,9 +197,29 @@ fn quiet_text_omits_the_meta_header() {
 
 #[test]
 fn not_yet_implemented_formats_render_and_exit_0() {
-    for fmt in ["markdown", "json", "sarif"] {
+    for fmt in ["markdown", "sarif"] {
         let (code, stdout) = run(&["--format", fmt]);
         assert_eq!(code, 0, "{fmt} must not fail");
         assert!(stdout.contains("scan complete"), "{fmt} output: {stdout}");
     }
+}
+
+#[test]
+fn json_format_emits_one_pretty_report_document() {
+    let (code, stdout) = run(&["--format", "json"]);
+    assert_eq!(code, 0);
+    // Bulk contract: stdout is exactly one document (from_str rejects trailing
+    // non-whitespace), carrying the report root — not jsonl streaming lines.
+    let v: serde_json::Value =
+        serde_json::from_str(&stdout).expect("--format json stdout must be one JSON document");
+    assert_eq!(v["schemaVersion"], 1);
+    assert_eq!(v["tool"]["name"], "amirustrained");
+    assert_eq!(v["scan"]["complete"], true);
+    for key in ["verdict", "probes", "findings", "counts"] {
+        assert!(v.get(key).is_some(), "missing root key {key}: {v}");
+    }
+    assert!(
+        !stdout.contains(r#""type":"#),
+        "no jsonl stream lines in bulk json"
+    );
 }

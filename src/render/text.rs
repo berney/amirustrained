@@ -2,7 +2,7 @@ use super::Renderer;
 use crate::pipeline::Event;
 
 #[cfg(test)]
-use crate::model::{Counts, ProbeOutcome}; // referenced by tests through `use super::*`
+use crate::model::{Counts, ProbeOutcome, Report, ScanMeta}; // referenced by tests through `use super::*`
 
 pub struct Text {
     pub verbose: bool,
@@ -66,6 +66,7 @@ mod tests {
                 findings: vec![],
                 counts: Counts::default(),
                 complete: true,
+                report: Box::new(Report::blank(ScanMeta::stub(), 1)),
             },
         )
         .unwrap();

@@ -41,6 +41,9 @@ pub enum Event {
         findings: Vec<Finding>,
         counts: Counts,
         complete: bool,
+        /// The finished report, cloned once at Summary-emit time so the bulk
+        /// `Json` renderer can serialize it without re-walking the events.
+        report: Box<Report>,
     },
 }
 
@@ -183,6 +186,7 @@ pub fn scan_with_probes(
         findings: report.findings.clone(),
         counts: report.counts.clone(),
         complete: report.scan.complete,
+        report: Box::new(report.clone()),
     });
     report
 }

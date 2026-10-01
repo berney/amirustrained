@@ -37,6 +37,7 @@ impl Renderer for Jsonl {
                 findings,
                 counts,
                 complete,
+                ..
             } => serde_json::json!(
                 { "schemaVersion": 1, "type": "summary", "verdict": verdict,
                   "findings": findings, "counts": counts, "complete": complete }),

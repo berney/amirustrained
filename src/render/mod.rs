@@ -1,5 +1,6 @@
 //! Output renderers consuming the pipeline's [`Event`] stream.
 
+pub mod json;
 pub mod jsonl;
 pub mod text;
 
@@ -18,7 +19,8 @@ pub fn make(fmt: Format, verbose: bool) -> Box<dyn Renderer> {
     match fmt {
         Format::Text => Box::new(text::Text { verbose }),
         Format::Jsonl => Box::new(jsonl::Jsonl),
-        // Tasks 22-24 replace these arms; until then treated as misuse-safe default:
-        Format::Markdown | Format::Json | Format::Sarif => Box::new(text::Text { verbose }),
+        Format::Json => Box::new(json::Json),
+        // Tasks 23-24 replace these arms; until then treated as misuse-safe default:
+        Format::Markdown | Format::Sarif => Box::new(text::Text { verbose }),
     }
 }
