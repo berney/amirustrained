@@ -2,6 +2,7 @@
 
 pub mod json;
 pub mod jsonl;
+pub mod markdown;
 pub mod text;
 
 use crate::opts::Format;
@@ -15,12 +16,13 @@ pub trait Renderer: Send {
     fn finish(&mut self, w: &mut dyn std::io::Write) -> std::io::Result<()>;
 }
 
-pub fn make(fmt: Format, verbose: bool) -> Box<dyn Renderer> {
+pub fn make(fmt: Format, verbose: bool, color: bool) -> Box<dyn Renderer> {
     match fmt {
-        Format::Text => Box::new(text::Text { verbose }),
+        Format::Text => Box::new(text::Text { verbose, color }),
         Format::Jsonl => Box::new(jsonl::Jsonl),
         Format::Json => Box::new(json::Json),
-        // Tasks 23-24 replace these arms; until then treated as misuse-safe default:
-        Format::Markdown | Format::Sarif => Box::new(text::Text { verbose }),
+        Format::Markdown => Box::new(markdown::Markdown),
+        // Task 24 replaces this arm; until then treated as misuse-safe default:
+        Format::Sarif => Box::new(text::Text { verbose, color }),
     }
 }

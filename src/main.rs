@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -41,7 +42,13 @@ fn main() -> ExitCode {
         None => sys::fs::PseudoFs::real(),
     });
     let os: Arc<dyn sys::os::OsApi> = Arc::new(sys::os::RealOs);
-    let mut renderer = render::make(fmt, cli.verbose);
+    // ANSI paint only for an interactive stdout that asked for it (spec §9):
+    // `--no-color` is the explicit switch, `NO_COLOR` (no-color.org) the
+    // session-wide one, and a non-tty consumer gets the identical plain bytes.
+    let color = !cli.no_color
+        && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
+        && std::io::stdout().is_terminal();
+    let mut renderer = render::make(fmt, cli.verbose, color);
     let mut out: Box<dyn std::io::Write> = match &cli.output {
         Some(p) => match std::fs::File::create(p) {
             Ok(f) => Box::new(f),

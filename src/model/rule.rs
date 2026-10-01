@@ -52,8 +52,7 @@ impl<'r> Assess<'r> {
 
 pub struct Rule {
     pub id: &'static str,
-    /// Stable kebab name for SARIF `fullRule` rendering (Task 22+).
-    #[allow(dead_code)] // Read only by the later SARIF renderer.
+    /// Stable kebab name rendered in the text finding line (spec §9).
     pub slug: &'static str,
     pub severity: Severity,
     pub summary: &'static str,

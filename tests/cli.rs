@@ -196,12 +196,27 @@ fn quiet_text_omits_the_meta_header() {
 }
 
 #[test]
-fn not_yet_implemented_formats_render_and_exit_0() {
-    for fmt in ["markdown", "sarif"] {
-        let (code, stdout) = run(&["--format", fmt]);
-        assert_eq!(code, 0, "{fmt} must not fail");
-        assert!(stdout.contains("scan complete"), "{fmt} output: {stdout}");
-    }
+fn markdown_format_renders_the_report_document() {
+    let (code, stdout) = run(&["--format", "markdown"]);
+    assert_eq!(code, 0);
+    // Bulk contract: the document owns stdout start-to-finish — no streaming
+    // probe lines before or after it.
+    assert!(
+        stdout.starts_with("# amirustrained report"),
+        "markdown output: {stdout}"
+    );
+    assert!(
+        stdout.ends_with("scan complete\n") || stdout.ends_with(")\n"),
+        "markdown output must end on the counts line: {stdout}"
+    );
+}
+
+#[test]
+fn sarif_format_not_yet_renders_text_and_exits_0() {
+    // Task 24 replaces the sarif fallback; until then misuse-safe text output.
+    let (code, stdout) = run(&["--format", "sarif"]);
+    assert_eq!(code, 0, "sarif must not fail");
+    assert!(stdout.contains("scan complete"), "sarif output: {stdout}");
 }
 
 #[test]
