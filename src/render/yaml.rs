@@ -169,6 +169,9 @@ fn quote(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
+            // U+0085 NEL: raw is a line break to the YAML 1.1 reader and even
+            // raw-in-quotes folds the value; the \U escape round-trips.
+            '\u{85}' => out.push_str("\\U00000085"),
             c if (c as u32) < 0x20 || c as u32 == 0x7f => {
                 out.push_str(&format!("\\u{:04X}", c as u32))
             }
@@ -202,8 +205,11 @@ fn needs_quotes(s: &str) -> bool {
     if s.contains(": ") || s.contains(" #") {
         return true;
     }
-    // Control characters (newline included) force the escaped form.
-    if s.chars().any(|c| (c as u32) < 0x20 || c as u32 == 0x7f) {
+    // Control characters (newline included) force the escaped form; U+0085
+    // NEL too (YAML 1.1 line break to PyYAML, breaks plain scalars).
+    if s.chars()
+        .any(|c| (c as u32) < 0x20 || c as u32 == 0x7f || c == '\u{85}')
+    {
         return true;
     }
     is_reserved_word(s) || looks_numeric(s)
@@ -223,10 +229,30 @@ fn looks_numeric(s: &str) -> bool {
         return true; // ints, floats, inf/nan/e-notation
     }
     // Radix literals and YAML 1.1 sexagesimals (PyYAML reads `1:30` as 90).
-    s.starts_with("0x")
+    if s.starts_with("0x")
         || s.starts_with("0o")
         || s.starts_with("0b")
         || (s.contains(':') && s.bytes().all(|b| b.is_ascii_digit() || b == b':'))
+    {
+        return true;
+    }
+    // YAML 1.1 shapes Rust's f64 rejects but PyYAML resolves anyway:
+    // dot-inf/dot-nan (any case), digit-separator ints (`1_000` -> 1000),
+    // and ISO dates (`2026-10-02` -> datetime.date).
+    match s.to_ascii_lowercase().as_str() {
+        ".inf" | "-.inf" | "+.inf" | ".nan" | "-.nan" | "+.nan" => return true,
+        _ => {}
+    }
+    if s.contains('_') && s.bytes().all(|b| b.is_ascii_digit() || b == b'_') {
+        return true;
+    }
+    let b = s.as_bytes();
+    s.len() >= 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b[..4].iter().all(u8::is_ascii_digit)
+        && b[5..7].iter().all(u8::is_ascii_digit)
+        && b[8..10].iter().all(u8::is_ascii_digit)
 }
 
 #[cfg(test)]
@@ -358,6 +384,43 @@ flag: false
         );
         // Off stays escape-free:
         assert!(!emit_str(&v, ColorSupport::Off).contains('\x1b'));
+    }
+
+    #[test]
+    fn nel_is_escaped_never_emitted_raw() {
+        // PyYAML (YAML 1.1) reads a raw U+0085 as a line break: a plain
+        // scalar containing it makes the whole document unparseable.
+        let v = serde_json::json!({ "a": "x\u{85}y" });
+        assert_eq!(emit_str(&v, ColorSupport::Off), "a: \"x\\U00000085y\"\n");
+    }
+
+    #[test]
+    fn yaml11_resolver_shapes_are_quoted() {
+        // Shapes Rust's f64 parser rejects but PyYAML types anyway.
+        for s in [
+            "1_000",
+            ".inf",
+            "-.INF",
+            ".nan",
+            "2026-10-02",
+            "2026-10-02T10:00:00Z",
+        ] {
+            let out = emit_str(&serde_json::json!({ "k": s }), ColorSupport::Off);
+            assert!(
+                out.contains(&format!("\"{s}\"")),
+                "{s:?} must be quoted, got {out}"
+            );
+        }
+        for s in [
+            "kernel-5.14",
+            "ext4",
+            "2026-10",
+            "1_0_or_text",
+            "a-2026-10-02b",
+        ] {
+            let out = emit_str(&serde_json::json!({ "k": s }), ColorSupport::Off);
+            assert!(!out.contains('"'), "{s:?} must stay plain, got {out}");
+        }
     }
 
     #[test]

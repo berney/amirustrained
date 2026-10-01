@@ -18,9 +18,11 @@ pub struct Cli {
     pub output: Option<std::path::PathBuf>,
     #[arg(long)]
     pub probe_syscalls: bool,
-    /// Opt-in REAL eBPF program load via aya (embedded object, one
-    /// BPF_PROG_LOAD). Succeeds only when the caller can load programs
-    /// (CAP_BPF/CAP_SYS_ADMIN — effectively root); every denial is decoded
+    /// Opt-in REAL eBPF program load via aya (embedded object; one
+    /// verdict-bearing BPF_PROG_LOAD - aya's one-time kernel feature
+    /// detection issues a few more transient bpf() calls, all fds closed
+    /// immediately). Succeeds only when the caller can load programs
+    /// (CAP_BPF/CAP_SYS_ADMIN - effectively root); every denial is decoded
     /// into `ebpf.load`. Nothing is pinned; loaded state dies with the
     /// process (src/probes/ebpf_load.rs).
     #[arg(long)]

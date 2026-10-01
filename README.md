@@ -105,9 +105,12 @@ audited and hang/EPERM-safe, but the binary must
 zero-arg credential syscalls would succeed and convert the process's real/saved ids
 to root. Nothing in this project packages those bits.
 
-`--probe-ebpf` risk & cleanup note: it issues one real `bpf(BPF_PROG_LOAD)` with a
-tracepoint program embedded in the binary (`bpf/prebuilt/hello.bpf.o`: zero maps, zero
-helpers, never attached — it can never execute). A load **succeeds** only if this
+`--probe-ebpf` risk & cleanup note: the verdict rests on one real `bpf(BPF_PROG_LOAD)`
+with a tracepoint program embedded in the binary (`bpf/prebuilt/hello.bpf.o`: zero maps,
+zero helpers, never attached — it can never execute); aya's lazy, once-per-process
+kernel feature detection additionally issues a handful of transient bpf() calls (BTF
+probes, two trivial probe prog-loads, map creates) whose fds all close inside the call.
+A load **succeeds** only if this
 process may load programs: CAP_BPF+CAP_PERFMON or CAP_SYS_ADMIN, i.e. effectively root;
 every refusal is decoded into `ebpf.load` (`eperm-no-caps`, `eperm-unpriv-disabled`,
 `eacces-lsm`, `eopnotsupp`, `verifier-reject`, …) instead of a bare error. Nothing is
@@ -215,8 +218,9 @@ SARIF 2.1.0). Its `--fail-on high ⇒ 1 / critical ⇒ 0` exit-code asserts are
 The binary is read-only with respect to the system: it never writes files (except
 `-o`), never changes kernel state. The only syscalls with any effect are the opt-in
 `--probe-syscalls` null-arg probes, `seccomp(GET_ACTION_AVAIL)` (inert), and — with
-`--probe-ebpf` — a single `bpf(BPF_PROG_LOAD)` whose program is never pinned, never
-attached and fd-dropped before the process exits (crash included: exit closes fds and
-the kernel frees the program).
+`--probe-ebpf` — one verdict-bearing `bpf(BPF_PROG_LOAD)` (plus aya's one-time feature
+detection: a few transient bpf() calls, all fds closed immediately); the program is
+never pinned, never attached and fd-dropped before the process exits (crash included:
+exit closes fds and the kernel frees the program).
 Findings are evidence-cited facts, and anything the tool cannot assess at the
 current privilege level says so instead of overclaiming.
