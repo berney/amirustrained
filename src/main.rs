@@ -94,6 +94,7 @@ mod tests {
         remediation: "r",
         references: &[],
         requires_root: false,
+        container_only: false,
         check: |_a| Some(vec![]),
     };
 

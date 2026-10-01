@@ -1,5 +1,5 @@
 use super::rule::{Assess, Rule};
-use super::{Finding, Report, Severity};
+use super::{Fact, Finding, Report, RuntimeKind, Severity, Verdict};
 
 /// Rule registry; Tasks 20-21 append entries (append-only in id-space, spec §6:
 /// insertion order is stable, ids need not sort numerically — see AMR-022).
@@ -21,6 +21,9 @@ pub static RULES: &[Rule] = &[
             "https://www.cyberark.com/resources/threat-research-blog/expose-docker-socket-by-accident",
         ],
         requires_root: false,
+        // Socket exposure is reachable-from-host, not containment-gated: the
+        // rule fires on a Host verdict by design, applicability never false.
+        container_only: false,
         check: |a| {
             let f = a.fact("sockets", "found")?;
             let hits: Vec<&serde_json::Value> = f
@@ -63,6 +66,9 @@ pub static RULES: &[Rule] = &[
             "https://man7.org/linux/man-pages/man7/capabilities.7.html",
         ],
         requires_root: false,
+        // Membership in the §6 container-gated set (Rule::container_only
+        // mirrors the containerized() conjunct in check).
+        container_only: true,
         check: |a| {
             if !a.containerized() {
                 return None;
@@ -72,14 +78,14 @@ pub static RULES: &[Rule] = &[
             {
                 return None;
             }
-            let aa = a.fact("lsm", "apparmor")?;
-            if !mac_unconfining(a) {
-                return None;
-            }
+            // Evidence cites the fact that DECIDED the MAC leg (ReviewT19b-2):
+            // the aa witness on the unconfined branch, lsm.selinux on the
+            // permissive branch, lsm.list on the absent branch.
+            let mac = mac_unconfining_fact(a)?;
             Some(vec![
                 a.fact("capabilities", "effective")?.clone(),
                 a.fact("seccomp", "mode")?.clone(),
-                aa.clone(),
+                mac,
             ])
         },
     },
@@ -98,6 +104,7 @@ pub static RULES: &[Rule] = &[
             "https://docs.kernel.org/admin-guide/module-signing.html",
         ],
         requires_root: false,
+        container_only: true,
         check: |a| {
             if !a.containerized() {
                 return None;
@@ -124,6 +131,7 @@ pub static RULES: &[Rule] = &[
             "https://www.kernel.org/doc/html/latest/security/Yama.html",
         ],
         requires_root: true,
+        container_only: true,
         check: |a| {
             // Host PID ns is tautological on a bare host: the finding is about a
             // contained process that shares it.
@@ -166,6 +174,7 @@ pub static RULES: &[Rule] = &[
                       only for calls the workload genuinely needs.",
         references: &["https://docs.docker.com/engine/security/seccomp/"],
         requires_root: false,
+        container_only: true,
         check: |a| {
             if !a.containerized() {
                 return None;
@@ -191,6 +200,7 @@ pub static RULES: &[Rule] = &[
             "https://apparmor.net/",
         ],
         requires_root: false,
+        container_only: true,
         check: |a| {
             if !a.containerized() {
                 return None;
@@ -234,6 +244,8 @@ pub static RULES: &[Rule] = &[
             "https://podman.io/docs/security",
         ],
         requires_root: false,
+        // Ungated like AMR-001 (see its note): fires on a Host verdict too.
+        container_only: false,
         check: |a| {
             let f = a.fact("sockets", "found")?;
             let hits: Vec<&serde_json::Value> = f
@@ -273,6 +285,7 @@ pub static RULES: &[Rule] = &[
                       deployment mode.",
         references: &["https://www.kernel.org/doc/html/latest/security/selinux/index.html"],
         requires_root: false,
+        container_only: false,
         check: |a| {
             // No containment gate (spec condition verbatim): permissive MAC on a
             // bare host is a real hardening gap, not a tautology like AMR-003/004.
@@ -299,6 +312,7 @@ pub static RULES: &[Rule] = &[
             "https://man7.org/linux/man-pages/man7/user_namespaces.7.html",
         ],
         requires_root: false,
+        container_only: true,
         check: |a| {
             if !a.containerized() {
                 return None;
@@ -328,6 +342,7 @@ pub static RULES: &[Rule] = &[
             "https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html",
         ],
         requires_root: false,
+        container_only: true,
         check: |a| {
             if !a.containerized() {
                 return None;
@@ -354,6 +369,7 @@ pub static RULES: &[Rule] = &[
             "https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html",
         ],
         requires_root: false,
+        container_only: true,
         check: |a| {
             if !a.containerized() {
                 return None;
@@ -390,9 +406,15 @@ pub static RULES: &[Rule] = &[
             "https://man7.org/linux/man-pages/man7/id_mappings.7.html",
         ],
         requires_root: false,
+        container_only: true,
         check: |a| {
-            // Ungated per spec text: a host-gid-0 grant with setgroups allowed
-            // moves toward root wherever the layout is found.
+            // Containment gate (spec §6 erratum, live host scan 2026-10-01):
+            // init-ns gid_map is trivially `0 0 4294967295` with setgroups
+            // allow — a constant on a bare host, same reasoning as the
+            // AMR-003/004 gates.
+            if !a.containerized() {
+                return None;
+            }
             let gid = a.fact("uidmap", "gidMap")?;
             let maps_host_root = gid.value.as_array().is_some_and(|rows| {
                 rows.iter()
@@ -424,6 +446,7 @@ pub static RULES: &[Rule] = &[
             "https://www.kernel.org/doc/html/latest/userspace-api/landlock.html",
         ],
         requires_root: false,
+        container_only: false,
         check: |a| {
             a.fact("lsm", "landlockAbi")
                 .filter(|f| f.value.as_i64().is_some_and(|v| v >= 1))
@@ -445,9 +468,180 @@ pub static RULES: &[Rule] = &[
                       from this guest.",
         references: &["https://www.kernel.org/doc/html/latest/virt/kvm/index.html"],
         requires_root: false,
+        container_only: false,
         check: |a| {
             a.fact("vmm", "hypervisor")
                 .filter(|f| f.value.get("present") == Some(&serde_json::Value::Bool(true)))
+                .map(|f| vec![f.clone()])
+        },
+    },
+    Rule {
+        id: "AMR-014",
+        slug: "strong-isolation-runtime",
+        severity: Severity::Info,
+        summary: "Running inside a strong-isolation runtime (firecracker, gVisor, or kata)",
+        why: "Positive note: the verdict names a hypervisor- or kernel-separated \
+              runtime — an escape must cross a dedicated VMM (firecracker), a \
+              Sentry kernel (gVisor), or an agent-managed guest (kata) instead of \
+              the host kernel directly, which shrinks the in-guest kernel attack \
+              surface to a fraction of the container-boundary class. Audit \
+              priorities shift from runc-style escapes to the VMM layer.",
+        remediation: "Informational — no action required. Keep the VMM/guest kernel \
+                      pinned and patched: it is now the dominant boundary.",
+        references: &[
+            "https://firecracker-microvm.github.io/",
+            "https://gvisor.dev/docs/",
+            "https://katacontainers.io/",
+        ],
+        requires_root: false,
+        container_only: false,
+        check: |a| {
+            // Typed RuntimeKind match on the fusion verdict (not a string):
+            // spec row 210 names the three strong-isolation variants.
+            let v = a.report.verdict.as_ref()?;
+            matches!(
+                v.runtime,
+                RuntimeKind::Firecracker | RuntimeKind::Gvisor | RuntimeKind::Kata
+            )
+            .then(|| vec![verdict_fact(v)])
+        },
+    },
+    Rule {
+        id: "AMR-015",
+        slug: "unrecognized-runtime",
+        severity: Severity::Info,
+        summary: "Runtime verdict is low-confidence: identify the environment manually",
+        why: "No containment candidate scored above the fingerprint threshold, so \
+              the reported runtime is a lead, not a fact (spec row 211). Every \
+              isolation claim reasoned from the wrong containment — trusting or \
+              dismissing a container boundary that may not exist — is unsound; \
+              confirm the environment out-of-band (orchestrator config, scan from \
+              the host side) before relying on it.",
+        remediation: "Informational — verify the runtime out-of-band, then re-scan; \
+                      the fingerprint and its alternatives stay in the report for \
+                      re-derivation.",
+        references: &[],
+        requires_root: false,
+        container_only: false,
+        check: |a| {
+            // Plan amendment: Verdict::confidence is the string ladder
+            // high|medium|low — match "low" exactly, never a numeric < 0.5.
+            let v = a.report.verdict.as_ref()?;
+            (v.confidence == "low").then(|| vec![verdict_fact(v)])
+        },
+    },
+    Rule {
+        id: "AMR-016",
+        slug: "cap-sys-admin-no-combo",
+        severity: Severity::Medium,
+        summary: "CAP_SYS_ADMIN held while some runtime restraints remain active",
+        why: "The weaker sibling of AMR-002 (spec row 212): CAP_SYS_ADMIN mounts \
+              filesystems and drives the cgroup release_agent interfaces, but the \
+              full privileged signature is not met — a seccomp filter still filters \
+              syscalls, or AppArmor/SELinux still confines the task. One convenience \
+              flip (seccomp=unconfined, apparmor=unconfined) completes the AMR-002 \
+              combo, so the partial grant is worth removing before it is widened.",
+        remediation: "Drop CAP_SYS_ADMIN (`--cap-drop CAP_SYS_ADMIN`) and hand back \
+                      only the specific capability the workload needs, instead of \
+                      removing the restraints that still hold.",
+        references: &[
+            "https://man7.org/linux/man-pages/man7/capabilities.7.html",
+            "https://docs.docker.com/engine/containers/run/#admin-containers",
+        ],
+        requires_root: false,
+        container_only: true,
+        check: |a| {
+            if !a.containerized() {
+                return None;
+            }
+            if !a.arr_has("capabilities", "effective", "cap_sys_admin") {
+                return None;
+            }
+            // Exact complement of AMR-002's AMENDED combo (seccomp mode 0 ∧
+            // MAC-unconfining per erratum ReviewT19 F3 — NOT the stale
+            // AppArmor-only sketch): privileged-on-SELinux-permissive stays
+            // 002's territory, quiet here.
+            let amr002_combo =
+                a.is("seccomp", "mode", "disabled") && mac_unconfining_fact(a).is_some();
+            if amr002_combo {
+                return None;
+            }
+            // Evidence: the grant plus whichever restraints are holding
+            // (non-null observables only — unknown is not a restraint).
+            let mut ev = vec![a.fact("capabilities", "effective")?.clone()];
+            ev.extend(a.fact("seccomp", "mode").cloned());
+            ev.extend(
+                a.fact("lsm", "apparmor")
+                    .filter(|f| !f.value.is_null())
+                    .cloned(),
+            );
+            ev.extend(
+                a.fact("lsm", "selinux")
+                    .filter(|f| !f.value.is_null())
+                    .cloned(),
+            );
+            Some(ev)
+        },
+    },
+    Rule {
+        id: "AMR-017",
+        slug: "cgroupns-host",
+        severity: Severity::Info,
+        summary: "Container shares the host cgroup namespace",
+        why: "The container's cgroup-ns inode equals pid 1's: contained processes \
+              enumerate the whole host cgroup tree — every neighbouring tenant's \
+              scope names and limit files — instead of only their own subtree: \
+              information about the host's workload layout, and a mapped target \
+              for limit- or notification-oriented attacks. Private cgroupns is the \
+              modern runtime default, so this is explicit configuration or an old \
+              runtime. On a bare host the equality is the init-ns constant \
+              (spec row 213): gated.",
+        remediation: "Start the container with `--cgroupns=private` (docker >= 20.10 \
+                      default, podman default) so it sees only its own cgroup subtree.",
+        references: &[
+            "https://docs.docker.com/engine/reference/run/",
+            "https://man7.org/linux/man-pages/man7/cgroups.7.html",
+        ],
+        requires_root: false,
+        container_only: true,
+        check: |a| {
+            if !a.containerized() {
+                return None;
+            }
+            // Degraded pid-1 comparison leaves the fact null: unknown is not equal.
+            a.fact("namespaces", "cgroupNsSameAsInit")
+                .filter(|f| f.value == serde_json::Value::Bool(true))
+                .map(|f| vec![f.clone()])
+        },
+    },
+    Rule {
+        id: "AMR-018",
+        slug: "no-new-privs-unset",
+        severity: Severity::Low,
+        summary: "NoNewPrivs unset: execve can still gain privileges",
+        why: "With NoNewPrivs 0 an execve inside the container may gain privileges \
+              via setuid bits or file capabilities: a suid-root helper inside the \
+              image steps contained uid → container-root, and whatever the \
+              container's (possibly broad) capability set then reaches becomes \
+              reachable. The flag is a one-way kernel lock on privilege \
+              acquisition for the whole process lifecycle. Every ordinary process \
+              on a bare host sits at 0 — a constant, not a finding there \
+              (spec row 214): gated.",
+        remediation: "Run the workload with `--security-opt no-new-privileges` \
+                      (docker/podman) or `NoNewPrivileges=yes` (systemd) unless it \
+                      genuinely needs setuid transitions.",
+        references: &[
+            "https://docs.docker.com/engine/reference/run/#runtime-privilege-and-linux-capabilities",
+            "https://man7.org/linux/man-pages/man2/prctl.2.html",
+        ],
+        requires_root: false,
+        container_only: true,
+        check: |a| {
+            if !a.containerized() {
+                return None;
+            }
+            a.fact("capabilities", "noNewPrivs")
+                .filter(|f| f.value.as_i64() == Some(0))
                 .map(|f| vec![f.clone()])
         },
     },
@@ -463,26 +657,48 @@ pub fn evaluate_all(report: &Report, privileged: bool) -> Vec<Finding> {
 /// Spec §6 erratum F3: MAC is not confining the task when AppArmor explicitly reports
 /// `unconfined`, or when no AppArmor fact applies (null value) and SELinux is permissive
 /// or absent from the active LSM list. An `enforcing` SELinux with AppArmor absent keeps
-/// the rule silent — fail closed on ambiguous stacks (null list).
-fn mac_unconfining(a: &Assess) -> bool {
-    let Some(aa) = a.fact("lsm", "apparmor") else {
-        return false;
-    };
+/// the rule silent — fail closed on ambiguous stacks (null list). Returns the fact that
+/// DECIDED the leg (ReviewT19b-2): the aa witness on the unconfined branch, `lsm.selinux`
+/// on the permissive branch, `lsm.list` on the absent branch — AMR-002 cites it as
+/// evidence; AMR-016 takes the complement (`.is_none()`).
+fn mac_unconfining_fact(a: &Assess) -> Option<Fact> {
+    let aa = a.fact("lsm", "apparmor")?;
     if let Some(profile) = aa.value.get("profile").and_then(|p| p.as_str()) {
-        return profile == "unconfined";
+        return (profile == "unconfined").then(|| aa.clone());
     }
     if !aa.value.is_null() {
-        return false;
+        return None;
     }
-    let selinux_permissive = a
+    if let Some(sel) = a
         .fact("lsm", "selinux")
-        .is_some_and(|f| f.value.get("mode").and_then(|m| m.as_str()) == Some("permissive"));
-    let selinux_absent = a.fact("lsm", "list").is_some_and(|f| {
-        f.value
-            .as_array()
-            .is_some_and(|l| !l.iter().any(|x| x.as_str() == Some("selinux")))
-    });
-    selinux_permissive || selinux_absent
+        .filter(|f| f.value.get("mode").and_then(|m| m.as_str()) == Some("permissive"))
+    {
+        return Some(sel.clone());
+    }
+    a.fact("lsm", "list")
+        .filter(|f| {
+            f.value
+                .as_array()
+                .is_some_and(|l| !l.iter().any(|x| x.as_str() == Some("selinux")))
+        })
+        .cloned()
+}
+
+/// AMR-014/015 findings must cite evidence like every other rule (spec §6); their
+/// subject is the fusion verdict itself, so wrap it once in the fact shape of the
+/// `runtime` probe that produced it.
+fn verdict_fact(v: &Verdict) -> Fact {
+    Fact::ok(
+        "runtime",
+        "verdict",
+        serde_json::json!({
+            "runtime": v.runtime.as_str(),
+            "variant": v.variant,
+            "confidence": v.confidence,
+            "alternatives": v.alternatives,
+        }),
+        "runtime probe fusion verdict".into(),
+    )
 }
 
 #[cfg(test)]
@@ -735,6 +951,44 @@ mod tests {
         assert!(rule("AMR-002").evaluate(&r, false).is_none());
     }
 
+    #[test]
+    fn amr002_evidence_cites_the_deciding_mac_fact() {
+        // ReviewT19b-2: on the aa-null branches the witness is the fact that
+        // decided the MAC verdict, not the null apparmor fact alone.
+        let mut facts = amr002_facts("disabled", serde_json::Value::Null);
+        facts.extend(selinux_facts("permissive"));
+        let mut r = report_with(&facts);
+        r.verdict = Some(verdict(RuntimeKind::Docker));
+        let f = rule("AMR-002").evaluate(&r, false).expect("must fire");
+        let keys: Vec<(&str, &str)> = f
+            .evidence
+            .iter()
+            .map(|e| (e.probe.as_str(), e.key.as_str()))
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                ("capabilities", "effective"),
+                ("seccomp", "mode"),
+                ("lsm", "selinux")
+            ]
+        );
+        let mut facts = amr002_facts("disabled", serde_json::Value::Null);
+        facts.push(("lsm", "list", json!(["lockdown", "yama"])));
+        let mut r = report_with(&facts);
+        r.verdict = Some(verdict(RuntimeKind::Docker));
+        let f = rule("AMR-002").evaluate(&r, false).expect("must fire");
+        assert_eq!(f.evidence[2].key, "list");
+        // aa-unconfined branch unchanged: the apparmor fact itself.
+        let mut r = report_with(&amr002_facts(
+            "disabled",
+            json!({"profile": "unconfined", "mode": ""}),
+        ));
+        r.verdict = Some(verdict(RuntimeKind::Docker));
+        let f = rule("AMR-002").evaluate(&r, false).expect("must fire");
+        assert_eq!(f.evidence[2].key, "apparmor");
+    }
+
     // ---------------------------------------------------------------- AMR-003
 
     #[test]
@@ -853,6 +1107,25 @@ mod tests {
             .expect("info note always present");
         assert_eq!(f.severity, Severity::Info);
         assert!(f.evidence.is_empty());
+        assert!(f.summary.ends_with("(insufficient privilege to assess)"));
+    }
+
+    #[test]
+    fn amr004_host_verdict_unprivileged_suppresses_privilege_note() {
+        // Spec §6 amendment (ReviewT19b J1): a container-gated rule at a Host
+        // verdict is inapplicable, not unassessable — the note is suppressed.
+        let r = amr004_report(false, 0, &["cap_sys_ptrace"], RuntimeKind::Host);
+        assert!(rule("AMR-004").evaluate(&r, false).is_none());
+    }
+
+    #[test]
+    fn amr004_missing_verdict_unprivileged_still_emits_note() {
+        // Amendment J1 boundary: no verdict = containment unknown ⇒ the F4
+        // note stays (suppression keys on flag + Host verdict only; the
+        // unprivileged-Docker note path is pinned by the two tests above).
+        let r = report_with(&amr004_facts(false, 1, &[]));
+        let f = rule("AMR-004").evaluate(&r, false).expect("note present");
+        assert_eq!(f.severity, Severity::Info);
         assert!(f.summary.ends_with("(insufficient privilege to assess)"));
     }
 
@@ -1087,18 +1360,34 @@ mod tests {
         assert!(rule("AMR-010").evaluate(&r, false).is_none());
     }
 
+    #[test]
+    fn amr010_quiet_on_host_verdict() {
+        // Mirror of the AMR-008/009 host-quiet pins: the gate is behavioral,
+        // not fixture accident — every other 010 fixture is Docker-verdicted.
+        let mut r = report_with(&[
+            ("cgroup", "controllers", json!(["pids"])),
+            ("cgroup", "limits", json!({"pids": "max"})),
+        ]);
+        r.verdict = Some(verdict(RuntimeKind::Host));
+        assert!(rule("AMR-010").evaluate(&r, false).is_none());
+    }
+
     // ---------------------------------------------------------------- AMR-011
 
     fn amr011_report(gid_rows: serde_json::Value, setgroups: &str) -> Report {
-        report_with(&[
+        // Containment gate (spec §6 erratum, live host scan): host-0 gid rows
+        // only mean movement when there is a container to move from.
+        let mut r = report_with(&[
             ("uidmap", "gidMap", gid_rows),
             ("uidmap", "setgroups", json!(setgroups)),
-        ])
+        ]);
+        r.verdict = Some(verdict(RuntimeKind::Docker));
+        r
     }
 
     #[test]
     fn amr011_fires_medium_on_host0_gid_row_with_setgroups_allow() {
-        // Ungated per spec text; severity is medium (spec), not the plan's info.
+        // Severity is medium (spec §6 row 207), not the plan's info.
         let r = amr011_report(map_rows(&[(0, 0, 1)]), "allow");
         let f = rule("AMR-011").evaluate(&r, false).expect("must fire");
         assert_eq!(f.severity, Severity::Medium);
@@ -1116,6 +1405,18 @@ mod tests {
     #[test]
     fn amr011_quiet_without_host0_row() {
         let r = amr011_report(map_rows(&[(0, 100000, 65536)]), "allow");
+        assert!(rule("AMR-011").evaluate(&r, false).is_none());
+    }
+
+    #[test]
+    fn amr011_quiet_on_host_verdict() {
+        // Erratum reasoning: init-ns gid_map is trivially `0 0 4294967295`
+        // with setgroups allow — ungated, every bare host fires on a constant.
+        let mut r = report_with(&[
+            ("uidmap", "gidMap", map_rows(&[(0, 0, u32::MAX)])),
+            ("uidmap", "setgroups", json!("allow")),
+        ]);
+        r.verdict = Some(verdict(RuntimeKind::Host));
         assert!(rule("AMR-011").evaluate(&r, false).is_none());
     }
 
@@ -1169,6 +1470,214 @@ mod tests {
         assert!(rule("AMR-013").evaluate(&r, false).is_none());
     }
 
+    // ---------------------------------------------------------------- AMR-014
+
+    #[test]
+    fn amr014_fires_info_on_strong_isolation_verdicts() {
+        for runtime in [
+            RuntimeKind::Firecracker,
+            RuntimeKind::Gvisor,
+            RuntimeKind::Kata,
+        ] {
+            let mut r = Report::blank(ScanMeta::stub(), 1);
+            r.verdict = Some(verdict(runtime));
+            let f = rule("AMR-014")
+                .evaluate(&r, false)
+                .expect("strong-isolation runtime must fire");
+            assert_eq!(f.severity, Severity::Info);
+            assert_eq!(f.evidence[0].probe, "runtime");
+            assert_eq!(f.evidence[0].key, "verdict");
+        }
+    }
+
+    #[test]
+    fn amr014_quiet_on_ordinary_and_missing_verdicts() {
+        for runtime in [
+            RuntimeKind::Docker,
+            RuntimeKind::Kubernetes,
+            RuntimeKind::Host,
+        ] {
+            let mut r = Report::blank(ScanMeta::stub(), 1);
+            r.verdict = Some(verdict(runtime));
+            assert!(rule("AMR-014").evaluate(&r, false).is_none());
+        }
+        assert!(
+            rule("AMR-014")
+                .evaluate(&Report::blank(ScanMeta::stub(), 1), false)
+                .is_none()
+        );
+    }
+
+    // ---------------------------------------------------------------- AMR-015
+
+    #[test]
+    fn amr015_fires_info_on_low_confidence_verdict() {
+        // Plan amendment: the Verdict confidence is a string ladder
+        // (high|medium|low) — "low" exactly, never a numeric < 0.5.
+        let mut r = Report::blank(ScanMeta::stub(), 1);
+        let mut v = verdict(RuntimeKind::Lxc);
+        v.confidence = "low".into();
+        r.verdict = Some(v);
+        let f = rule("AMR-015").evaluate(&r, false).expect("low must fire");
+        assert_eq!(f.severity, Severity::Info);
+        assert_eq!(f.evidence[0].value["confidence"], "low");
+    }
+
+    #[test]
+    fn amr015_quiet_on_confident_or_absent_verdict() {
+        for confidence in ["high", "medium"] {
+            let mut r = Report::blank(ScanMeta::stub(), 1);
+            let mut v = verdict(RuntimeKind::Docker);
+            v.confidence = confidence.into();
+            r.verdict = Some(v);
+            assert!(rule("AMR-015").evaluate(&r, false).is_none());
+        }
+        assert!(
+            rule("AMR-015")
+                .evaluate(&Report::blank(ScanMeta::stub(), 1), false)
+                .is_none()
+        );
+    }
+
+    // ---------------------------------------------------------------- AMR-016
+
+    #[test]
+    fn amr016_quiet_when_amr002_combo_complete_apparmor() {
+        let mut r = report_with(&amr002_facts(
+            "disabled",
+            json!({"profile": "unconfined", "mode": ""}),
+        ));
+        r.verdict = Some(verdict(RuntimeKind::Docker));
+        assert!(rule("AMR-002").evaluate(&r, false).is_some());
+        assert!(rule("AMR-016").evaluate(&r, false).is_none());
+    }
+
+    #[test]
+    fn amr016_quiet_when_amr002_combo_complete_selinux_permissive() {
+        // The combo is AMR-002's AMENDED one: privileged-on-SELinux-permissive
+        // is 002's territory and stays QUIET on 016 (the plan sketch's
+        // AppArmor-only complement is stale — erratum ReviewT19 F3).
+        let mut facts = amr002_facts("disabled", serde_json::Value::Null);
+        facts.extend(selinux_facts("permissive"));
+        let mut r = report_with(&facts);
+        r.verdict = Some(verdict(RuntimeKind::Docker));
+        assert!(rule("AMR-002").evaluate(&r, false).is_some());
+        assert!(rule("AMR-016").evaluate(&r, false).is_none());
+    }
+
+    #[test]
+    fn amr016_fires_medium_when_seccomp_filter_holds() {
+        let mut r = report_with(&amr002_facts(
+            "filter",
+            json!({"profile": "unconfined", "mode": ""}),
+        ));
+        r.verdict = Some(verdict(RuntimeKind::Docker));
+        let f = rule("AMR-016").evaluate(&r, false).expect("must fire");
+        assert_eq!(f.severity, Severity::Medium);
+        let keys: Vec<&str> = f.evidence.iter().map(|e| e.key.as_str()).collect();
+        assert!(
+            keys.contains(&"effective") && keys.contains(&"mode"),
+            "evidence must show the cap and the restraint: {keys:?}"
+        );
+    }
+
+    #[test]
+    fn amr016_fires_when_apparmor_absent_but_selinux_enforcing() {
+        let mut facts = amr002_facts("disabled", serde_json::Value::Null);
+        facts.extend(selinux_facts("enforcing"));
+        let mut r = report_with(&facts);
+        r.verdict = Some(verdict(RuntimeKind::Docker));
+        assert!(rule("AMR-016").evaluate(&r, false).is_some());
+    }
+
+    #[test]
+    fn amr016_quiet_without_cap_sys_admin_or_containment() {
+        let mut r = report_with(&[
+            ("capabilities", "effective", json!(["cap_chown"])),
+            ("seccomp", "mode", json!("filter")),
+        ]);
+        r.verdict = Some(verdict(RuntimeKind::Docker));
+        assert!(rule("AMR-016").evaluate(&r, false).is_none());
+        // Full combo facts on a bare host: gated like AMR-002.
+        let mut r = report_with(&amr002_facts(
+            "disabled",
+            json!({"profile": "unconfined", "mode": ""}),
+        ));
+        r.verdict = Some(verdict(RuntimeKind::Host));
+        assert!(rule("AMR-016").evaluate(&r, false).is_none());
+    }
+
+    // ---------------------------------------------------------------- AMR-017
+
+    fn amr017_report(cgroup_ns: serde_json::Value) -> Report {
+        let mut r = report_with(&[("namespaces", "cgroupNsSameAsInit", cgroup_ns)]);
+        r.verdict = Some(verdict(RuntimeKind::Docker));
+        r
+    }
+
+    #[test]
+    fn amr017_fires_info_when_cgroup_ns_matches_init() {
+        let f = rule("AMR-017")
+            .evaluate(&amr017_report(json!(true)), false)
+            .expect("must fire");
+        assert_eq!(f.severity, Severity::Info);
+        assert_eq!(f.evidence[0].key, "cgroupNsSameAsInit");
+    }
+
+    #[test]
+    fn amr017_quiet_when_isolated_null_or_host() {
+        assert!(
+            rule("AMR-017")
+                .evaluate(&amr017_report(json!(false)), false)
+                .is_none()
+        );
+        // Degraded pid-1 comparison: null is unknown, never "equal".
+        assert!(
+            rule("AMR-017")
+                .evaluate(&amr017_report(serde_json::Value::Null), false)
+                .is_none()
+        );
+        // Bare host: the equality is the init-ns constant (spec row 213).
+        let mut r = report_with(&[("namespaces", "cgroupNsSameAsInit", json!(true))]);
+        r.verdict = Some(verdict(RuntimeKind::Host));
+        assert!(rule("AMR-017").evaluate(&r, false).is_none());
+    }
+
+    // ---------------------------------------------------------------- AMR-018
+
+    fn amr018_report(nnp: serde_json::Value) -> Report {
+        let mut r = report_with(&[("capabilities", "noNewPrivs", nnp)]);
+        r.verdict = Some(verdict(RuntimeKind::Podman));
+        r
+    }
+
+    #[test]
+    fn amr018_fires_low_when_no_new_privs_unset() {
+        let f = rule("AMR-018")
+            .evaluate(&amr018_report(json!(0)), false)
+            .expect("must fire");
+        assert_eq!(f.severity, Severity::Low);
+        assert_eq!(f.evidence[0].key, "noNewPrivs");
+    }
+
+    #[test]
+    fn amr018_quiet_when_set_null_or_host() {
+        assert!(
+            rule("AMR-018")
+                .evaluate(&amr018_report(json!(1)), false)
+                .is_none()
+        );
+        assert!(
+            rule("AMR-018")
+                .evaluate(&amr018_report(serde_json::Value::Null), false)
+                .is_none()
+        );
+        // Ordinary host processes sit at 0: a constant, not a finding (row 214).
+        let mut r = report_with(&[("capabilities", "noNewPrivs", json!(0))]);
+        r.verdict = Some(verdict(RuntimeKind::Host));
+        assert!(rule("AMR-018").evaluate(&r, false).is_none());
+    }
+
     // ------------------------------------------------------------ cross-cutting
 
     #[test]
@@ -1197,12 +1706,14 @@ mod tests {
     fn registry_order_is_exact_and_unique() {
         let ids: Vec<&str> = RULES.iter().map(|r| r.id).collect();
         // Registry order is append-stable, not numeric: AMR-022 was an
-        // id-space append (ReviewT19 F2) and keeps its slot.
+        // id-space append (ReviewT19 F2) and keeps its slot; Task 21 appended
+        // 014–018 after AMR-013.
         assert_eq!(
             ids,
             [
                 "AMR-001", "AMR-002", "AMR-003", "AMR-004", "AMR-005", "AMR-006", "AMR-022",
                 "AMR-007", "AMR-008", "AMR-009", "AMR-010", "AMR-011", "AMR-012", "AMR-013",
+                "AMR-014", "AMR-015", "AMR-016", "AMR-017", "AMR-018",
             ]
         );
     }

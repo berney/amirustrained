@@ -65,6 +65,15 @@ pub struct Rule {
     /// " (insufficient privilege to assess)" — fired keeps its evidence,
     /// unfired reports an empty-evidence blind-spot note (spec §6 F4, §8).
     pub requires_root: bool,
+    /// true → the rule's applicability *is* containment: its `check` gates on
+    /// `containerized()`. Spec §6 amendment (ReviewT19b J1): a `requires_root`
+    /// rule carrying this flag stays silent — instead of emitting the
+    /// "insufficient privilege to assess" note — at a Host verdict: the rule
+    /// is inapplicable there, not unassessable. The flag MUST mirror gate
+    /// membership: socket rules 001/022 are false by design (they fire on a
+    /// host verdict too, applicability never false), and the ungated specs
+    /// AMR-007/012/013/014/015 are false.
+    pub container_only: bool,
     /// `Some(evidence)` fires the rule; `None` stays silent.
     pub check: fn(&Assess) -> Option<Vec<Fact>>,
 }
@@ -73,7 +82,18 @@ impl Rule {
     pub fn evaluate(&self, report: &Report, privileged: bool) -> Option<Finding> {
         let a = Assess { report, privileged };
         let evidence = (self.check)(&a);
-        if self.requires_root && !a.privileged {
+        // Spec §6 amendment (ReviewT19b J1): the note is skipped iff the
+        // rule's applicability is provably false independent of privilege —
+        // the declared flag plus a Host verdict. Verdict absent = containment
+        // unknown ⇒ DO emit. Suppression MUST NOT key on `check() == None`
+        // (indistinguishable from unreadable inputs; would reopen the F4
+        // hole — spec §6 lines 226–232).
+        let inapplicable = self.container_only
+            && report
+                .verdict
+                .as_ref()
+                .is_some_and(|v| v.runtime == RuntimeKind::Host);
+        if self.requires_root && !a.privileged && !inapplicable {
             // Spec §6 erratum F4: the downgrade must be reachable — the note is
             // emitted whether or not the root-gated inputs happened to be readable.
             return Some(Finding {
