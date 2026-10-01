@@ -1,6 +1,6 @@
 //! Opt-in EPERM sweep (spec §5 "Syscall enumeration policy"): invoke every
-//! x86_64 syscall with all-zero args and read the errno. Only `EPERM`(1) and
-//! `EACCES`(13) mean a seccomp filter terminated the call; every other errno
+//! syscall of the target arch's committed NAMES table with all-zero args
+//! and read the errno. Only `EPERM`(1) and
 //! (`ENOENT`, `EFAULT`, `EINVAL`, `E2BIG`, `ENOSYS`…) is "not blocked /
 //! indeterminate". Mirrors amicontained's sweep — parity over cleverness.
 //!
@@ -34,7 +34,8 @@
 //!
 //! Registered ONLY with `--probe-syscalls`; without `--probe-timeout` the
 //! CLI forces a 30 s ceiling (spec §5), so even a missed hazard degrades
-//! instead of hanging the scan. Sweep = 289 pure sysenter round-trips.
+//! instead of hanging the scan. Sweep size is per-arch (NAMES minus SKIP):
+//! 289 round-trips on x86_64, 239 on aarch64, 238 on riscv64.
 //!
 //! INVOCATION ASSUMPTION (residual review note 2026-10-01): the sweep
 //! presumes DIRECT execution of the static binary. The credential family
@@ -55,7 +56,20 @@ use crate::model::{Fact, ProbeOutcome};
 /// (pinned by test). The swept complement is separately frozen as an
 /// allow-list in the test module (`AUDITED_SWEPT`): any regenerated NAMES
 /// entry joins the sweep only after human review adds it there.
-#[cfg(target_arch = "x86_64")]
+///
+/// ARCH SCALING (multi-arch task 2026-10-02): the list keys BY NAME on
+/// purpose — the same hazards carry different numbers per arch (mount 165
+/// on x86_64 vs 40 on asm-generic; reboot 169 vs 142; seccomp 317 vs 277).
+/// All supported arches share this one canonical list; names an arch's
+/// table does not contain (select/pause/fork/vfork/alarm are absent from
+/// asm-generic; kexec_file_load sits above its rseq ceiling) simply match
+/// nothing, and the per-arch pin test freezes exactly which entries are
+/// vacuous per arch.
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+))]
 pub const SKIP: &[&str] = &[
     // hang-class
     "rt_sigreturn",
@@ -493,9 +507,615 @@ pub const NAMES: &[(&str, u32)] = &[
     ("rseq", 334),
 ];
 
-/// Sweep 0..=SYS_rseq with null args; names whose call hit EPERM/EACCES,
+/// aarch64 (asm-generic) number→name table. Generated ONCE, committed
+/// verbatim (pinned to libc 0.2.189). The musl module is the generator
+/// because it is the release target; every name present in the gnu module
+/// carries the SAME number there (cross-checked 1:1 — the only musl-only
+/// in-range row is io_pgetevents(292), which the kernel asm-generic table
+/// defines for all arches; the gnu modules' table just omits the constant).
+/// Generator — mechanical, zero decisions:
+///
+/// ```text
+/// grep -oE 'pub const SYS_[a-z0-9_]+: c_long = [0-9]+' \
+///   ~/.cargo/registry/src/*/libc-0.2.189/src/unix/linux_like/linux/musl/b64/aarch64/mod.rs
+/// ```
+///
+/// Keep `nr <= SYS_rseq` (293 on asm-generic — the same sweep-ceiling
+/// policy as x86_64; landlock/futex_waitv/mseal sit above it on every
+/// arch), drop alias duplicates, emit ("name", nr) ascending: 278 rows,
+/// strictly monotonic. The 244..=259 asm-generic arch-specific
+/// reservation is a real hole (no exported names). Numbers differ from
+/// x86_64 by design: io_setup=0 (the table opens with the aio family, not
+/// read), mount=40, reboot=142, seccomp=277, bpf=280, rseq=293.
+#[cfg(target_arch = "aarch64")]
+pub const NAMES: &[(&str, u32)] = &[
+    ("io_setup", 0),
+    ("io_destroy", 1),
+    ("io_submit", 2),
+    ("io_cancel", 3),
+    ("io_getevents", 4),
+    ("setxattr", 5),
+    ("lsetxattr", 6),
+    ("fsetxattr", 7),
+    ("getxattr", 8),
+    ("lgetxattr", 9),
+    ("fgetxattr", 10),
+    ("listxattr", 11),
+    ("llistxattr", 12),
+    ("flistxattr", 13),
+    ("removexattr", 14),
+    ("lremovexattr", 15),
+    ("fremovexattr", 16),
+    ("getcwd", 17),
+    ("lookup_dcookie", 18),
+    ("eventfd2", 19),
+    ("epoll_create1", 20),
+    ("epoll_ctl", 21),
+    ("epoll_pwait", 22),
+    ("dup", 23),
+    ("dup3", 24),
+    ("fcntl", 25),
+    ("inotify_init1", 26),
+    ("inotify_add_watch", 27),
+    ("inotify_rm_watch", 28),
+    ("ioctl", 29),
+    ("ioprio_set", 30),
+    ("ioprio_get", 31),
+    ("flock", 32),
+    ("mknodat", 33),
+    ("mkdirat", 34),
+    ("unlinkat", 35),
+    ("symlinkat", 36),
+    ("linkat", 37),
+    ("renameat", 38),
+    ("umount2", 39),
+    ("mount", 40),
+    ("pivot_root", 41),
+    ("nfsservctl", 42),
+    ("statfs", 43),
+    ("fstatfs", 44),
+    ("truncate", 45),
+    ("ftruncate", 46),
+    ("fallocate", 47),
+    ("faccessat", 48),
+    ("chdir", 49),
+    ("fchdir", 50),
+    ("chroot", 51),
+    ("fchmod", 52),
+    ("fchmodat", 53),
+    ("fchownat", 54),
+    ("fchown", 55),
+    ("openat", 56),
+    ("close", 57),
+    ("vhangup", 58),
+    ("pipe2", 59),
+    ("quotactl", 60),
+    ("getdents64", 61),
+    ("lseek", 62),
+    ("read", 63),
+    ("write", 64),
+    ("readv", 65),
+    ("writev", 66),
+    ("pread64", 67),
+    ("pwrite64", 68),
+    ("preadv", 69),
+    ("pwritev", 70),
+    ("sendfile", 71),
+    ("pselect6", 72),
+    ("ppoll", 73),
+    ("signalfd4", 74),
+    ("vmsplice", 75),
+    ("splice", 76),
+    ("tee", 77),
+    ("readlinkat", 78),
+    ("newfstatat", 79),
+    ("fstat", 80),
+    ("sync", 81),
+    ("fsync", 82),
+    ("fdatasync", 83),
+    ("sync_file_range", 84),
+    ("timerfd_create", 85),
+    ("timerfd_settime", 86),
+    ("timerfd_gettime", 87),
+    ("utimensat", 88),
+    ("acct", 89),
+    ("capget", 90),
+    ("capset", 91),
+    ("personality", 92),
+    ("exit", 93),
+    ("exit_group", 94),
+    ("waitid", 95),
+    ("set_tid_address", 96),
+    ("unshare", 97),
+    ("futex", 98),
+    ("set_robust_list", 99),
+    ("get_robust_list", 100),
+    ("nanosleep", 101),
+    ("getitimer", 102),
+    ("setitimer", 103),
+    ("kexec_load", 104),
+    ("init_module", 105),
+    ("delete_module", 106),
+    ("timer_create", 107),
+    ("timer_gettime", 108),
+    ("timer_getoverrun", 109),
+    ("timer_settime", 110),
+    ("timer_delete", 111),
+    ("clock_settime", 112),
+    ("clock_gettime", 113),
+    ("clock_getres", 114),
+    ("clock_nanosleep", 115),
+    ("syslog", 116),
+    ("ptrace", 117),
+    ("sched_setparam", 118),
+    ("sched_setscheduler", 119),
+    ("sched_getscheduler", 120),
+    ("sched_getparam", 121),
+    ("sched_setaffinity", 122),
+    ("sched_getaffinity", 123),
+    ("sched_yield", 124),
+    ("sched_get_priority_max", 125),
+    ("sched_get_priority_min", 126),
+    ("sched_rr_get_interval", 127),
+    ("restart_syscall", 128),
+    ("kill", 129),
+    ("tkill", 130),
+    ("tgkill", 131),
+    ("sigaltstack", 132),
+    ("rt_sigsuspend", 133),
+    ("rt_sigaction", 134),
+    ("rt_sigprocmask", 135),
+    ("rt_sigpending", 136),
+    ("rt_sigtimedwait", 137),
+    ("rt_sigqueueinfo", 138),
+    ("rt_sigreturn", 139),
+    ("setpriority", 140),
+    ("getpriority", 141),
+    ("reboot", 142),
+    ("setregid", 143),
+    ("setgid", 144),
+    ("setreuid", 145),
+    ("setuid", 146),
+    ("setresuid", 147),
+    ("getresuid", 148),
+    ("setresgid", 149),
+    ("getresgid", 150),
+    ("setfsuid", 151),
+    ("setfsgid", 152),
+    ("times", 153),
+    ("setpgid", 154),
+    ("getpgid", 155),
+    ("getsid", 156),
+    ("setsid", 157),
+    ("getgroups", 158),
+    ("setgroups", 159),
+    ("uname", 160),
+    ("sethostname", 161),
+    ("setdomainname", 162),
+    ("getrlimit", 163),
+    ("setrlimit", 164),
+    ("getrusage", 165),
+    ("umask", 166),
+    ("prctl", 167),
+    ("getcpu", 168),
+    ("gettimeofday", 169),
+    ("settimeofday", 170),
+    ("adjtimex", 171),
+    ("getpid", 172),
+    ("getppid", 173),
+    ("getuid", 174),
+    ("geteuid", 175),
+    ("getgid", 176),
+    ("getegid", 177),
+    ("gettid", 178),
+    ("sysinfo", 179),
+    ("mq_open", 180),
+    ("mq_unlink", 181),
+    ("mq_timedsend", 182),
+    ("mq_timedreceive", 183),
+    ("mq_notify", 184),
+    ("mq_getsetattr", 185),
+    ("msgget", 186),
+    ("msgctl", 187),
+    ("msgrcv", 188),
+    ("msgsnd", 189),
+    ("semget", 190),
+    ("semctl", 191),
+    ("semtimedop", 192),
+    ("semop", 193),
+    ("shmget", 194),
+    ("shmctl", 195),
+    ("shmat", 196),
+    ("shmdt", 197),
+    ("socket", 198),
+    ("socketpair", 199),
+    ("bind", 200),
+    ("listen", 201),
+    ("accept", 202),
+    ("connect", 203),
+    ("getsockname", 204),
+    ("getpeername", 205),
+    ("sendto", 206),
+    ("recvfrom", 207),
+    ("setsockopt", 208),
+    ("getsockopt", 209),
+    ("shutdown", 210),
+    ("sendmsg", 211),
+    ("recvmsg", 212),
+    ("readahead", 213),
+    ("brk", 214),
+    ("munmap", 215),
+    ("mremap", 216),
+    ("add_key", 217),
+    ("request_key", 218),
+    ("keyctl", 219),
+    ("clone", 220),
+    ("execve", 221),
+    ("mmap", 222),
+    ("fadvise64", 223),
+    ("swapon", 224),
+    ("swapoff", 225),
+    ("mprotect", 226),
+    ("msync", 227),
+    ("mlock", 228),
+    ("munlock", 229),
+    ("mlockall", 230),
+    ("munlockall", 231),
+    ("mincore", 232),
+    ("madvise", 233),
+    ("remap_file_pages", 234),
+    ("mbind", 235),
+    ("get_mempolicy", 236),
+    ("set_mempolicy", 237),
+    ("migrate_pages", 238),
+    ("move_pages", 239),
+    ("rt_tgsigqueueinfo", 240),
+    ("perf_event_open", 241),
+    ("accept4", 242),
+    ("recvmmsg", 243),
+    ("wait4", 260),
+    ("prlimit64", 261),
+    ("fanotify_init", 262),
+    ("fanotify_mark", 263),
+    ("name_to_handle_at", 264),
+    ("open_by_handle_at", 265),
+    ("clock_adjtime", 266),
+    ("syncfs", 267),
+    ("setns", 268),
+    ("sendmmsg", 269),
+    ("process_vm_readv", 270),
+    ("process_vm_writev", 271),
+    ("kcmp", 272),
+    ("finit_module", 273),
+    ("sched_setattr", 274),
+    ("sched_getattr", 275),
+    ("renameat2", 276),
+    ("seccomp", 277),
+    ("getrandom", 278),
+    ("memfd_create", 279),
+    ("bpf", 280),
+    ("execveat", 281),
+    ("userfaultfd", 282),
+    ("membarrier", 283),
+    ("mlock2", 284),
+    ("copy_file_range", 285),
+    ("preadv2", 286),
+    ("pwritev2", 287),
+    ("pkey_mprotect", 288),
+    ("pkey_alloc", 289),
+    ("pkey_free", 290),
+    ("statx", 291),
+    ("io_pgetevents", 292),
+    ("rseq", 293),
+];
+
+/// riscv64 (asm-generic) number→name table. Identical ABI family to
+/// aarch64 — but regenerated INDEPENDENTLY from the libc riscv64 module
+/// and verified by a name-for-name diff against the aarch64 extraction:
+/// within the sweep ceiling the two arches differ ONLY by libc's omission
+/// of SYS_renameat (below). Generator — mechanical, zero decisions:
+///
+/// ```text
+/// grep -oE 'pub const SYS_[a-z0-9_]+: c_long = [0-9]+' \
+///   ~/.cargo/registry/src/*/libc-0.2.189/src/unix/linux_like/linux/musl/b64/riscv64/mod.rs
+/// ```
+///
+/// Keep `nr <= SYS_rseq` (293), drop alias duplicates, ascending: 277 rows,
+/// strictly monotonic. DOCUMENTED GAP: libc 0.2.189 (gnu AND musl) omits
+/// SYS_renameat on riscv64 although the kernel asm-generic table numbers it
+/// 38 (between linkat 37 and umount2 39); renameat2(276) IS swept, so the
+/// coverage loss is exactly one legacy call. Re-check this row count on the
+/// next libc bump — if libc gains the constant, regeneration must produce
+/// 278 rows and the pin test here must be updated deliberately.
+#[cfg(target_arch = "riscv64")]
+pub const NAMES: &[(&str, u32)] = &[
+    ("io_setup", 0),
+    ("io_destroy", 1),
+    ("io_submit", 2),
+    ("io_cancel", 3),
+    ("io_getevents", 4),
+    ("setxattr", 5),
+    ("lsetxattr", 6),
+    ("fsetxattr", 7),
+    ("getxattr", 8),
+    ("lgetxattr", 9),
+    ("fgetxattr", 10),
+    ("listxattr", 11),
+    ("llistxattr", 12),
+    ("flistxattr", 13),
+    ("removexattr", 14),
+    ("lremovexattr", 15),
+    ("fremovexattr", 16),
+    ("getcwd", 17),
+    ("lookup_dcookie", 18),
+    ("eventfd2", 19),
+    ("epoll_create1", 20),
+    ("epoll_ctl", 21),
+    ("epoll_pwait", 22),
+    ("dup", 23),
+    ("dup3", 24),
+    ("fcntl", 25),
+    ("inotify_init1", 26),
+    ("inotify_add_watch", 27),
+    ("inotify_rm_watch", 28),
+    ("ioctl", 29),
+    ("ioprio_set", 30),
+    ("ioprio_get", 31),
+    ("flock", 32),
+    ("mknodat", 33),
+    ("mkdirat", 34),
+    ("unlinkat", 35),
+    ("symlinkat", 36),
+    ("linkat", 37),
+    ("umount2", 39),
+    ("mount", 40),
+    ("pivot_root", 41),
+    ("nfsservctl", 42),
+    ("statfs", 43),
+    ("fstatfs", 44),
+    ("truncate", 45),
+    ("ftruncate", 46),
+    ("fallocate", 47),
+    ("faccessat", 48),
+    ("chdir", 49),
+    ("fchdir", 50),
+    ("chroot", 51),
+    ("fchmod", 52),
+    ("fchmodat", 53),
+    ("fchownat", 54),
+    ("fchown", 55),
+    ("openat", 56),
+    ("close", 57),
+    ("vhangup", 58),
+    ("pipe2", 59),
+    ("quotactl", 60),
+    ("getdents64", 61),
+    ("lseek", 62),
+    ("read", 63),
+    ("write", 64),
+    ("readv", 65),
+    ("writev", 66),
+    ("pread64", 67),
+    ("pwrite64", 68),
+    ("preadv", 69),
+    ("pwritev", 70),
+    ("sendfile", 71),
+    ("pselect6", 72),
+    ("ppoll", 73),
+    ("signalfd4", 74),
+    ("vmsplice", 75),
+    ("splice", 76),
+    ("tee", 77),
+    ("readlinkat", 78),
+    ("newfstatat", 79),
+    ("fstat", 80),
+    ("sync", 81),
+    ("fsync", 82),
+    ("fdatasync", 83),
+    ("sync_file_range", 84),
+    ("timerfd_create", 85),
+    ("timerfd_settime", 86),
+    ("timerfd_gettime", 87),
+    ("utimensat", 88),
+    ("acct", 89),
+    ("capget", 90),
+    ("capset", 91),
+    ("personality", 92),
+    ("exit", 93),
+    ("exit_group", 94),
+    ("waitid", 95),
+    ("set_tid_address", 96),
+    ("unshare", 97),
+    ("futex", 98),
+    ("set_robust_list", 99),
+    ("get_robust_list", 100),
+    ("nanosleep", 101),
+    ("getitimer", 102),
+    ("setitimer", 103),
+    ("kexec_load", 104),
+    ("init_module", 105),
+    ("delete_module", 106),
+    ("timer_create", 107),
+    ("timer_gettime", 108),
+    ("timer_getoverrun", 109),
+    ("timer_settime", 110),
+    ("timer_delete", 111),
+    ("clock_settime", 112),
+    ("clock_gettime", 113),
+    ("clock_getres", 114),
+    ("clock_nanosleep", 115),
+    ("syslog", 116),
+    ("ptrace", 117),
+    ("sched_setparam", 118),
+    ("sched_setscheduler", 119),
+    ("sched_getscheduler", 120),
+    ("sched_getparam", 121),
+    ("sched_setaffinity", 122),
+    ("sched_getaffinity", 123),
+    ("sched_yield", 124),
+    ("sched_get_priority_max", 125),
+    ("sched_get_priority_min", 126),
+    ("sched_rr_get_interval", 127),
+    ("restart_syscall", 128),
+    ("kill", 129),
+    ("tkill", 130),
+    ("tgkill", 131),
+    ("sigaltstack", 132),
+    ("rt_sigsuspend", 133),
+    ("rt_sigaction", 134),
+    ("rt_sigprocmask", 135),
+    ("rt_sigpending", 136),
+    ("rt_sigtimedwait", 137),
+    ("rt_sigqueueinfo", 138),
+    ("rt_sigreturn", 139),
+    ("setpriority", 140),
+    ("getpriority", 141),
+    ("reboot", 142),
+    ("setregid", 143),
+    ("setgid", 144),
+    ("setreuid", 145),
+    ("setuid", 146),
+    ("setresuid", 147),
+    ("getresuid", 148),
+    ("setresgid", 149),
+    ("getresgid", 150),
+    ("setfsuid", 151),
+    ("setfsgid", 152),
+    ("times", 153),
+    ("setpgid", 154),
+    ("getpgid", 155),
+    ("getsid", 156),
+    ("setsid", 157),
+    ("getgroups", 158),
+    ("setgroups", 159),
+    ("uname", 160),
+    ("sethostname", 161),
+    ("setdomainname", 162),
+    ("getrlimit", 163),
+    ("setrlimit", 164),
+    ("getrusage", 165),
+    ("umask", 166),
+    ("prctl", 167),
+    ("getcpu", 168),
+    ("gettimeofday", 169),
+    ("settimeofday", 170),
+    ("adjtimex", 171),
+    ("getpid", 172),
+    ("getppid", 173),
+    ("getuid", 174),
+    ("geteuid", 175),
+    ("getgid", 176),
+    ("getegid", 177),
+    ("gettid", 178),
+    ("sysinfo", 179),
+    ("mq_open", 180),
+    ("mq_unlink", 181),
+    ("mq_timedsend", 182),
+    ("mq_timedreceive", 183),
+    ("mq_notify", 184),
+    ("mq_getsetattr", 185),
+    ("msgget", 186),
+    ("msgctl", 187),
+    ("msgrcv", 188),
+    ("msgsnd", 189),
+    ("semget", 190),
+    ("semctl", 191),
+    ("semtimedop", 192),
+    ("semop", 193),
+    ("shmget", 194),
+    ("shmctl", 195),
+    ("shmat", 196),
+    ("shmdt", 197),
+    ("socket", 198),
+    ("socketpair", 199),
+    ("bind", 200),
+    ("listen", 201),
+    ("accept", 202),
+    ("connect", 203),
+    ("getsockname", 204),
+    ("getpeername", 205),
+    ("sendto", 206),
+    ("recvfrom", 207),
+    ("setsockopt", 208),
+    ("getsockopt", 209),
+    ("shutdown", 210),
+    ("sendmsg", 211),
+    ("recvmsg", 212),
+    ("readahead", 213),
+    ("brk", 214),
+    ("munmap", 215),
+    ("mremap", 216),
+    ("add_key", 217),
+    ("request_key", 218),
+    ("keyctl", 219),
+    ("clone", 220),
+    ("execve", 221),
+    ("mmap", 222),
+    ("fadvise64", 223),
+    ("swapon", 224),
+    ("swapoff", 225),
+    ("mprotect", 226),
+    ("msync", 227),
+    ("mlock", 228),
+    ("munlock", 229),
+    ("mlockall", 230),
+    ("munlockall", 231),
+    ("mincore", 232),
+    ("madvise", 233),
+    ("remap_file_pages", 234),
+    ("mbind", 235),
+    ("get_mempolicy", 236),
+    ("set_mempolicy", 237),
+    ("migrate_pages", 238),
+    ("move_pages", 239),
+    ("rt_tgsigqueueinfo", 240),
+    ("perf_event_open", 241),
+    ("accept4", 242),
+    ("recvmmsg", 243),
+    ("wait4", 260),
+    ("prlimit64", 261),
+    ("fanotify_init", 262),
+    ("fanotify_mark", 263),
+    ("name_to_handle_at", 264),
+    ("open_by_handle_at", 265),
+    ("clock_adjtime", 266),
+    ("syncfs", 267),
+    ("setns", 268),
+    ("sendmmsg", 269),
+    ("process_vm_readv", 270),
+    ("process_vm_writev", 271),
+    ("kcmp", 272),
+    ("finit_module", 273),
+    ("sched_setattr", 274),
+    ("sched_getattr", 275),
+    ("renameat2", 276),
+    ("seccomp", 277),
+    ("getrandom", 278),
+    ("memfd_create", 279),
+    ("bpf", 280),
+    ("execveat", 281),
+    ("userfaultfd", 282),
+    ("membarrier", 283),
+    ("mlock2", 284),
+    ("copy_file_range", 285),
+    ("preadv2", 286),
+    ("pwritev2", 287),
+    ("pkey_mprotect", 288),
+    ("pkey_alloc", 289),
+    ("pkey_free", 290),
+    ("statx", 291),
+    ("io_pgetevents", 292),
+    ("rseq", 293),
+];
+
+/// Sweep the arch's committed NAMES table (nr 0..=SYS_rseq of that arch)
+/// with null args; names whose call hit EPERM/EACCES,
 /// ascending by syscall number (the order of NAMES is the output order).
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+))]
 pub fn probe_blocked(os: &dyn crate::sys::os::OsApi) -> Vec<&'static str> {
     NAMES
         .iter()
@@ -505,9 +1125,16 @@ pub fn probe_blocked(os: &dyn crate::sys::os::OsApi) -> Vec<&'static str> {
         .collect()
 }
 
-/// Other architectures: no committed number table exists, and inventing one
-/// would be unsound — the sweep compiles to nothing (spec §5).
-#[cfg(not(target_arch = "x86_64"))]
+/// Arches without a committed number table (anything beyond x86_64 /
+/// aarch64 / riscv64): inventing one would be unsound — the sweep compiles
+/// to nothing, `SyscallProbe` reports Degraded("unsupported arch"), and the
+/// scan itself is unaffected (spec §5). Compile proof:
+/// `cargo check --target powerpc64-unknown-linux-gnu`.
+#[cfg(not(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+)))]
 pub fn probe_blocked(_os: &dyn crate::sys::os::OsApi) -> Vec<&'static str> {
     vec![]
 }
@@ -520,12 +1147,20 @@ impl crate::probes::Probe for SyscallProbe {
         "syscall-probe"
     }
     fn run(&self, cx: &crate::pipeline::Ctx) -> ProbeOutcome {
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(not(any(
+            target_arch = "x86_64",
+            target_arch = "aarch64",
+            target_arch = "riscv64"
+        )))]
         return ProbeOutcome {
             availability: crate::model::Availability::Degraded("unsupported arch".into()),
             ..ProbeOutcome::empty("syscall-probe")
         };
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(
+            target_arch = "x86_64",
+            target_arch = "aarch64",
+            target_arch = "riscv64"
+        ))]
         {
             let blocked = probe_blocked(cx.os);
             // Coverage wording (review RESID-COVERAGE): the sweep is an
@@ -558,6 +1193,318 @@ impl crate::probes::Probe for SyscallProbe {
         }
     }
 }
+
+/// Frozen AUDITED-SWEPT allow-list (review round 3, 2026-10-01), lifted to
+/// module scope by the multi-arch task (2026-10-02) so the aarch64/riscv64
+/// pin test can assert its swept set never escapes the human-audited
+/// universe. Grouping is by x86_64 syscall-number chunk for diff
+/// readability only; membership in this set IS the reviewed verdict
+/// ("audited safe" under the null-arg sweep contract at the top of this
+/// module).
+#[cfg(test)]
+const AUDITED_SWEPT: &[&str] = &[
+    // nr 0-27
+    "read",
+    "write",
+    "open",
+    "stat",
+    "fstat",
+    "lstat",
+    "poll",
+    "lseek",
+    "mmap",
+    "mprotect",
+    "munmap",
+    "brk",
+    "rt_sigaction",
+    "rt_sigprocmask",
+    "ioctl",
+    "pread64",
+    "pwrite64",
+    "readv",
+    "writev",
+    "access",
+    "pipe",
+    "sched_yield",
+    "mremap",
+    "msync",
+    "mincore",
+    // nr 28-63
+    "madvise",
+    "shmget",
+    "shmat",
+    "dup",
+    "dup2",
+    "nanosleep",
+    "getitimer",
+    "getpid",
+    "sendfile",
+    "socket",
+    "connect",
+    "sendto",
+    "recvfrom",
+    "sendmsg",
+    "recvmsg",
+    "bind",
+    "listen",
+    "getsockname",
+    "getpeername",
+    "socketpair",
+    "setsockopt",
+    "getsockopt",
+    "execve",
+    "kill",
+    "uname",
+    // nr 64-94
+    "semget",
+    "semop",
+    "shmdt",
+    "msgget",
+    "msgsnd",
+    "fcntl",
+    "flock",
+    "fsync",
+    "fdatasync",
+    "truncate",
+    "getdents",
+    "getcwd",
+    "chdir",
+    "fchdir",
+    "rename",
+    "mkdir",
+    "rmdir",
+    "creat",
+    "link",
+    "unlink",
+    "symlink",
+    "readlink",
+    "chmod",
+    "chown",
+    "lchown",
+    // nr 96-124
+    "gettimeofday",
+    "getrlimit",
+    "getrusage",
+    "sysinfo",
+    "times",
+    "getuid",
+    "syslog",
+    "getgid",
+    "setuid",
+    "setgid",
+    "geteuid",
+    "getegid",
+    "getppid",
+    "getpgrp",
+    "setreuid",
+    "setregid",
+    "getgroups",
+    "setresuid",
+    "getresuid",
+    "setresgid",
+    "getresgid",
+    "getpgid",
+    "setfsuid",
+    "setfsgid",
+    "getsid",
+    // nr 125-149
+    "capget",
+    "capset",
+    "rt_sigpending",
+    "rt_sigtimedwait",
+    "rt_sigqueueinfo",
+    "rt_sigsuspend",
+    "sigaltstack",
+    "utime",
+    "mknod",
+    "uselib",
+    "personality",
+    "ustat",
+    "statfs",
+    "fstatfs",
+    "sysfs",
+    "getpriority",
+    "setpriority",
+    "sched_setparam",
+    "sched_getparam",
+    "sched_setscheduler",
+    "sched_getscheduler",
+    "sched_get_priority_max",
+    "sched_get_priority_min",
+    "sched_rr_get_interval",
+    "mlock",
+    // nr 150-181
+    "munlock",
+    "mlockall",
+    "munlockall",
+    "modify_ldt",
+    "pivot_root",
+    "_sysctl",
+    "prctl",
+    "arch_prctl",
+    "adjtimex",
+    "setrlimit",
+    "chroot",
+    "settimeofday",
+    "mount",
+    "umount2",
+    "swapon",
+    "reboot",
+    "iopl",
+    "ioperm",
+    "create_module",
+    "init_module",
+    "get_kernel_syms",
+    "query_module",
+    "quotactl",
+    "nfsservctl",
+    "getpmsg",
+    // nr 182-206
+    "putpmsg",
+    "afs_syscall",
+    "tuxcall",
+    "security",
+    "gettid",
+    "readahead",
+    "setxattr",
+    "lsetxattr",
+    "fsetxattr",
+    "getxattr",
+    "lgetxattr",
+    "fgetxattr",
+    "listxattr",
+    "llistxattr",
+    "flistxattr",
+    "removexattr",
+    "lremovexattr",
+    "fremovexattr",
+    "tkill",
+    "time",
+    "futex",
+    "sched_setaffinity",
+    "sched_getaffinity",
+    "set_thread_area",
+    "io_setup",
+    // nr 207-235
+    "io_destroy",
+    "io_getevents",
+    "io_submit",
+    "io_cancel",
+    "get_thread_area",
+    "lookup_dcookie",
+    "epoll_create",
+    "epoll_ctl_old",
+    "epoll_wait_old",
+    "remap_file_pages",
+    "getdents64",
+    "restart_syscall",
+    "semtimedop",
+    "fadvise64",
+    "timer_create",
+    "timer_gettime",
+    "timer_getoverrun",
+    "clock_settime",
+    "clock_gettime",
+    "clock_getres",
+    "clock_nanosleep",
+    "epoll_wait",
+    "epoll_ctl",
+    "tgkill",
+    "utimes",
+    // nr 236-262
+    "vserver",
+    "mbind",
+    "set_mempolicy",
+    "get_mempolicy",
+    "mq_open",
+    "mq_unlink",
+    "mq_timedsend",
+    "mq_timedreceive",
+    "mq_notify",
+    "mq_getsetattr",
+    "add_key",
+    "request_key",
+    "keyctl",
+    "ioprio_set",
+    "ioprio_get",
+    "inotify_init",
+    "inotify_add_watch",
+    "inotify_rm_watch",
+    "migrate_pages",
+    "openat",
+    "mkdirat",
+    "mknodat",
+    "fchownat",
+    "futimesat",
+    "newfstatat",
+    // nr 263-290
+    "unlinkat",
+    "renameat",
+    "linkat",
+    "symlinkat",
+    "readlinkat",
+    "fchmodat",
+    "faccessat",
+    "unshare",
+    "set_robust_list",
+    "get_robust_list",
+    "splice",
+    "tee",
+    "sync_file_range",
+    "vmsplice",
+    "move_pages",
+    "utimensat",
+    "epoll_pwait",
+    "signalfd",
+    "timerfd_create",
+    "eventfd",
+    "fallocate",
+    "timerfd_settime",
+    "timerfd_gettime",
+    "signalfd4",
+    "eventfd2",
+    // nr 291-318
+    "epoll_create1",
+    "dup3",
+    "pipe2",
+    "inotify_init1",
+    "preadv",
+    "pwritev",
+    "rt_tgsigqueueinfo",
+    "perf_event_open",
+    "recvmmsg",
+    "fanotify_init",
+    "fanotify_mark",
+    "prlimit64",
+    "name_to_handle_at",
+    "open_by_handle_at",
+    "clock_adjtime",
+    "sendmmsg",
+    "setns",
+    "getcpu",
+    "process_vm_readv",
+    "process_vm_writev",
+    "kcmp",
+    "sched_setattr",
+    "sched_getattr",
+    "renameat2",
+    "getrandom",
+    // nr 319-334
+    "memfd_create",
+    "bpf",
+    "execveat",
+    "userfaultfd",
+    "membarrier",
+    "mlock2",
+    "copy_file_range",
+    "preadv2",
+    "pwritev2",
+    "pkey_mprotect",
+    "pkey_alloc",
+    "pkey_free",
+    "statx",
+    "rseq",
+];
 
 #[cfg(all(test, target_arch = "x86_64"))]
 mod tests {
@@ -751,311 +1698,8 @@ mod tests {
         // default - the swept set (NAMES minus SKIP) must EQUAL the frozen
         // list below. Any regenerated NAMES entry (libc bump) joins the sweep
         // after a human reviews its null-arg safety and adds it here.
-        // Grouping is by syscall-number chunk for diff readability only;
-        // membership in this set IS the reviewed verdict ("audited safe").
-        const AUDITED_SWEPT: &[&str] = &[
-            // nr 0-27
-            "read",
-            "write",
-            "open",
-            "stat",
-            "fstat",
-            "lstat",
-            "poll",
-            "lseek",
-            "mmap",
-            "mprotect",
-            "munmap",
-            "brk",
-            "rt_sigaction",
-            "rt_sigprocmask",
-            "ioctl",
-            "pread64",
-            "pwrite64",
-            "readv",
-            "writev",
-            "access",
-            "pipe",
-            "sched_yield",
-            "mremap",
-            "msync",
-            "mincore",
-            // nr 28-63
-            "madvise",
-            "shmget",
-            "shmat",
-            "dup",
-            "dup2",
-            "nanosleep",
-            "getitimer",
-            "getpid",
-            "sendfile",
-            "socket",
-            "connect",
-            "sendto",
-            "recvfrom",
-            "sendmsg",
-            "recvmsg",
-            "bind",
-            "listen",
-            "getsockname",
-            "getpeername",
-            "socketpair",
-            "setsockopt",
-            "getsockopt",
-            "execve",
-            "kill",
-            "uname",
-            // nr 64-94
-            "semget",
-            "semop",
-            "shmdt",
-            "msgget",
-            "msgsnd",
-            "fcntl",
-            "flock",
-            "fsync",
-            "fdatasync",
-            "truncate",
-            "getdents",
-            "getcwd",
-            "chdir",
-            "fchdir",
-            "rename",
-            "mkdir",
-            "rmdir",
-            "creat",
-            "link",
-            "unlink",
-            "symlink",
-            "readlink",
-            "chmod",
-            "chown",
-            "lchown",
-            // nr 96-124
-            "gettimeofday",
-            "getrlimit",
-            "getrusage",
-            "sysinfo",
-            "times",
-            "getuid",
-            "syslog",
-            "getgid",
-            "setuid",
-            "setgid",
-            "geteuid",
-            "getegid",
-            "getppid",
-            "getpgrp",
-            "setreuid",
-            "setregid",
-            "getgroups",
-            "setresuid",
-            "getresuid",
-            "setresgid",
-            "getresgid",
-            "getpgid",
-            "setfsuid",
-            "setfsgid",
-            "getsid",
-            // nr 125-149
-            "capget",
-            "capset",
-            "rt_sigpending",
-            "rt_sigtimedwait",
-            "rt_sigqueueinfo",
-            "rt_sigsuspend",
-            "sigaltstack",
-            "utime",
-            "mknod",
-            "uselib",
-            "personality",
-            "ustat",
-            "statfs",
-            "fstatfs",
-            "sysfs",
-            "getpriority",
-            "setpriority",
-            "sched_setparam",
-            "sched_getparam",
-            "sched_setscheduler",
-            "sched_getscheduler",
-            "sched_get_priority_max",
-            "sched_get_priority_min",
-            "sched_rr_get_interval",
-            "mlock",
-            // nr 150-181
-            "munlock",
-            "mlockall",
-            "munlockall",
-            "modify_ldt",
-            "pivot_root",
-            "_sysctl",
-            "prctl",
-            "arch_prctl",
-            "adjtimex",
-            "setrlimit",
-            "chroot",
-            "settimeofday",
-            "mount",
-            "umount2",
-            "swapon",
-            "reboot",
-            "iopl",
-            "ioperm",
-            "create_module",
-            "init_module",
-            "get_kernel_syms",
-            "query_module",
-            "quotactl",
-            "nfsservctl",
-            "getpmsg",
-            // nr 182-206
-            "putpmsg",
-            "afs_syscall",
-            "tuxcall",
-            "security",
-            "gettid",
-            "readahead",
-            "setxattr",
-            "lsetxattr",
-            "fsetxattr",
-            "getxattr",
-            "lgetxattr",
-            "fgetxattr",
-            "listxattr",
-            "llistxattr",
-            "flistxattr",
-            "removexattr",
-            "lremovexattr",
-            "fremovexattr",
-            "tkill",
-            "time",
-            "futex",
-            "sched_setaffinity",
-            "sched_getaffinity",
-            "set_thread_area",
-            "io_setup",
-            // nr 207-235
-            "io_destroy",
-            "io_getevents",
-            "io_submit",
-            "io_cancel",
-            "get_thread_area",
-            "lookup_dcookie",
-            "epoll_create",
-            "epoll_ctl_old",
-            "epoll_wait_old",
-            "remap_file_pages",
-            "getdents64",
-            "restart_syscall",
-            "semtimedop",
-            "fadvise64",
-            "timer_create",
-            "timer_gettime",
-            "timer_getoverrun",
-            "clock_settime",
-            "clock_gettime",
-            "clock_getres",
-            "clock_nanosleep",
-            "epoll_wait",
-            "epoll_ctl",
-            "tgkill",
-            "utimes",
-            // nr 236-262
-            "vserver",
-            "mbind",
-            "set_mempolicy",
-            "get_mempolicy",
-            "mq_open",
-            "mq_unlink",
-            "mq_timedsend",
-            "mq_timedreceive",
-            "mq_notify",
-            "mq_getsetattr",
-            "add_key",
-            "request_key",
-            "keyctl",
-            "ioprio_set",
-            "ioprio_get",
-            "inotify_init",
-            "inotify_add_watch",
-            "inotify_rm_watch",
-            "migrate_pages",
-            "openat",
-            "mkdirat",
-            "mknodat",
-            "fchownat",
-            "futimesat",
-            "newfstatat",
-            // nr 263-290
-            "unlinkat",
-            "renameat",
-            "linkat",
-            "symlinkat",
-            "readlinkat",
-            "fchmodat",
-            "faccessat",
-            "unshare",
-            "set_robust_list",
-            "get_robust_list",
-            "splice",
-            "tee",
-            "sync_file_range",
-            "vmsplice",
-            "move_pages",
-            "utimensat",
-            "epoll_pwait",
-            "signalfd",
-            "timerfd_create",
-            "eventfd",
-            "fallocate",
-            "timerfd_settime",
-            "timerfd_gettime",
-            "signalfd4",
-            "eventfd2",
-            // nr 291-318
-            "epoll_create1",
-            "dup3",
-            "pipe2",
-            "inotify_init1",
-            "preadv",
-            "pwritev",
-            "rt_tgsigqueueinfo",
-            "perf_event_open",
-            "recvmmsg",
-            "fanotify_init",
-            "fanotify_mark",
-            "prlimit64",
-            "name_to_handle_at",
-            "open_by_handle_at",
-            "clock_adjtime",
-            "sendmmsg",
-            "setns",
-            "getcpu",
-            "process_vm_readv",
-            "process_vm_writev",
-            "kcmp",
-            "sched_setattr",
-            "sched_getattr",
-            "renameat2",
-            "getrandom",
-            // nr 319-334
-            "memfd_create",
-            "bpf",
-            "execveat",
-            "userfaultfd",
-            "membarrier",
-            "mlock2",
-            "copy_file_range",
-            "preadv2",
-            "pwritev2",
-            "pkey_mprotect",
-            "pkey_alloc",
-            "pkey_free",
-            "statx",
-            "rseq",
-        ];
+        // (The frozen list itself lives at module scope, cfg(test), lifted
+        //  there so the per-arch audit test can check membership too.)
         assert_eq!(AUDITED_SWEPT.len(), 289);
         let mut swept: Vec<&str> = NAMES
             .iter()
@@ -1160,12 +1804,230 @@ mod tests {
     }
 }
 
-#[cfg(all(test, not(target_arch = "x86_64")))]
+#[cfg(all(test, any(target_arch = "aarch64", target_arch = "riscv64")))]
+mod asm_generic_tests {
+    use super::*;
+
+    /// Full-trait stub (Task 4 signatures). EPERM for mount/reboot/setns —
+    /// plus ptrace, the asm-generic stand-in for x86_64's pause as the
+    /// "stubbed blocked but name-keyed skipped" witness (pause does not
+    /// exist in the asm-generic table); EACCES for chroot; ENOSYS else.
+    struct Stub;
+    impl crate::sys::os::OsApi for Stub {
+        fn hypervisor(&self) -> crate::sys::os::HypervisorInfo {
+            Default::default()
+        }
+        fn landlock_abi(&self) -> Option<u64> {
+            None
+        }
+        fn seccomp_actions(&self) -> crate::sys::os::SeccompActions {
+            Default::default()
+        }
+        fn seccomp_filter_dump(&self, _p: u32) -> Result<Vec<u64>, crate::sys::fs::ProbeIo> {
+            Err(crate::sys::fs::ProbeIo::PermissionDenied)
+        }
+        fn syscall0(&self, n: u32) -> Result<(), i32> {
+            let eperm: [u32; 4] = [
+                libc::SYS_mount,
+                libc::SYS_reboot,
+                libc::SYS_setns,
+                libc::SYS_ptrace,
+            ]
+            .map(|x| x as u32);
+            if eperm.contains(&n) {
+                return Err(1); // EPERM
+            }
+            if n == libc::SYS_chroot as u32 {
+                return Err(13); // EACCES
+            }
+            Err(38) // ENOSYS
+        }
+        fn uds_probe(
+            &self,
+            _p: &std::path::Path,
+            _t: std::time::Duration,
+        ) -> std::io::Result<crate::sys::os::UdsReply> {
+            Err(std::io::Error::other("stub"))
+        }
+        fn env(&self, _k: &str) -> Option<String> {
+            None
+        }
+        fn is_root(&self) -> bool {
+            false
+        }
+    }
+
+    fn nr_of(name: &str) -> Option<u32> {
+        NAMES.iter().find(|(n, _)| *n == name).map(|(_, nr)| *nr)
+    }
+
+    #[test]
+    fn enumeration_marks_eperm_blocked_and_skips_hang_list() {
+        // Same errno contract as x86_64; result ordered by THIS arch's
+        // numbers: mount(40) < chroot(51) < reboot(142) < setns(268).
+        // ptrace(117) is stubbed EPERM but sits on SKIP, so it must NOT
+        // appear — the skip list filters BY NAME on numbers that bear no
+        // relation to the x86_64 ones (that is the whole point).
+        let blocked = probe_blocked(&Stub);
+        assert_eq!(blocked, ["mount", "chroot", "reboot", "setns"]);
+    }
+
+    #[test]
+    fn names_table_is_strictly_ascending_and_pinned_to_libc() {
+        // Mechanical pin for the committed asm-generic table (libc 0.2.189):
+        // aarch64 278 rows io_setup(0)..rseq(293); riscv64 277 rows — the
+        // difference is ONLY libc's missing SYS_renameat on riscv64
+        // (documented at the table), verified by diffing the two generated
+        // extractions name-for-name.
+        assert_eq!(
+            NAMES.len(),
+            if cfg!(target_arch = "aarch64") {
+                278
+            } else {
+                277
+            }
+        );
+        assert!(
+            NAMES.windows(2).all(|w| w[0].1 < w[1].1),
+            "NAMES must be strictly ascending by syscall number"
+        );
+        // Boundary rows cross-checked against the compiled libc constants:
+        // asm-generic opens with the aio family (io_setup=0), not read, and
+        // ends at rseq — 293 here vs 334 on x86_64.
+        assert_eq!(
+            NAMES.first().map(|&(n, nr)| (n, nr)),
+            Some(("io_setup", libc::SYS_io_setup as u32))
+        );
+        assert_eq!(
+            NAMES.last().map(|&(n, nr)| (n, nr)),
+            Some(("rseq", libc::SYS_rseq as u32))
+        );
+    }
+
+    #[test]
+    fn asm_generic_spot_numbers_match_the_kernel_table() {
+        // Values verified from libc 0.2.189 with three-way agreement (gnu
+        // aarch64, gnu riscv64, musl both); deliberately NOT the x86_64
+        // numbers (mount 165, reboot 169, seccomp 317).
+        for (name, libc_nr, table_nr) in [
+            ("mount", libc::SYS_mount as u32, 40),
+            ("reboot", libc::SYS_reboot as u32, 142),
+            ("seccomp", libc::SYS_seccomp as u32, 277),
+            ("bpf", libc::SYS_bpf as u32, 280),
+            ("rseq", libc::SYS_rseq as u32, 293),
+        ] {
+            assert_eq!(
+                (nr_of(name), libc_nr),
+                (Some(table_nr), table_nr),
+                "{name} drifted"
+            );
+        }
+        // io_pgetevents: the one in-range row the gnu libc modules omit but
+        // musl (and the kernel asm-generic table) define — 292 on every
+        // asm-generic arch.
+        assert_eq!(nr_of("io_pgetevents"), Some(292));
+        assert_eq!(nr_of("kexec_load"), Some(104));
+        assert_eq!(nr_of("swapoff"), Some(225));
+        if cfg!(target_arch = "aarch64") {
+            assert_eq!(nr_of("renameat"), Some(38));
+        } else {
+            assert_eq!(nr_of("renameat"), None, "libc riscv64 documents the 38 gap");
+            assert_eq!(nr_of("renameat2"), Some(276));
+        }
+    }
+
+    #[test]
+    fn skip_list_is_name_keyed_across_arches() {
+        // The canonical 45-name SKIP is shared UNCHANGED across arches. The
+        // names below exist on x86_64 but match nothing in the asm-generic
+        // table (legacy select/pause/fork/vfork/alarm; kexec_file_load is
+        // nr 294 > the 293 sweep ceiling on aarch64 and undefined on
+        // riscv64). Pinning the vacuous set documents WHY the skip list
+        // must key by NAME: numbers shift (mount 165→40, reboot 169→142,
+        // seccomp 317→277), names do not.
+        let mut missing: Vec<&str> = SKIP
+            .iter()
+            .filter(|s| !NAMES.iter().any(|(n, _)| n == *s))
+            .copied()
+            .collect();
+        missing.sort_unstable();
+        assert_eq!(
+            missing,
+            [
+                "alarm",
+                "fork",
+                "kexec_file_load",
+                "pause",
+                "select",
+                "vfork"
+            ]
+        );
+        assert_eq!(SKIP.len() - missing.len(), 39);
+        // swept = NAMES minus the 39 effective skips (riscv64 additionally
+        // loses the never-listed renameat slot to the libc gap):
+        assert_eq!(
+            NAMES.iter().filter(|(n, _)| !SKIP.contains(n)).count(),
+            if cfg!(target_arch = "aarch64") {
+                239
+            } else {
+                238
+            }
+        );
+    }
+
+    #[test]
+    fn swept_set_stays_inside_the_frozen_audit() {
+        // STRUCTURAL GUARD, asm-generic flavor: the x86_64 hazard audit is
+        // semantics-based (same name ⇒ same null-arg behavior on any arch),
+        // so every swept name here must already sit in AUDITED_SWEPT — or
+        // be explicitly reviewed below. A regenerated table that silently
+        // sweeps a new name trips this test before it trips a production
+        // host; the pinned swept counts (skip test above) make the subset
+        // check an exact-equality guard for free.
+        const ASM_GENERIC_REVIEWED: &[&str] = &[
+            // io_pgetevents(292): same family as the audited io_getevents —
+            // aio ctx id 0 cannot exist in-process (the sweep's own
+            // io_setup(0, NULL) call on nr 0 fails EINVAL and allocates
+            // nothing), and min_nr == 0 means the call can never wait.
+            "io_pgetevents",
+        ];
+        for (n, _) in NAMES.iter().filter(|(n, _)| !SKIP.contains(n)) {
+            assert!(
+                AUDITED_SWEPT.contains(n) || ASM_GENERIC_REVIEWED.contains(n),
+                "swept name {n} was never audited for null-arg safety"
+            );
+        }
+    }
+
+    #[test]
+    fn real_sweep_is_deterministic_in_process() {
+        // Same ReviewT18 seam contract as x86_64 (all six arg registers
+        // zeroed): the same process must observe the identical sweep twice.
+        let a = probe_blocked(&crate::sys::os::RealOs);
+        let b = probe_blocked(&crate::sys::os::RealOs);
+        assert_eq!(a, b, "sweep must be deterministic in-process");
+    }
+}
+
+#[cfg(all(
+    test,
+    not(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "riscv64"
+    ))
+))]
 mod tests {
     use super::*;
 
+    /// Unknown arch: no number table is compiled in, the sweep returns
+    /// empty, and `SyscallProbe::run` reports Degraded("unsupported arch")
+    /// — degraded, never a panic (spec §5). This test cannot RUN on the
+    /// supported dev hosts; the degraded run() path is compile-proven by
+    /// `cargo check --target powerpc64-unknown-linux-gnu` (see README
+    /// supported-arches).
     #[test]
-    fn sweep_compiles_to_empty_off_x86_64() {
+    fn sweep_compiles_to_empty_on_unknown_arch() {
         assert!(probe_blocked(&crate::sys::os::RealOs).is_empty());
     }
 }

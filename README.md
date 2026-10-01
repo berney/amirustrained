@@ -13,11 +13,11 @@ downgrade honestly to `info` instead of guessing), single static binary.
 
 ## Install
 
-Prebuilt tarball (any x86_64 Linux host — the binary is a static-pie musl ELF,
+Prebuilt tarballs (one per supported CPU arch — each a static-pie musl ELF,
 independent of the host libc):
 
 ```sh
-tar -xzf amirustrained-0.1.0-x86_64-musl.tar.gz   # from the CI "Release (musl)" artifact
+tar -xzf amirustrained-0.1.0-x86_64-unknown-linux-musl.tar.gz   # CI "Release (musl)" artifact for your triple
 ./amirustrained --format markdown
 ```
 
@@ -34,7 +34,33 @@ cargo install --path .
 
 > One-time prerequisite: `rustup target add x86_64-unknown-linux-musl` —
 > `.cargo/config.toml` sets the musl target repo-wide, and a fresh toolchain
-> without the target installed fails with E0463.
+> without the target installed fails with E0463. Cross-building the other
+> release arches additionally needs
+> `rustup target add aarch64-unknown-linux-musl riscv64gc-unknown-linux-musl`
+> (no system cross-gcc: those legs link with the toolchain's self-contained
+> rust-lld, configured per-target in `.cargo/config.toml`).
+
+## Supported CPU architectures
+
+| target triple | `--probe-syscalls` sweep | CI |
+|---|---|---|
+| `x86_64-unknown-linux-musl` | ✔ audited 289-call sweep (native x86_64 table) | release + static check + artifact; all test gates |
+| `aarch64-unknown-linux-musl` | ✔ 239-call sweep (asm-generic table) | release + static check + artifact |
+| `riscv64gc-unknown-linux-musl` | ✔ 238-call sweep (asm-generic table) | release + static check + artifact |
+| any other target | ✘ probe reports `Degraded("unsupported arch")`; the rest of the scan runs normally | out of matrix |
+
+Every arch ships its own committed syscall-number table, generated per arch
+from the libc crate's unistd constants (regeneration recipe documented beside
+the tables in `src/probes/syscall_probe.rs`). Numbers are arch ABIs, not
+constants — `mount` is 165 on x86_64 but 40 on asm-generic aarch64/riscv64 —
+so an arch without a committed table gets the honest degraded probe instead
+of a guessed sweep.
+
+Emulated hosts: a qemu-user aarch64 smoke of the *plain* scan passes, but
+`--probe-syscalls` must run on a real kernel — qemu-user (observed: 10.2.2)
+crashes **inside the emulator** on the sweep's `reboot(0,0,0,0)` call
+(EINVAL on any real kernel, magic-guarded by design), so it is not a
+substitute for native testing of the sweep.
 
 ## Usage
 
@@ -47,8 +73,10 @@ amirustrained --probe-ebpf                     # opt-in: really load a trivial e
 amirustrained -o report.sarif --format sarif   # for code-scanning pipelines
 ```
 
-`--probe-syscalls` risk note: it *executes* ~289 zero-argument syscalls to see which
-return `EPERM`/`EACCES`. The list is audited and hang/EPERM-safe, but the binary must
+`--probe-syscalls` risk note: it *executes* ~289 zero-argument syscalls on
+x86_64 (239 on aarch64, 238 on riscv64 — per-arch committed tables; other
+arches execute nothing) to see which return `EPERM`/`EACCES`. The list is
+audited and hang/EPERM-safe, but the binary must
 **not** be installed setuid-root or with file capabilities: under such a launch the
 zero-arg credential syscalls would succeed and convert the process's real/saved ids
 to root. Nothing in this project packages those bits.
@@ -146,6 +174,8 @@ flag the fact never exists and the rule can never fire.
 
 ```sh
 cargo test --all          # unit + CLI + 9-scenario fixture corpus (musl default target)
+cargo build --release --target aarch64-unknown-linux-musl    # cross-free (self-contained rust-lld)
+cargo build --release --target riscv64gc-unknown-linux-musl  # ditto; CI builds all three
 scripts/live-smoke.sh                       # smoke the debug binary
 PROFILE=release scripts/live-smoke.sh       # …or the release binary
 ```

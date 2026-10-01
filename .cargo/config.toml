@@ -5,3 +5,30 @@
 # target/x86_64-unknown-linux-musl/{debug,release}/amirustrained.
 [build]
 target = "x86_64-unknown-linux-musl"
+
+# Cross-arch musl legs (CI matrix + local cross-builds): the host cc/ld only
+# understands host-arch objects, so cross links use the rust-lld shipped
+# inside the toolchain (linker=rust-lld + linker-flavor=ld.lld — no system
+# cross-gcc package), and +crt-static pins the self-contained musl libc.a
+# (the riscv64gc spec does not default to static Crt like x86_64/aarch64).
+# Result: static musl ELFs for every leg. The native x86_64 leg above is
+# deliberately untouched.
+[target.aarch64-unknown-linux-musl]
+rustflags = [
+    "-C",
+    "linker=rust-lld",
+    "-C",
+    "linker-flavor=ld.lld",
+    "-C",
+    "target-feature=+crt-static",
+]
+
+[target.riscv64gc-unknown-linux-musl]
+rustflags = [
+    "-C",
+    "linker=rust-lld",
+    "-C",
+    "linker-flavor=ld.lld",
+    "-C",
+    "target-feature=+crt-static",
+]

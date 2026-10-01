@@ -108,7 +108,7 @@ impl OsApi for RealOs {
     }
 
     fn seccomp_actions(&self) -> SeccompActions {
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(target_os = "linux")]
         {
             let mut a = SeccompActions::default();
             // Per-action: seccomp(SECCOMP_GET_ACTION_AVAIL, 0, &action). rc == 0 ⇒
@@ -133,9 +133,14 @@ impl OsApi for RealOs {
                 (0x7fc0_0000u32 /*USER_NOTIF*/, &mut a.user_notif),
             ] {
                 let v = act;
-                // SAFETY: libc::SYS_seccomp (317 on x86_64) with op
-                // GET_ACTION_AVAIL only reads the u32 `v` points at and stores
-                // nothing. The raw pointer is FFI-safe to pass to the variadic
+                // SAFETY: libc::SYS_seccomp is the per-arch syscall NUMBER
+                // (317 on x86_64, 277 on asm-generic aarch64/riscv64) —
+                // the arch-agnostic `seccomp(2)` WRAPPER the brief
+                // assumed exists is NOT exported by libc 0.2.189, only
+                // the constant, so the raw libc::syscall form is kept and
+                // simply un-gated from x86_64. Op GET_ACTION_AVAIL only
+                // reads the u32 `v` points at and stores nothing. The raw
+                // pointer is FFI-safe to pass to the variadic
                 // libc::syscall; a `&` reference is not.
                 let rc = unsafe {
                     libc::syscall(
@@ -153,9 +158,14 @@ impl OsApi for RealOs {
             a.probed_ok = all_ok;
             a
         }
-        // Non-x86_64: libc::SYS_seccomp may exist (e.g. aarch64) but per the
-        // brief keep the probed_ok=false fallback; probing there is deferred.
-        #[cfg(not(target_arch = "x86_64"))]
+        // Not linux: seccomp(2) does not exist at all — honest all-false
+        // matrix with probed_ok=false. (The binary targets linux; this
+        // branch only keeps the crate portable to compile, never runs on
+        // a supported host.) The kernel-side probe itself is NOT
+        // x86-only: seccomp(2) is arch-agnostic (only its number differs,
+        // and libc parameterizes that), so the old non-x86_64 stub was a
+        // gate artifact, not a kernel limitation.
+        #[cfg(not(target_os = "linux"))]
         SeccompActions::default()
     }
 
@@ -537,7 +547,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(target_os = "linux")]
     fn seccomp_actions_baseline_support_and_honest_matrix() {
         let a = RealOs.seccomp_actions();
         // SECCOMP_GET_ACTION_AVAIL itself is 4.14+, and a sandbox may also
