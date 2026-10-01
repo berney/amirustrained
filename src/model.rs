@@ -10,5 +10,5 @@ pub use fact::{Fact, FactStatus};
 pub use finding::Finding;
 pub use outcome::{Availability, ProbeOutcome};
 pub use report::{Counts, Report, ScanMeta, Tool};
-pub use rule::{Rule, Severity};
+pub use rule::{Assess, Rule, Severity};
 pub use runtime::{Candidate, PriorSignals, RuntimeKind, Signal, Verdict};

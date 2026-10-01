@@ -94,7 +94,7 @@ mod tests {
         remediation: "r",
         references: &[],
         requires_root: false,
-        check: |_report, _privileged| Some(vec![]),
+        check: |_a| Some(vec![]),
     };
 
     #[test]
