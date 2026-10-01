@@ -35,6 +35,15 @@
 //! Registered ONLY with `--probe-syscalls`; without `--probe-timeout` the
 //! CLI forces a 30 s ceiling (spec §5), so even a missed hazard degrades
 //! instead of hanging the scan. Sweep = 289 pure sysenter round-trips.
+//!
+//! INVOCATION ASSUMPTION (residual review note 2026-10-01): the sweep
+//! presumes DIRECT execution of the static binary. The credential family
+//! (setuid/setgid/setreuid/setregid/setresuid/setresgid) is swept because
+//! zero args is a no-op as root and EPERM unprivileged — but under a
+//! setuid-root or file-capability launch (euid 0, ruid != 0) the zeroed
+//! calls would succeed and permanently convert real+saved ids to root. If
+//! packaging ever installs a setuid bit or setcap, move those six names
+//! into class 2 of SKIP and drop them from AUDITED_SWEPT.
 
 use crate::model::{Fact, ProbeOutcome};
 
@@ -519,18 +528,32 @@ impl crate::probes::Probe for SyscallProbe {
         #[cfg(target_arch = "x86_64")]
         {
             let blocked = probe_blocked(cx.os);
+            // Coverage wording (review RESID-COVERAGE): the sweep is an
+            // audited 289-number subset, not the full 0..=SYS_rseq range;
+            // counts are derived so wording can never silently drift.
+            let coverage = format!(
+                "null-arg sweep of {} audited syscalls ({} skipped for safety)",
+                NAMES.len() - SKIP.len(),
+                SKIP.len()
+            );
             ProbeOutcome::empty("syscall-probe")
+                .with_fact(Fact::ok(
+                    "syscall-probe",
+                    "sweptCount",
+                    serde_json::json!(NAMES.len() - SKIP.len()),
+                    "audited sweep coverage; skipped names are in SKIP".into(),
+                ))
                 .with_fact(Fact::ok(
                     "syscall-probe",
                     "blocked",
                     serde_json::json!(blocked),
-                    "null-arg sweep 0..=SYS_rseq".into(),
+                    coverage.clone(),
                 ))
                 .with_fact(Fact::ok(
                     "syscall-probe",
                     "blockedCount",
                     serde_json::json!(blocked.len()),
-                    "null-arg sweep 0..=SYS_rseq".into(),
+                    coverage,
                 ))
         }
     }
