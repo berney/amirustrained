@@ -210,8 +210,8 @@ Seed catalog (v1; registry is append-only in id-space):
 | AMR-014 | strong-isolation-runtime | info | firecracker/gVisor/kata detected (positive note) |
 | AMR-015 | unrecognized-runtime | info | no candidate scored above threshold (audit manually) |
 | AMR-016 | cap-sys-admin-no-combo | medium | CAP_SYS_ADMIN present but some restraints active (weaker sibling of AMR-002) |
-| AMR-017 | cgroupns-host | info | own cgroup-ns inode equals pid-1's (container sees host cgroup tree) |
-| AMR-018 | no-new-privs-unset | low | NoNewPrivs = 0 (execve can gain privs via setuid/exec-caps) |
+| AMR-017 | cgroupns-host | info | container detected ∧ own cgroup-ns inode equals pid-1's (container sees host cgroup tree). On a bare host the equality is the init-ns constant — ungated it fires on every scan with zero meaning *(gate per plan sketch; AMR-011 erratum reasoning)* |
+| AMR-018 | no-new-privs-unset | low | container detected ∧ NoNewPrivs = 0 (execve can gain privs via setuid/exec-caps). Ungated, every ordinary process on a bare host sits at 0 — again a constant, not a finding there |
 | AMR-019 | bpf-unpriv-open | medium | verdict != host and `unprivileged_bpf_disabled` is 0 (or absent pre-5.13 knob): any local uid can reach `bpf()` from a weak foothold |
 | AMR-020 | cap-bpf-or-perfmon | low | `CapEff` includes `CAP_BPF` or `CAP_PERFMON`: program load / map read possible without full root |
 | AMR-021 | ebpf-load-succeeded | high | `--probe-ebpf` only: trivial program load succeeded while contained — `bpf()` reachable past seccomp/LSM/cap drops; kernel attack surface confirmed open |
