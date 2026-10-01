@@ -156,8 +156,18 @@ fn scalar(v: &Value, color: ColorSupport) -> String {
     }
 }
 
-/// Double-quoted scalar: escapes the JSON set plus YAML control characters;
-/// printable non-ASCII (unicode) rides through raw, which block YAML and
+/// A code point PyYAML will not accept raw anywhere in the stream, even inside
+/// a double-quoted scalar: `ReaderError` for C0, DEL/C1 (0x7F-0x9F) and
+/// U+FFFE/U+FFFF; NEL (0x85), LS (0x2028) and PS (0x2029) are line breaks that
+/// raise `ScannerError` in the plain path (NEL also silently folds a quoted
+/// value). Escaping these is lossless; emitting them raw breaks the document.
+fn pyyaml_unsafe(c: char) -> bool {
+    let u = c as u32;
+    u < 0x20 || matches!(u, 0x7F..=0x9F | 0x2028 | 0x2029 | 0xFFFE | 0xFFFF)
+}
+
+/// Double-quoted scalar: escapes the JSON set plus every `pyyaml_unsafe` code
+/// point. All other printable non-ASCII rides through raw, which YAML and
 /// PyYAML both accept.
 fn quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
@@ -172,9 +182,7 @@ fn quote(s: &str) -> String {
             // U+0085 NEL: raw is a line break to the YAML 1.1 reader and even
             // raw-in-quotes folds the value; the \U escape round-trips.
             '\u{85}' => out.push_str("\\U00000085"),
-            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
-                out.push_str(&format!("\\u{:04X}", c as u32))
-            }
+            c if pyyaml_unsafe(c) => out.push_str(&format!("\\u{:04X}", c as u32)),
             c => out.push(c),
         }
     }
@@ -205,11 +213,9 @@ fn needs_quotes(s: &str) -> bool {
     if s.contains(": ") || s.contains(" #") {
         return true;
     }
-    // Control characters (newline included) force the escaped form; U+0085
-    // NEL too (YAML 1.1 line break to PyYAML, breaks plain scalars).
-    if s.chars()
-        .any(|c| (c as u32) < 0x20 || c as u32 == 0x7f || c == '\u{85}')
-    {
+    // Any PyYAML-non-representable code point (C0, DEL/C1, NEL, LS/PS,
+    // U+FFFE/FFFF) forces quoting; the emitter escapes it inside quotes.
+    if s.chars().any(pyyaml_unsafe) {
         return true;
     }
     is_reserved_word(s) || looks_numeric(s)
@@ -243,7 +249,19 @@ fn looks_numeric(s: &str) -> bool {
         ".inf" | "-.inf" | "+.inf" | ".nan" | "-.nan" | "+.nan" => return true,
         _ => {}
     }
-    if s.contains('_') && s.bytes().all(|b| b.is_ascii_digit() || b == b'_') {
+    // Digit separators combined with float/sexagesimal punctuation still
+    // re-type (`1_0.5`->10.5, `1_0:30`->630, `1.5_0`->1.5). Over-approximate
+    // the numeric grammar: leading sign/digit, every byte in the int/float/
+    // sexagesimal charset. Strings with letters (x86_64, v1.2.3, 1_0_or_text)
+    // fall outside and stay plain.
+    if s.contains('_')
+        && s.bytes()
+            .next()
+            .is_some_and(|b| b.is_ascii_digit() || b == b'+' || b == b'-')
+        && s.bytes().all(|b| {
+            b.is_ascii_digit() || matches!(b, b'_' | b'.' | b':' | b'+' | b'-' | b'e' | b'E')
+        })
+    {
         return true;
     }
     let b = s.as_bytes();
@@ -417,9 +435,34 @@ flag: false
             "2026-10",
             "1_0_or_text",
             "a-2026-10-02b",
+            "x86_64",
+            "v1.2.3",
+            "5_14.0-284.el9",
         ] {
             let out = emit_str(&serde_json::json!({ "k": s }), ColorSupport::Off);
             assert!(!out.contains('"'), "{s:?} must stay plain, got {out}");
+        }
+    }
+
+    #[test]
+    fn pyyaml_nonrepresentable_codepoints_are_escaped_not_raw() {
+        // Raw C1 / LS / PS / U+FFFE take the whole PyYAML stream down (even
+        // inside double quotes); each must come out as a \uXXXX escape.
+        let cases: [(&str, &str); 5] = [
+            ("\u{9f}", "\\u009F"),
+            ("\u{80}", "\\u0080"),
+            ("\u{2028}", "\\u2028"),
+            ("\u{2029}", "\\u2029"),
+            ("\u{fffe}", "\\uFFFE"),
+        ];
+        for (raw, esc) in cases {
+            let v = serde_json::json!({ "k": format!("a{raw}b") });
+            let out = emit_str(&v, ColorSupport::Off);
+            assert!(!out.contains(raw), "{esc} emitted raw: {out:?}");
+            assert!(
+                out.contains(&format!("\"a{esc}b\"")),
+                "missing {esc}: {out:?}"
+            );
         }
     }
 

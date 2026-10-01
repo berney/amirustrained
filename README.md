@@ -108,8 +108,9 @@ to root. Nothing in this project packages those bits.
 `--probe-ebpf` risk & cleanup note: the verdict rests on one real `bpf(BPF_PROG_LOAD)`
 with a tracepoint program embedded in the binary (`bpf/prebuilt/hello.bpf.o`: zero maps,
 zero helpers, never attached — it can never execute); aya's lazy, once-per-process
-kernel feature detection additionally issues a handful of transient bpf() calls (BTF
-probes, two trivial probe prog-loads, map creates) whose fds all close inside the call.
+kernel feature detection additionally issues a handful of transient bpf() calls (up to
+nine BTF loads, five trivial probe prog-loads, three map creates, one link-create
+attempt) whose fds all close inside the call.
 A load **succeeds** only if this
 process may load programs: CAP_BPF+CAP_PERFMON or CAP_SYS_ADMIN, i.e. effectively root;
 every refusal is decoded into `ebpf.load` (`eperm-no-caps`, `eperm-unpriv-disabled`,

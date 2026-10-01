@@ -5,12 +5,14 @@
 //!
 //! WHAT IT RUNS: `bpf/prebuilt/hello.bpf.o` — a tracepoint program that
 //! returns 0. Zero maps, zero helpers, never attached, so it never executes.
-//! The verdict rests on one `bpf(BPF_PROG_LOAD)`; note aya additionally runs
-//! a lazy, once-per-process kernel feature detection on the first load (BTF
-//! probes, two trivial probe prog-loads, a few map creates) — every fd it
-//! opens closes inside the call, so nothing outlives the probe. Rebuild
-//! provenance: `bpf/build.sh` (nightly + bpf-linker); committing the object
-//! keeps the default stable/musl build free of the BPF toolchain.
+//! The verdict rests on one `bpf(BPF_PROG_LOAD)`; aya additionally runs a
+//! lazy, once-per-process kernel feature detection on the first load — up to
+//! nine BTF loads, five trivial probe prog-loads, three map creates and one
+//! link-create attempt (plus an RLIMIT_MEMLOCK raise/retry dance on pre-5.11
+//! kernels) — every fd it opens closes inside the call, so nothing outlives
+//! the probe. Rebuild provenance: `bpf/build.sh` (nightly + bpf-linker);
+//! committing the object keeps the default stable/musl build free of the BPF
+//! toolchain.
 //!
 //! CLEANUP / CRASH-SAFETY (why there is no `--unload-orphans`): the probe
 //! NEVER pins anything — no path under /sys/fs/bpf is ever created. Aya's
