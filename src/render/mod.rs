@@ -3,6 +3,7 @@
 pub mod json;
 pub mod jsonl;
 pub mod markdown;
+pub mod sarif;
 pub mod text;
 
 use crate::opts::Format;
@@ -22,7 +23,6 @@ pub fn make(fmt: Format, verbose: bool, color: bool) -> Box<dyn Renderer> {
         Format::Jsonl => Box::new(jsonl::Jsonl),
         Format::Json => Box::new(json::Json),
         Format::Markdown => Box::new(markdown::Markdown),
-        // Task 24 replaces this arm; until then treated as misuse-safe default:
-        Format::Sarif => Box::new(text::Text { verbose, color }),
+        Format::Sarif => Box::new(sarif::Sarif),
     }
 }

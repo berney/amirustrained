@@ -212,11 +212,17 @@ fn markdown_format_renders_the_report_document() {
 }
 
 #[test]
-fn sarif_format_not_yet_renders_text_and_exits_0() {
-    // Task 24 replaces the sarif fallback; until then misuse-safe text output.
+fn sarif_format_emits_one_valid_envelope() {
     let (code, stdout) = run(&["--format", "sarif"]);
     assert_eq!(code, 0, "sarif must not fail");
-    assert!(stdout.contains("scan complete"), "sarif output: {stdout}");
+    // Bulk contract: stdout is exactly one JSON document (from_str rejects
+    // trailing non-whitespace) — the SARIF envelope, not text.
+    let v: serde_json::Value =
+        serde_json::from_str(&stdout).expect("--format sarif stdout must be one JSON document");
+    assert_eq!(v["version"], "2.1.0");
+    assert!(v["$schema"].as_str().unwrap().contains("sarif-2.1.0"));
+    assert_eq!(v["runs"][0]["tool"]["driver"]["name"], "amirustrained");
+    assert!(v["runs"][0]["results"].is_array());
 }
 
 #[test]
