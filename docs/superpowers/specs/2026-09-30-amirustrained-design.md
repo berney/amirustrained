@@ -204,7 +204,7 @@ Seed catalog (v1; registry is append-only in id-space):
 | AMR-008 | identity-uidmap | medium | container detected ∧ uid_map is full identity (no userns isolation; DAC root == host root) |
 | AMR-009 | cgroup-v1-container | low | cgroup v1 in effect inside container (release_agent-class vectors; host-side) |
 | AMR-010 | no-pids-limit | low | container detected ∧ pids controller present but unlimited |
-| AMR-011 | gid-map-includes-0 | medium | gid_map maps host gid 0 without `setgroups: deny` |
+| AMR-011 | gid-map-includes-0 | medium | container detected ∧ gid_map maps host gid 0 without `setgroups: deny`. Ungated, every bare host fires: init-ns `/proc/self/gid_map` is trivially `0 0 4294967295` with `setgroups: allow` — constant state, zero movement, same reasoning as the AMR-003/004 gates *(erratum, live host scan 2026-10-01; found by Task20Rules)* |
 | AMR-012 | landlock-abi-available | info | kernel exposes Landlock ABI ≥ 1 (`/sys/kernel/security/landlock` present) — presence-only: a process's Landlock domain state is not observable through procfs, so "unused" is never claimed |
 | AMR-013 | virtualized | info | hypervisor detected (context for VMM-boundary claims) |
 | AMR-014 | strong-isolation-runtime | info | firecracker/gVisor/kata detected (positive note) |
@@ -223,8 +223,13 @@ than firing or staying silent. Mechanically: any rule with `requires_root: true`
 evaluated without privilege **always** emits that `info` finding, whether or not its
 inputs happened to be readable — root-gated inputs are usually unreadable, so a
 demote-only-on-fire rule would make the downgrade unreachable, i.e. plain silence
-*(erratum, ReviewT19 F4; the info note does not consult the unreadable inputs, so no
-`fact_any` accessor is needed)*.
+*(erratum, ReviewT19 F4)*. **Amendment (ReviewT19b J1):** the note is skipped when the
+rule's *applicability* is provably false independent of privilege — concretely, a
+container-gated rule (`container_only: true` on `Rule`, set by its membership in the
+§6 catalog's container rules) at a Host verdict is inapplicable, not unassessable, and
+stays silent. Suppression MUST NOT key on `check() == None` (indistinguishable from
+unreadable inputs; would reopen the F4 hole) — only on the declared flag plus the
+verdict.
 
 ## 7. Output formats
 
