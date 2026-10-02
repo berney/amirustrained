@@ -87,10 +87,13 @@ change meaning) — piped output round-trips through `yaml.safe_load`.
 **titanium** palette (severity ladder critical→red/high→amber/medium→gold/
 low+info→dim aluminium; verdict host→bright aluminium, container→electric
 blue, VM/sandbox→readout green; keys blue, quoted strings gold, scalars amber,
-bool/null green) — but only when **all** of:
+bool/null green). `--format text` fact lines from `--probe-ebpf` /
+`--probe-syscalls` ride the same JSON tokeniser, and `--help`/parse errors
+are styled too (blue section headers, green flags, gold placeholders,
+red errors) — but colour appears only when **all** of:
 
-- stdout is a terminal (piping to `jq`, a pager, or a file yields byte-identical plain bytes),
-- `--no-color` is not given,
+- stdout is a terminal (piping to `jq`, a pager, or a file yields byte-identical plain bytes; `CLICOLOR_FORCE=1` forces the clap help/error stream),
+- `--no-color` is not given (it silences the help/error stream as well),
 - `NO_COLOR` is **absent** (mere presence counts, even `NO_COLOR=` — no-color.org),
 - `TERM` is not `dumb`.
 
