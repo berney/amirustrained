@@ -29,6 +29,7 @@ dependencies = [
 name = "amirustrained"
 version = "0.1.0"
 dependencies = [
+ "anstyle",
  "assert_cmd",
  "aya",
  "aya-obj",

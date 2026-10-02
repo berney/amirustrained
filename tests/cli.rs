@@ -30,6 +30,38 @@ fn help_lists_every_format_including_yaml() {
     );
 }
 
+#[test]
+fn forced_color_paints_help_and_no_color_silences_it() {
+    // clap owns the help stream; titanium rides its Styles hook. CLICOLOR_FORCE
+    // emulates "colour wanted" for a piped test harness; truecolor triples are
+    // the palette (electricBlue headers, readoutGreen literals, gold
+    // placeholders, alertRed errors, warningAmber invalid tokens).
+    let (code, out) = run_env(&["--help"], &[("CLICOLOR_FORCE", "1")]);
+    assert_eq!(code, 0);
+    assert!(out.contains("38;2;0;180;255"), "blue section header: {out}");
+    assert!(out.contains("38;2;0;255;136"), "green flag literal: {out}");
+    assert!(out.contains("38;2;212;192;144"), "gold placeholder: {out}");
+    // --no-color is honoured even against CLICOLOR_FORCE (explicit flag wins).
+    let (code, out) = run_env(&["--no-color", "--help"], &[("CLICOLOR_FORCE", "1")]);
+    assert_eq!(code, 0);
+    assert!(
+        !out.contains('\x1b'),
+        "--no-color must strip help styles: {out}"
+    );
+    // Parse errors on the same stream: red label, amber offending token.
+    let (code, err) = run_env_stderr(&["--bogus"], &[("CLICOLOR_FORCE", "1")]);
+    assert_eq!(code, 2);
+    assert!(err.contains("38;2;255;71;87"), "red error label: {err}");
+    assert!(
+        err.contains("38;2;255;179;71"),
+        "amber invalid token: {err}"
+    );
+    // The unpainted default (test harness, no force) stays escape-free, which
+    // is what the byte-exact help test above relies on.
+    let (_, plain) = run(&["--help"]);
+    assert!(!plain.contains('\x1b'));
+}
+
 // ---------------------------------------------------------------------------
 // Process contract helpers.
 //
@@ -53,6 +85,35 @@ fn run(args: &[&str]) -> (i32, String) {
         )
     });
     (code, String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// [`run`] with extra env; `NO_COLOR` is stripped so a forcing variable
+/// (anstream honours it over tty detection) is not shadowed by the harness.
+fn run_env(args: &[&str], envs: &[(&str, &str)]) -> (i32, String) {
+    let mut cmd = Command::cargo_bin("amirustrained").unwrap();
+    cmd.env_remove("NO_COLOR").args(args);
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    let out = cmd.output().unwrap();
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+    )
+}
+
+/// [`run_env`] capturing stderr (clap writes help-errors there).
+fn run_env_stderr(args: &[&str], envs: &[(&str, &str)]) -> (i32, String) {
+    let mut cmd = Command::cargo_bin("amirustrained").unwrap();
+    cmd.env_remove("NO_COLOR").args(args);
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    let out = cmd.output().unwrap();
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
 }
 
 /// Parses the trailing `summary` line of a jsonl stream.

@@ -7,6 +7,7 @@ license = "MIT"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+anstyle = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 rustix = { version = "1", features = ["fs", "process", "system"] }

@@ -18,18 +18,22 @@ pub struct Text {
     pub optins: Vec<&'static str>,
 }
 
-/// One fact as a clipped compact-JSON tail: `probe.key: {…}`.
-fn fact_line(f: &crate::model::Fact) -> String {
+/// One fact as a clipped compact-JSON tail: `probe.key: {…}`. The JSON body
+/// rides the titanium tokeniser ([`super::json::highlight`]) so opt-in probe
+/// output reads like the `--format json` document. Clip happens on the RAW
+/// body first — the `…` sentinel must land outside any SGR run, and a string
+/// cut mid-token is total: `string_end` runs to end-of-buffer.
+fn fact_line(f: &crate::model::Fact, color: ColorSupport) -> String {
     const MAX: usize = 220;
     let body = match serde_json::to_string(&f.value) {
         Ok(s) => s,
         Err(_) => "<unserializable>".to_string(),
     };
     let shown = if body.chars().count() <= MAX {
-        body
+        super::json::highlight(&body, color)
     } else {
         let cut: String = body.chars().take(MAX - 1).collect();
-        format!("{cut}…")
+        format!("{}…", super::json::highlight(&cut, color))
     };
     format!("  {}.{}: {shown}", f.probe, f.key)
 }
@@ -58,7 +62,7 @@ impl Renderer for Text {
                 )?;
                 if self.verbose || self.optins.contains(&o.name.as_str()) {
                     for f in &o.facts {
-                        writeln!(w, "{}", fact_line(f))?;
+                        writeln!(w, "{}", fact_line(f, self.color))?;
                     }
                 }
             }
@@ -434,6 +438,113 @@ mod tests {
             assert!(line.ends_with('…'), "must clip: {line}");
             let body = line.split_once(": ").unwrap().1;
             assert_eq!(body.chars().count(), 220);
+        }
+
+        fn fact_event(value: serde_json::Value) -> Event {
+            outcome("ebpf-btf", "ebpf", "load", value)
+        }
+
+        #[test]
+        fn fact_json_is_titanium_highlighted_when_color_on() {
+            let mut r = Text {
+                verbose: false,
+                color: ColorSupport::TrueColor,
+                optins: vec!["ebpf-btf"],
+            };
+            let mut buf = vec![];
+            r.on_event(
+                &mut buf,
+                &fact_event(serde_json::json!({"status": "ok", "fd": 7, "errno": null})),
+            )
+            .unwrap();
+            let s = String::from_utf8(buf).unwrap();
+            // key electricBlue, string value gold, number amber, null green;
+            // every SGR run is reset, and the token text survives untouched.
+            assert!(
+                s.contains(&format!(
+                    "{}\"status\"{}",
+                    style::fg(style::ELECTRIC_BLUE),
+                    style::RESET
+                )),
+                "key must be electricBlue: {s}"
+            );
+            assert!(s.contains(&format!(
+                "{}\"ok\"{}",
+                style::fg(style::TITANIUM_GOLD),
+                style::RESET
+            )));
+            assert!(s.contains(&format!(
+                "{}7{}",
+                style::fg(style::WARNING_AMBER),
+                style::RESET
+            )));
+            assert!(s.contains(&format!(
+                "{}null{}",
+                style::fg(style::READOUT_GREEN),
+                style::RESET
+            )));
+            // Off on the same payload: zero escape bytes (piped contract).
+            let mut r = Text {
+                verbose: false,
+                color: ColorSupport::Off,
+                optins: vec!["ebpf-btf"],
+            };
+            let mut buf = vec![];
+            r.on_event(
+                &mut buf,
+                &fact_event(serde_json::json!({"status": "ok", "fd": 7, "errno": null})),
+            )
+            .unwrap();
+            let plain = String::from_utf8(buf).unwrap();
+            assert!(!plain.contains('\x1b'), "Off emits no escapes: {plain}");
+            assert!(plain.contains("  ebpf.load: {\"status\":\"ok\",\"fd\":7,\"errno\":null}"));
+        }
+
+        #[test]
+        fn clipped_fact_ends_with_ellipsis_outside_any_sgr_run() {
+            let mut r = Text {
+                verbose: true,
+                color: ColorSupport::TrueColor,
+                optins: vec![],
+            };
+            let mut buf = vec![];
+            r.on_event(
+                &mut buf,
+                &fact_event(serde_json::json!({"blob": "z".repeat(400)})),
+            )
+            .unwrap();
+            let line = String::from_utf8(buf)
+                .unwrap()
+                .lines()
+                .find(|l| l.starts_with("  ebpf.load:"))
+                .expect("fact line")
+                .to_string();
+            assert!(line.ends_with('…'), "clip sentinel last: {line}");
+            // The gold string token is still open (no closing quote after the
+            // cut) and must be reset before the sentinel, not swallow it.
+            assert!(line.ends_with(&format!("{}…", style::RESET)), "{line}");
+            let visible: String = {
+                let mut v = String::new();
+                let mut it = line.chars();
+                while let Some(c) = it.next() {
+                    if c == '\x1b' {
+                        for t in it.by_ref() {
+                            if t == 'm' {
+                                break;
+                            }
+                        }
+                    } else {
+                        v.push(c);
+                    }
+                }
+                v
+            };
+            let body = visible.split_once(": ").unwrap().1;
+            assert_eq!(
+                body.chars().count(),
+                220,
+                "visible body stays 220: {visible}"
+            );
         }
     }
 }

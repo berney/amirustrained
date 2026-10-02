@@ -136,6 +136,43 @@ pub fn verdict_fg(kind: RuntimeKind) -> &'static str {
     }
 }
 
+/// `#rrggbb` -> anstyle RGB colour; a malformed literal degrades to black
+/// instead of panicking (same rule as [`fg`]).
+fn rgb_color(hex: &str) -> anstyle::Color {
+    let digits = hex.strip_prefix('#').unwrap_or(hex);
+    let v = u32::from_str_radix(digits, 16).unwrap_or(0);
+    anstyle::Color::Rgb(anstyle::RgbColor(
+        ((v >> 16) & 0xff) as u8,
+        ((v >> 8) & 0xff) as u8,
+        (v & 0xff) as u8,
+    ))
+}
+
+/// Titanium [`clap::builder::Styles`] for `--help`/`--version`/error streams,
+/// which clap owns end-to-end — the palette is still ours. Headers electric
+/// blue bold+underline (same rule as the markdown H1), usage line bold blue,
+/// flag literals readout green (inline-code analogue), placeholders titanium
+/// gold, errors alert red with green/amber valid-invalid recovery hints.
+/// Body text keeps the terminal default; anstream gates emission on
+/// `NO_COLOR`/`TERM=dumb`/tty exactly like [`detect`] (`--no-color` needs an
+/// argv prescan in main, being unparseable at help time).
+pub fn clap_styles() -> clap::builder::Styles {
+    use anstyle::Style;
+    clap::builder::Styles::styled()
+        .header(
+            Style::new()
+                .bold()
+                .underline()
+                .fg_color(Some(rgb_color(ELECTRIC_BLUE))),
+        )
+        .usage(Style::new().bold().fg_color(Some(rgb_color(ELECTRIC_BLUE))))
+        .literal(Style::new().fg_color(Some(rgb_color(READOUT_GREEN))))
+        .placeholder(Style::new().fg_color(Some(rgb_color(TITANIUM_GOLD))))
+        .error(Style::new().bold().fg_color(Some(rgb_color(ALERT_RED))))
+        .valid(Style::new().fg_color(Some(rgb_color(READOUT_GREEN))))
+        .invalid(Style::new().fg_color(Some(rgb_color(WARNING_AMBER))))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

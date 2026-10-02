@@ -2,7 +2,7 @@ use std::io::IsTerminal;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 
 // `pub` keeps the not-yet-consumed model helpers (Tasks 8+) lint-clean in the
 // bin target; nothing outside the crate can reach them.
@@ -27,7 +27,16 @@ mod sys;
 /// assigns to `2`. Keeping the row documented is what pins the contract until
 /// a real internal-error source appears.
 fn main() -> ExitCode {
-    let cli = opts::Cli::parse();
+    // clap owns the help/error stream, so titanium rides its styles hook
+    // instead of our tokeniser. `--no-color` must silence that stream too:
+    // when clap prints help or a parse error the flag is not parsed yet, so
+    // prescan argv (`NO_COLOR`/`TERM=dumb` anstream honours on its own).
+    // `get_matches` keeps the exit-code-2-on-misuse / 0-on-help contract.
+    let mut cmd = opts::Cli::command().styles(render::style::clap_styles());
+    if std::env::args().any(|a| a == "--no-color") {
+        cmd = cmd.color(clap::ColorChoice::Never);
+    }
+    let cli = opts::Cli::from_arg_matches(&cmd.get_matches()).unwrap_or_else(|e| e.exit());
     // Misuse (unknown format, unknown fail-on level) is decided before any
     // probe runs, so `--help`-style errors cost nothing.
     let (fmt, opts) = match opts::Opts::from_cli(&cli) {
