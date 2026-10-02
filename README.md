@@ -70,7 +70,8 @@ amirustrained --format yaml                    # full report as block YAML
 amirustrained --format json | jq '.findings[] | {rule, severity}'
 amirustrained --fail-on high                   # CI gate: exit 1 at High+ (any|info|low|medium|high|critical)
 amirustrained --probe-syscalls                 # opt-in: enumerate syscalls blocked by seccomp
-amirustrained --probe-ebpf                     # opt-in: really load a trivial eBPF program (see note)
+amirustrained --probe-ebpf                     # opt-in: real bpf() probes — load + BTF/fentry + type sweep (see note)
+amirustrained --probe-ebpf types               # opt-in: sweep the 32 prog-type existence matrix only
 amirustrained -o report.sarif --format sarif   # for code-scanning pipelines
 amirustrained --format markdown --no-color     # plain bytes even on a terminal
 ```
@@ -105,12 +106,18 @@ audited and hang/EPERM-safe, but the binary must
 zero-arg credential syscalls would succeed and convert the process's real/saved ids
 to root. Nothing in this project packages those bits.
 
-`--probe-ebpf` risk & cleanup note: the verdict rests on one real `bpf(BPF_PROG_LOAD)`
+`--probe-ebpf` risk & cleanup note: targets are `load`, `btf`, `types` (comma list;
+a bare flag means `all`). The `load` verdict rests on one real `bpf(BPF_PROG_LOAD)`
 with a tracepoint program embedded in the binary (`bpf/prebuilt/hello.bpf.o`: zero maps,
 zero helpers, never attached — it can never execute); aya's lazy, once-per-process
 kernel feature detection additionally issues a handful of transient bpf() calls (up to
 nine BTF loads, five trivial probe prog-loads, three map creates, one link-create
-attempt) whose fds all close inside the call.
+attempt) whose fds all close inside the call. `types` sweeps all 32 `BPF_PROG_TYPE_*`
+ids with the same two-instruction program — existence evidence only, no attach. `btf`
+loads a minimal in-memory BTF object, then `/sys/kernel/btf/vmlinux` verbatim, then
+resolves `vfs_read` offline and attempts a real fentry load (`BPF_PROG_TYPE_TRACING` +
+`BPF_TRACE_FENTRY` + `attach_btf_id`) — never attached, fd closed immediately, no BTF
+object outlives the process.
 A load **succeeds** only if this
 process may load programs: CAP_BPF+CAP_PERFMON or CAP_SYS_ADMIN, i.e. effectively root;
 every refusal is decoded into `ebpf.load` (`eperm-no-caps`, `eperm-unpriv-disabled`,
@@ -142,8 +149,10 @@ runs on it.
 | `runtime` | composite fusion of all the above | — | low-confidence verdict ⇒ AMR-015 tells you to audit manually |
 
 `--probe-syscalls` adds the `syscall-probe` event to the stream (see risk note above).
-`--probe-ebpf` adds the `ebpf-load` event (fact namespace `ebpf.load`); it is the only
-code path that touches `bpf(2)`, and success there is what arms AMR-021.
+`--probe-ebpf` adds the selected `ebpf-load`, `ebpf-btf` and/or `ebpf-types` events
+(fact namespaces `ebpf.load`, `ebpf.btf`, `ebpf.types`); all touch `bpf(2)`, and only
+`load` success arms AMR-021. `btf` reports the `btfSyscall`/`vmlinuxBtf`/`fentry`
+layering; `types` reports `loadable`/`absent`/`denied`/`rejected` per prog type.
 
 ## Exit codes
 
@@ -219,9 +228,11 @@ SARIF 2.1.0). Its `--fail-on high ⇒ 1 / critical ⇒ 0` exit-code asserts are
 The binary is read-only with respect to the system: it never writes files (except
 `-o`), never changes kernel state. The only syscalls with any effect are the opt-in
 `--probe-syscalls` null-arg probes, `seccomp(GET_ACTION_AVAIL)` (inert), and — with
-`--probe-ebpf` — one verdict-bearing `bpf(BPF_PROG_LOAD)` (plus aya's one-time feature
-detection: a few transient bpf() calls, all fds closed immediately); the program is
-never pinned, never attached and fd-dropped before the process exits (crash included:
-exit closes fds and the kernel frees the program).
+`--probe-ebpf` — its `bpf(BPF_PROG_LOAD)` attempts (plus aya's one-time feature
+detection: a few transient bpf() calls, all fds closed immediately); `btf` additionally
+loads BTF objects into the kernel's in-memory table (freed at process exit; it never
+touches `/sys/fs/bpf` or any file). Programs are never pinned, never attached and
+fd-dropped before the process exits (crash included: exit closes fds and the kernel
+frees the program).
 Findings are evidence-cited facts, and anything the tool cannot assess at the
 current privilege level says so instead of overclaiming.
