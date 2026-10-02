@@ -22,9 +22,23 @@ pub trait Renderer: Send {
 /// `color` is the detected capability from [`style::detect`]; machine formats
 /// (jsonl, sarif) ignore it by contract — jsonl streams raw lines and sarif
 /// is a JSON report for tooling, so painting either would corrupt consumers.
-pub fn make(fmt: Format, verbose: bool, color: style::ColorSupport) -> Box<dyn Renderer> {
+///
+/// `optins` names the probes the user explicitly requested (`--probe-syscalls`,
+/// `--probe-ebpf …`); text renders their fact lines at default verbosity,
+/// because a status line alone would hide the very answer they paid for.
+/// Other formats carry facts regardless and ignore `optins`.
+pub fn make(
+    fmt: Format,
+    verbose: bool,
+    color: style::ColorSupport,
+    optins: Vec<&'static str>,
+) -> Box<dyn Renderer> {
     match fmt {
-        Format::Text => Box::new(text::Text { verbose, color }),
+        Format::Text => Box::new(text::Text {
+            verbose,
+            color,
+            optins,
+        }),
         Format::Jsonl => Box::new(jsonl::Jsonl),
         Format::Json => Box::new(json::Json { color }),
         Format::Markdown => Box::new(markdown::Markdown { color }),

@@ -424,7 +424,11 @@ mod tests {
         crate::opts::Opts {
             pid: None,
             probe_syscalls: false,
-            probe_ebpf: ebpf,
+            probe_ebpf: if ebpf {
+                vec![crate::opts::EbpfTarget::Load]
+            } else {
+                Vec::new()
+            },
             probe_timeout: None,
             fail_on: None,
             dump_filters: false,

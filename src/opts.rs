@@ -18,15 +18,22 @@ pub struct Cli {
     pub output: Option<std::path::PathBuf>,
     #[arg(long)]
     pub probe_syscalls: bool,
-    /// Opt-in REAL eBPF program load via aya (embedded object; one
-    /// verdict-bearing BPF_PROG_LOAD - aya's one-time kernel feature
-    /// detection issues a few more transient bpf() calls, all fds closed
-    /// immediately). Succeeds only when the caller can load programs
-    /// (CAP_BPF/CAP_SYS_ADMIN - effectively root); every denial is decoded
-    /// into `ebpf.load`. Nothing is pinned; loaded state dies with the
-    /// process (src/probes/ebpf_load.rs).
-    #[arg(long)]
-    pub probe_ebpf: bool,
+    /// Opt-in ACTIVE eBPF probes; a bare flag runs all three, an optional
+    /// comma list picks a subset: `load` (aya, embedded object: one
+    /// verdict-bearing BPF_PROG_LOAD), `btf` (BPF_BTF_LOAD of a minimal
+    /// blob + /sys/kernel/btf/vmlinux, then a BTF-referencing fentry load),
+    /// `types` (one trivial BPF_PROG_LOAD per BPF_PROG_TYPE_* id). All fds
+    /// close immediately; nothing is pinned, attached, or executed. Succeeds
+    /// only when the caller can load programs (CAP_BPF/CAP_SYS_ADMIN -
+    /// effectively root); every denial is decoded (src/probes/ebpf_*.rs).
+    #[arg(
+        long,
+        value_name = "WHAT",
+        num_args = 0..=1,
+        default_missing_value = "all",
+        value_parser = parse_ebpf_targets
+    )]
+    pub probe_ebpf: Option<EbpfTargets>,
     /// Seconds; 0 is rejected (would degrade every probe instantly while
     /// the forced-ceiling sweep thread runs with no consumer).
     #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
@@ -52,12 +59,72 @@ pub struct Cli {
 pub struct Opts {
     pub pid: Option<u32>,
     pub probe_syscalls: bool,
-    pub probe_ebpf: bool,
+    /// Selected active eBPF probes; empty = none (default). Duplicates from
+    /// repeated/comma-mixed flag uses are collapsed at parse time.
+    pub probe_ebpf: Vec<EbpfTarget>,
     pub probe_timeout: Option<Duration>,
     pub fail_on: Option<Severity>,
     pub dump_filters: bool,
 }
 
+/// One opt-in active eBPF probe, selectable via `--probe-ebpf`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EbpfTarget {
+    Load,
+    Btf,
+    Types,
+}
+
+impl EbpfTarget {
+    /// Pipeline event name of the probe this target selects.
+    pub fn probe_name(self) -> &'static str {
+        match self {
+            EbpfTarget::Load => "ebpf-load",
+            EbpfTarget::Btf => "ebpf-btf",
+            EbpfTarget::Types => "ebpf-types",
+        }
+    }
+}
+
+/// Parsed `--probe-ebpf` value: one CLI token may expand to several targets
+/// (comma list, or `all`), so the value parser returns the whole set as a
+/// single clap value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EbpfTargets(pub Vec<EbpfTarget>);
+
+/// `--probe-ebpf` value parser: `all` (what a bare flag expands to via
+/// `default_missing_value`) or a comma-separated subset of
+/// `load|btf|types`. Order is preserved, duplicates collapse.
+fn parse_ebpf_targets(s: &str) -> Result<EbpfTargets, String> {
+    let parse_one = |p: &str| match p.trim() {
+        "load" => Ok(EbpfTarget::Load),
+        "btf" => Ok(EbpfTarget::Btf),
+        "types" => Ok(EbpfTarget::Types),
+        other => Err(format!(
+            "unknown eBPF probe target '{other}' (expected load, btf, types or all)"
+        )),
+    };
+    match s.trim() {
+        "all" => Ok(EbpfTargets(vec![
+            EbpfTarget::Load,
+            EbpfTarget::Btf,
+            EbpfTarget::Types,
+        ])),
+        "" => {
+            Err("empty value; use load, btf, types (comma list) or omit the value for all".into())
+        }
+        list => {
+            let mut out: Vec<EbpfTarget> = Vec::new();
+            for part in list.split(',') {
+                let t = parse_one(part)?;
+                if !out.contains(&t) {
+                    out.push(t);
+                }
+            }
+            Ok(EbpfTargets(out))
+        }
+    }
+}
 /// CLI misuse: a flag value the pipeline cannot honor. Maps to exit code 2.
 #[derive(Debug)]
 pub enum CliError {
@@ -111,7 +178,7 @@ impl Opts {
             Opts {
                 pid: c.pid,
                 probe_syscalls: c.probe_syscalls,
-                probe_ebpf: c.probe_ebpf,
+                probe_ebpf: c.probe_ebpf.clone().map(|t| t.0).unwrap_or_default(),
                 probe_timeout: match (c.probe_syscalls, c.probe_timeout) {
                     // An explicit value stays authoritative; the sweep
                     // alone never runs without a ceiling (spec §5).
@@ -159,7 +226,7 @@ mod tests {
             format: format.to_owned(),
             output: None,
             probe_syscalls: false,
-            probe_ebpf: false,
+            probe_ebpf: None,
             probe_timeout,
             pid: Some(7),
             fail_on: fail_on.map(str::to_owned),
@@ -231,22 +298,53 @@ mod tests {
     }
 
     #[test]
-    fn probe_ebpf_is_a_pure_opt_in_flag() {
-        // The load probe needs no ceiling machinery (a single syscall) and
-        // must not disturb the sweep rules: default off, flag maps through,
-        // and with the flag alone the timeout stays None.
+    fn probe_ebpf_bare_flag_selects_all_three_targets() {
+        // Default off: no active probe without the flag.
         let (_, opts) = Opts::from_cli(&cli("text", None, None)).unwrap();
-        assert!(!opts.probe_ebpf);
-        let c = Cli {
-            probe_ebpf: true,
-            ..cli("text", None, None)
-        };
-        let (_, opts) = Opts::from_cli(&c).unwrap();
-        assert!(opts.probe_ebpf);
-        assert_eq!(opts.probe_timeout, None);
-        // The public long form really is `--probe-ebpf`.
+        assert!(opts.probe_ebpf.is_empty());
+        // Bare `--probe-ebpf` = all three (load, btf, types).
         let parsed = Cli::try_parse_from(["amirustrained", "--probe-ebpf"]).unwrap();
-        assert!(parsed.probe_ebpf);
+        let (_, opts) = Opts::from_cli(&parsed).unwrap();
+        assert_eq!(
+            opts.probe_ebpf,
+            [EbpfTarget::Load, EbpfTarget::Btf, EbpfTarget::Types]
+        );
+        // An optional value must not swallow the NEXT flag as its value.
+        let parsed =
+            Cli::try_parse_from(["amirustrained", "--probe-ebpf", "--format", "json"]).unwrap();
+        assert_eq!(parsed.format, "json");
+        let (_, opts) = Opts::from_cli(&parsed).unwrap();
+        assert_eq!(opts.probe_ebpf.len(), 3);
+        // Explicit subset + dedup + order preservation.
+        let parsed =
+            Cli::try_parse_from(["amirustrained", "--probe-ebpf", "types,load,types"]).unwrap();
+        let (_, opts) = Opts::from_cli(&parsed).unwrap();
+        assert_eq!(opts.probe_ebpf, [EbpfTarget::Types, EbpfTarget::Load]);
+        assert_eq!(
+            opts.probe_ebpf
+                .iter()
+                .map(|t| t.probe_name())
+                .collect::<Vec<_>>(),
+            ["ebpf-types", "ebpf-load"]
+        );
+        // The load probe needs no ceiling machinery (a handful of syscalls)
+        // and must not disturb the sweep rules: timeout stays None.
+        assert_eq!(opts.probe_timeout, None);
+    }
+
+    #[test]
+    fn probe_ebpf_rejects_unknown_targets_at_parse_time() {
+        use clap::error::ErrorKind;
+        let err = Cli::try_parse_from(["amirustrained", "--probe-ebpf", "kprobes"])
+            .expect_err("unknown target must not parse");
+        assert_eq!(err.kind(), ErrorKind::ValueValidation);
+        assert_eq!(err.exit_code(), 2);
+        assert!(
+            err.to_string()
+                .contains("unknown eBPF probe target 'kprobes'")
+        );
+        // Empty value is misuse too (`--probe-ebpf ""`).
+        assert!(Cli::try_parse_from(["amirustrained", "--probe-ebpf", ""]).is_err());
     }
 
     #[test]

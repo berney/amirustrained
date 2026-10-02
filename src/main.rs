@@ -53,7 +53,14 @@ fn main() -> ExitCode {
         cli.output.is_none() && std::io::stdout().is_terminal(),
         &|key| std::env::var(key).ok(),
     );
-    let mut renderer = render::make(fmt, cli.verbose, color);
+    // The opt-in probes exist *for* their answers: text shows their fact
+    // lines even without `--verbose` (src/render/text.rs).
+    let mut optins: Vec<&'static str> = Vec::new();
+    if opts.probe_syscalls {
+        optins.push("syscall-probe");
+    }
+    optins.extend(opts.probe_ebpf.iter().map(|t| t.probe_name()));
+    let mut renderer = render::make(fmt, cli.verbose, color, optins);
     let mut out: Box<dyn std::io::Write> = match &cli.output {
         Some(p) => match std::fs::File::create(p) {
             Ok(f) => Box::new(f),

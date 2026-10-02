@@ -372,7 +372,7 @@ fn scan(s: &Scenario) -> Report {
     let opts = Opts {
         pid: None,
         probe_syscalls: false,
-        probe_ebpf: false,
+        probe_ebpf: Vec::new(),
         probe_timeout: None,
         fail_on: None,
         dump_filters: false,
@@ -576,13 +576,18 @@ fn normalize_pids(text: &str) -> String {
 /// evidence, the counts footer and the completion line.
 #[test]
 fn docker_privileged_text_output_snapshot() {
-    let mut renderer = render::make(Format::Text, false, render::style::ColorSupport::Off);
+    let mut renderer = render::make(
+        Format::Text,
+        false,
+        render::style::ColorSupport::Off,
+        vec![],
+    );
     let mut buf: Vec<u8> = Vec::new();
     let s = scenario("docker-privileged");
     let opts = Opts {
         pid: None,
         probe_syscalls: false,
-        probe_ebpf: false,
+        probe_ebpf: Vec::new(),
         probe_timeout: None,
         fail_on: None,
         dump_filters: false,
@@ -627,13 +632,18 @@ fn normalize_scan_meta(text: &str) -> String {
 /// PyYAML (verified out-of-band; the snapshot is the byte-for-byte pin).
 #[test]
 fn docker_default_yaml_output_snapshot() {
-    let mut renderer = render::make(Format::Yaml, false, render::style::ColorSupport::Off);
+    let mut renderer = render::make(
+        Format::Yaml,
+        false,
+        render::style::ColorSupport::Off,
+        vec![],
+    );
     let mut buf: Vec<u8> = Vec::new();
     let s = scenario("docker-default");
     let opts = Opts {
         pid: None,
         probe_syscalls: false,
-        probe_ebpf: false,
+        probe_ebpf: Vec::new(),
         probe_timeout: None,
         fail_on: None,
         dump_filters: false,

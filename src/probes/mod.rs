@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::model::ProbeOutcome;
-use crate::opts::Opts;
+use crate::opts::{EbpfTarget, Opts};
 use crate::pipeline::Ctx;
 
 /// One self-contained inspection. Runs on a pipeline worker thread; `Ctx`
@@ -18,7 +18,10 @@ pub trait Probe: Send + Sync {
 pub mod capabilities;
 pub mod cgroup;
 pub mod ebpf;
+pub mod ebpf_btf;
 pub mod ebpf_load;
+pub mod ebpf_raw;
+pub mod ebpf_types;
 pub mod k8s;
 pub mod lsm;
 pub mod namespaces;
@@ -31,6 +34,8 @@ pub mod vmm;
 
 /// Probes in dispatch order. The syscall probe is conditional: registered
 /// only with `--probe-syscalls`, since it actively invokes syscalls (spec §5).
+/// The active eBPF probes (`ebpf-load`, `ebpf-btf`, `ebpf-types`) are gated
+/// on the `--probe-ebpf` target set (spec §6 AMR-021).
 pub fn registry(opts: &Opts) -> Vec<Arc<dyn Probe>> {
     let mut probes: Vec<Arc<dyn Probe>> = vec![
         Arc::new(namespaces::Namespaces),
@@ -45,12 +50,17 @@ pub fn registry(opts: &Opts) -> Vec<Arc<dyn Probe>> {
     // Reads the eBPF knobs files directly and fuses the capabilities and
     // lockdown facts the probes above already accumulated (`cx.prior`).
     probes.push(Arc::new(ebpf::Ebpf));
-    // The REAL load probe is opt-in (spec §6 AMR-021: "--probe-ebpf only"):
-    // one BPF_PROG_LOAD with the embedded object, nothing pinned. Slotted
-    // right after the knobs probe so its classification can read the fresh
-    // `ebpf.knobs` fact from `cx.prior`.
-    if opts.probe_ebpf {
+    // The REAL probes are opt-in (spec §6 AMR-021: "--probe-ebpf only").
+    // Slotted right after the knobs probe so their classification can read
+    // the fresh `ebpf.knobs` fact from `cx.prior`.
+    if opts.probe_ebpf.contains(&EbpfTarget::Load) {
         probes.push(Arc::new(ebpf_load::EbpfLoad));
+    }
+    if opts.probe_ebpf.contains(&EbpfTarget::Btf) {
+        probes.push(Arc::new(ebpf_btf::EbpfBtf));
+    }
+    if opts.probe_ebpf.contains(&EbpfTarget::Types) {
+        probes.push(Arc::new(ebpf_types::EbpfTypes));
     }
     let rest: Vec<Arc<dyn Probe>> = vec![
         Arc::new(vmm::Vmm),

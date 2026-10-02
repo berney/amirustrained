@@ -31,10 +31,12 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "aya",
+ "aya-obj",
  "clap",
  "insta",
  "jsonschema",
  "libc",
+ "object",
  "predicates",
  "rustix",
  "serde",

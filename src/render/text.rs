@@ -11,6 +11,27 @@ pub struct Text {
     /// Titanium ANSI paint only when on (`make` derives it from
     /// `style::detect`: tty stdout, no `--no-color`/`NO_COLOR`/`TERM=dumb`).
     pub color: ColorSupport,
+    /// Probe event names the user opted into (`--probe-syscalls`,
+    /// `--probe-ebpf`): their fact lines print even without `--verbose`,
+    /// clipped to a report-sized summary (the full value lives in the
+    /// machine formats).
+    pub optins: Vec<&'static str>,
+}
+
+/// One fact as a clipped compact-JSON tail: `probe.key: {…}`.
+fn fact_line(f: &crate::model::Fact) -> String {
+    const MAX: usize = 220;
+    let body = match serde_json::to_string(&f.value) {
+        Ok(s) => s,
+        Err(_) => "<unserializable>".to_string(),
+    };
+    let shown = if body.chars().count() <= MAX {
+        body
+    } else {
+        let cut: String = body.chars().take(MAX - 1).collect();
+        format!("{cut}…")
+    };
+    format!("  {}.{}: {shown}", f.probe, f.key)
 }
 
 impl Renderer for Text {
@@ -22,17 +43,25 @@ impl Renderer for Text {
                 tool.name, tool.version, scan.target_pid, scan.uid
             )?,
             // Probe status lines are always on (the minimal-text contract);
-            // `verbose` only adds the Meta header above.
-            Event::Probe(o) => writeln!(
-                w,
-                "probe {}: {}",
-                o.name,
-                match &o.availability {
-                    crate::model::Availability::Ok => "ok".into(),
-                    crate::model::Availability::Degraded(d) => format!("degraded: {d}"),
-                    crate::model::Availability::Unavailable(d) => format!("unavailable: {d}"),
+            // `verbose` adds the Meta header and every fact line, an opt-in
+            // adds just the opted probe's facts.
+            Event::Probe(o) => {
+                writeln!(
+                    w,
+                    "probe {}: {}",
+                    o.name,
+                    match &o.availability {
+                        crate::model::Availability::Ok => "ok".into(),
+                        crate::model::Availability::Degraded(d) => format!("degraded: {d}"),
+                        crate::model::Availability::Unavailable(d) => format!("unavailable: {d}"),
+                    }
+                )?;
+                if self.verbose || self.optins.contains(&o.name.as_str()) {
+                    for f in &o.facts {
+                        writeln!(w, "{}", fact_line(f))?;
+                    }
                 }
-            )?,
+            }
             Event::Summary {
                 verdict,
                 findings,
@@ -175,6 +204,7 @@ mod tests {
         let mut r = Text {
             verbose: false,
             color: ColorSupport::Off,
+            optins: vec![],
         };
         r.on_event(&mut buf, &Event::Probe(ProbeOutcome::empty("uidmap")))
             .unwrap();
@@ -243,6 +273,7 @@ mod tests {
         Text {
             verbose: false,
             color,
+            optins: vec![],
         }
         .on_event(&mut buf, &summary_event(r))
         .unwrap();
@@ -331,5 +362,78 @@ mod tests {
             !render_text(&summary_report(true), ColorSupport::Off).contains('\x1b'),
             "Off must emit no escape bytes"
         );
+    }
+
+    mod fact_lines {
+        use super::*;
+        use crate::model::Fact;
+        use serde_json::json;
+
+        fn outcome(probe: &str, ns: &str, key: &str, value: serde_json::Value) -> Event {
+            let mut o = ProbeOutcome::empty(probe);
+            o.facts.push(Fact::ok(ns, key, value, "test".to_string()));
+            Event::Probe(o)
+        }
+
+        #[test]
+        fn optin_probe_facts_print_at_default_verbosity() {
+            let mut r = Text {
+                verbose: false,
+                color: ColorSupport::Off,
+                optins: vec!["ebpf-btf"],
+            };
+            let mut buf = vec![];
+            r.on_event(
+                &mut buf,
+                &outcome(
+                    "ebpf-btf",
+                    "ebpf",
+                    "btf",
+                    json!({"summary": "btfSyscall=ok"}),
+                ),
+            )
+            .unwrap();
+            let s = String::from_utf8(buf).unwrap();
+            assert!(s.contains("probe ebpf-btf: ok\n"), "{s}");
+            assert!(
+                s.contains("  ebpf.btf: {\"summary\":\"btfSyscall=ok\"}"),
+                "{s}"
+            );
+            // A probe the user did not opt into stays a single status line.
+            let mut buf = vec![];
+            r.on_event(&mut buf, &outcome("ebpf", "ebpf", "knobs", json!({"x": 1})))
+                .unwrap();
+            assert_eq!(String::from_utf8(buf).unwrap(), "probe ebpf: ok\n");
+        }
+
+        #[test]
+        fn verbose_prints_every_fact_and_clips_long_values() {
+            let mut r = Text {
+                verbose: true,
+                color: ColorSupport::Off,
+                optins: vec![],
+            };
+            let mut buf = vec![];
+            r.on_event(
+                &mut buf,
+                &outcome(
+                    "seccomp",
+                    "seccomp",
+                    "mode",
+                    json!({"blob": "z".repeat(400)}),
+                ),
+            )
+            .unwrap();
+            let line = String::from_utf8(buf)
+                .unwrap()
+                .lines()
+                .find(|l| l.starts_with("  seccomp.mode:"))
+                .expect("fact line")
+                .to_string();
+            // body clipped to exactly 220 chars ending in the ellipsis
+            assert!(line.ends_with('…'), "must clip: {line}");
+            let body = line.split_once(": ").unwrap().1;
+            assert_eq!(body.chars().count(), 220);
+        }
     }
 }

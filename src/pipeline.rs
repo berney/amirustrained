@@ -226,7 +226,7 @@ mod tests {
         let opts = Opts {
             pid: None,
             probe_syscalls: false,
-            probe_ebpf: false,
+            probe_ebpf: Vec::new(),
             dump_filters: false,
             probe_timeout: Some(std::time::Duration::from_millis(50)),
             fail_on: None,
@@ -257,7 +257,7 @@ mod tests {
         let opts = Opts {
             pid: None,
             probe_syscalls: false,
-            probe_ebpf: false,
+            probe_ebpf: Vec::new(),
             dump_filters: false,
             probe_timeout: None,
             fail_on: None,
@@ -329,7 +329,7 @@ mod tests {
         let opts = Opts {
             pid: Some(std::process::id()),
             probe_syscalls: false,
-            probe_ebpf: false,
+            probe_ebpf: Vec::new(),
             dump_filters: false,
             probe_timeout: None,
             fail_on: None,
@@ -374,7 +374,7 @@ mod tests {
         let opts = Opts {
             pid: None,
             probe_syscalls: false,
-            probe_ebpf: false,
+            probe_ebpf: Vec::new(),
             dump_filters: false,
             probe_timeout: None,
             fail_on: None,
@@ -401,7 +401,7 @@ mod tests {
         let opts = Opts {
             pid: None,
             probe_syscalls: false,
-            probe_ebpf: false,
+            probe_ebpf: Vec::new(),
             dump_filters: false,
             probe_timeout: Some(std::time::Duration::from_secs(5)),
             fail_on: None,
@@ -455,7 +455,7 @@ mod tests {
         let opts = Opts {
             pid: None,
             probe_syscalls: false,
-            probe_ebpf: false,
+            probe_ebpf: Vec::new(),
             dump_filters: false,
             probe_timeout: Some(std::time::Duration::from_secs(5)),
             fail_on: None,
@@ -472,7 +472,7 @@ mod tests {
         let opts = Opts {
             pid: None,
             probe_syscalls: false,
-            probe_ebpf: false,
+            probe_ebpf: Vec::new(),
             dump_filters: false,
             probe_timeout: None,
             fail_on: None,
@@ -507,7 +507,7 @@ mod tests {
         let opts = Opts {
             pid: None,
             probe_syscalls: true,
-            probe_ebpf: false,
+            probe_ebpf: Vec::new(),
             dump_filters: false,
             probe_timeout: None,
             fail_on: None,
@@ -533,5 +533,38 @@ mod tests {
                 "runtime",
             ]
         );
+    }
+
+    #[test]
+    fn registry_gates_ebpf_probes_on_target_set() {
+        // Active eBPF probes never run by default (sibling test above);
+        // `--probe-ebpf` decides WHICH of them run, in load→btf→types slot
+        // order right after the knobs probe (spec §6 AMR-021).
+        let names = |targets: Vec<crate::opts::EbpfTarget>| -> Vec<&str> {
+            let opts = Opts {
+                pid: None,
+                probe_syscalls: false,
+                probe_ebpf: targets,
+                dump_filters: false,
+                probe_timeout: None,
+                fail_on: None,
+            };
+            crate::probes::registry(&opts)
+                .iter()
+                .map(|p| p.name())
+                .collect()
+        };
+        use crate::opts::EbpfTarget::*;
+        let all = names(vec![Load, Btf, Types]);
+        let at = all.iter().position(|n| *n == "ebpf").unwrap();
+        assert_eq!(
+            &all[at..at + 4],
+            ["ebpf", "ebpf-load", "ebpf-btf", "ebpf-types"]
+        );
+        // A subset selects only its own probe, still slotted after `ebpf`.
+        let subset = names(vec![Types]);
+        let at = subset.iter().position(|n| *n == "ebpf").unwrap();
+        assert_eq!(&subset[at..at + 2], ["ebpf", "ebpf-types"]);
+        assert!(!subset.contains(&"ebpf-load") && !subset.contains(&"ebpf-btf"));
     }
 }

@@ -278,7 +278,7 @@ mod tests {
         let opts = crate::opts::Opts {
             pid: None,
             probe_syscalls: false,
-            probe_ebpf: false,
+            probe_ebpf: Vec::new(),
             probe_timeout: None,
             fail_on: None,
             dump_filters: false,
