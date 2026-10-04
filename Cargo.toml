@@ -21,7 +21,7 @@ tempfile = "3"
 insta = "1"
 assert_cmd = "2"
 predicates = "3"
-jsonschema = "0.30"
+jsonschema = "0.58"
 
 [profile.release]
 opt-level = "z"
