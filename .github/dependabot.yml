@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # Bumps the SHA pins in .github/workflows/* (labels carry the semantic version).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  # Root crate (amirustrained) and the embedded-BPF crate are separate Cargo
+  # workspaces, so each gets its own lockfile updates.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: cargo
+    directory: /bpf
+    schedule:
+      interval: weekly

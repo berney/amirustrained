@@ -23,11 +23,12 @@ jobs:
           - aarch64-unknown-linux-musl
           - riscv64gc-unknown-linux-musl
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install musl tools
         run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
       - name: Build release for musl target
         run: cargo build --release --target ${{ matrix.target }}
@@ -42,7 +43,35 @@ jobs:
           version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
           tar -C target/${{ matrix.target }}/release \
               -czf "amirustrained-${version}-${{ matrix.target }}.tar.gz" amirustrained
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: amirustrained-${{ matrix.target }}
           path: amirustrained-*-${{ matrix.target }}.tar.gz
+
+  # Tag pushes (v*) publish a GitHub Release carrying the three tarballs;
+  # every other push/PR still only builds artifacts. The tag must equal the
+  # Cargo package version (v<version>) or the release job fails.
+  release:
+    needs: musl
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: amirustrained-*
+          path: dist
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          expected=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          [ "$version" = "$expected" ] \
+            || { echo "ERROR: tag ${GITHUB_REF_NAME} != Cargo version v${expected}" >&2; exit 1; }
+          ls -l dist/
+          gh release create "$GITHUB_REF_NAME" dist/*.tar.gz \
+            --title "${GITHUB_REF_NAME}" --generate-notes
