@@ -243,7 +243,7 @@ mod tests {
     fn wrap_identity_off_single_reset_on() {
         assert_eq!(ColorSupport::Off.wrap(BOLD, "abc"), "abc");
         let on = ColorSupport::TrueColor.wrap(&format!("{}{BOLD}", fg(DIM_ALUMINUM)), "abc");
-        assert_eq!(on, format!("\x1b[38;2;156;163;176m\x1b[1mabc\x1b[0m"));
+        assert_eq!(on, "\x1b[38;2;156;163;176m\x1b[1mabc\x1b[0m".to_string());
         assert_eq!(
             on.matches("\x1b[0m").count(),
             1,

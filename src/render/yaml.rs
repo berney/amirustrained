@@ -45,7 +45,7 @@ impl Renderer for Yaml {
 }
 
 fn pad(w: &mut dyn std::io::Write, indent: usize) -> std::io::Result<()> {
-    w.write_all(&[b' '].repeat(indent))
+    w.write_all(&b" ".repeat(indent))
 }
 
 /// Top level: a map/seq opens the document directly; a bare scalar stands on
