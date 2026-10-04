@@ -14,7 +14,7 @@ rustix = { version = "1", features = ["fs", "process", "system"] }
 libc = "0.2"
 aya = "0.14"
 aya-obj = "0.3"
-object = { version = "0.39", default-features = false }
+object = { version = "0.40", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
