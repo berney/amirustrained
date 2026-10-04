@@ -12,6 +12,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # Lockstep with aya-obj 0.3.x (pins object = "0.39").
+      # Bump only when aya-obj adopts object 0.40.
+      - dependency-name: "object"
 
   - package-ecosystem: cargo
     directory: /bpf
