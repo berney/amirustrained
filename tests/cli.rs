@@ -12,7 +12,10 @@ fn version_flag_prints_semver() {
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicates::str::contains(format!("amirustrained {}", env!("CARGO_PKG_VERSION"))));
+        .stdout(predicates::str::contains(format!(
+            "amirustrained {}",
+            env!("CARGO_PKG_VERSION")
+        )));
 }
 
 #[test]
@@ -285,7 +288,10 @@ fn output_file_never_receives_ansi_escapes() {
 fn verbose_text_adds_the_meta_header() {
     let (code, stdout) = run(&["--verbose"]);
     assert_eq!(code, 0);
-    assert!(stdout.contains(&format!("amirustrained {} scanning pid", env!("CARGO_PKG_VERSION"))));
+    assert!(stdout.contains(&format!(
+        "amirustrained {} scanning pid",
+        env!("CARGO_PKG_VERSION")
+    )));
     assert!(stdout.contains("scan complete"));
 }
 

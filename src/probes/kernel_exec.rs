@@ -1,3 +1,7 @@
+#[cfg(target_arch = "x86_64")]
+const SYS_KEXEC_FILE_LOAD: libc::c_long = libc::SYS_kexec_file_load;
+#[cfg(not(target_arch = "x86_64"))]
+const SYS_KEXEC_FILE_LOAD: libc::c_long = 294;
 use serde::{Deserialize, Serialize};
 
 use crate::model::{Availability, Fact, ProbeOutcome};
@@ -388,6 +392,7 @@ pub fn decode_kexec_load(res: Result<(), i32>) -> SyscallResult {
     }
 }
 
+#[allow(dead_code)]
 pub fn decode_iopl(res: Result<(), i32>) -> SyscallResult {
     match res {
         Ok(()) => SyscallResult {
@@ -452,7 +457,7 @@ pub fn execute_boundary_probes() -> KernelExecPayload {
 
     let kexec_file_res = raw_syscall(|| unsafe {
         libc::syscall(
-            libc::SYS_kexec_file_load,
+            SYS_KEXEC_FILE_LOAD,
             -1i32,
             -1i32,
             0usize,
