@@ -2,15 +2,15 @@
 
 **Runtime introspection & LPE-posture reporter.** A modern Rust container-runtime
 posture auditor from the local-privilege-escalation / hardening point of view: it
-fuses eleven kernel-interface probes (namespaces, uidmap,
-capabilities, seccomp, LSM, eBPF, VMM, cgroup, sockets, k8s, runtime) into a single verdict:
+fuses kernel-interface, configuration, and execution-boundary probes (namespaces,
+uidmap, capabilities, seccomp, LSM, eBPF, VMM, cgroup, sockets, k8s, kernel-config,
+kernel-surface, runtime, and opt-in kernel-exec) into a single verdict:
 what an attacker already inside your environment gains from it. The fingerprint is
 evidence-scored, not socket-guessing: a `host` verdict means **not contained even
 when podman/docker sockets are present** — a reachable runtime socket only proves a
 daemon lives on this machine (an `environment:` note), never that we run inside it.
 Read-only against the system, no root required (privilege-sensitive assessments
 downgrade honestly to `info` instead of guessing), single static binary.
-
 ## Install
 
 Prebuilt tarballs (one per supported CPU arch — each a static-pie musl ELF,
@@ -65,15 +65,18 @@ substitute for native testing of the sweep.
 ## Usage
 
 ```sh
-amirustrained                                  # human-readable text report
-amirustrained --format yaml                    # full report as block YAML
+amirustrained                                     # human-readable text report with 5-line identity header
+amirustrained --compact                           # concise single-line findings (diffable mode, alias --terse)
+amirustrained --probe-kernel-execution            # opt-in: audit ring 0 boundaries (finit_module, kexec, dev_mem; alias --probe-kernel)
+amirustrained --verbose                           # show probe heartbeats, full config options, and hashes
+amirustrained --format yaml                       # full report as block YAML
 amirustrained --format json | jq '.findings[] | {rule, severity}'
-amirustrained --fail-on high                   # CI gate: exit 1 at High+ (any|info|low|medium|high|critical)
-amirustrained --probe-syscalls                 # opt-in: enumerate syscalls blocked by seccomp
-amirustrained --probe-ebpf                     # opt-in: real bpf() probes — load + BTF/fentry + type sweep (see note)
-amirustrained --probe-ebpf types               # opt-in: sweep the 32 prog-type existence matrix only
-amirustrained -o report.sarif --format sarif   # for code-scanning pipelines
-amirustrained --format markdown --no-color     # plain bytes even on a terminal
+amirustrained --fail-on high                      # CI gate: exit 1 at High+ (any|info|low|medium|high|critical)
+amirustrained --probe-syscalls                    # opt-in: enumerate syscalls blocked by seccomp
+amirustrained --probe-ebpf                        # opt-in: real bpf() probes — load + BTF/fentry + type sweep (see note)
+amirustrained --probe-ebpf types                  # opt-in: sweep the 32 prog-type existence matrix only
+amirustrained -o report.sarif --format sarif      # for code-scanning pipelines
+amirustrained --format markdown --no-color        # plain bytes even on a terminal
 ```
 
 Six formats: `text` (default), `markdown`, `json`, `yaml`, `sarif`, `jsonl`.
@@ -81,6 +84,50 @@ Six formats: `text` (default), `markdown`, `json`, `yaml`, `sarif`, `jsonl`.
 indent, PyYAML dash alignment; strings quoted only where a plain scalar could
 change meaning) — piped output round-trips through `yaml.safe_load`.
 
+### Terminal output & Identity Header
+
+Default text scans begin with a 5-line Environment & Identity context header establishing
+the host kernel, CPU architecture, OS distribution, user/group IDs, 64-bit capability bitmask,
+sandboxing mitigations, and PID namespace visibility:
+
+```text
+Host:       Linux 6.8.0-142-generic (x86_64) | distro: Ubuntu 22.04.4 LTS | runtime: docker (confidence high)
+Identity:   uid=0(root) gid=0(root) groups=0(root),10(wheel),998(docker)
+Caps:       000001ffffffffff (all 41 caps) [eff=000001ffffffffff bnd=000001ffffffffff inh=0000000000000000]
+Sandboxing: no_new_privs=0 seccomp=0(disabled) lockdown=none
+Visibility: pid_ns=isolated (59 procs visible, pid 1="/sbin/fireworks-init", procfs hidepid=0)
+
+CRIT AMR-001 container-socket-exposed: Container runtime API socket is reachable and writable
+  why: The Docker/Podman API is served by the runtime daemon as root: whoever can write to the socket can create a container that mounts the entire host filesystem with full privileges — one API call from contained user to host root (the docker.sock exposure class, cf. CVE-2019-5736-era runtime escapes).
+  fix: Remove the socket mount from the workload; if the API is genuinely needed, broker it through a least-privilege proxy (docker-socket-proxy) exposing only the required endpoints, and restrict which users may reach it.
+    - sockets.found = [{"path":"/run/docker.sock","writable":true,"kind":"docker","info":null}] (known runtime socket paths)
+
+HIGH AMR-002 privileged-container: Privileged container: CAP_SYS_ADMIN, seccomp disabled, no MAC confinement
+  why: This is the `--privileged` signature: CAP_SYS_ADMIN plus no seccomp filter plus nothing confining the task with mandatory access control...
+  fix: Drop `--privileged` and CAP_SYS_ADMIN; keep the runtime's default seccomp and AppArmor profiles...
+    - capabilities.effective = ["cap_chown", ...] (/proc/<pid>/status)
+    - seccomp.mode = "disabled" (/proc/<pid>/status)
+
+12 findings (c1 h2 m5 l3 i1)
+scan complete
+```
+
+In diffable mode (`--compact` or `--terse`), findings are collapsed to single lines while preserving
+the Identity Header for clean diffs (`diff -u before.txt after.txt`):
+
+```text
+Host:       Linux 6.8.0-142-generic (x86_64) | distro: Ubuntu 22.04.4 LTS | runtime: docker (confidence high)
+Identity:   uid=0(root) gid=0(root) groups=0(root),10(wheel),998(docker)
+Caps:       000001ffffffffff (all 41 caps) [eff=000001ffffffffff bnd=000001ffffffffff inh=0000000000000000]
+Sandboxing: no_new_privs=0 seccomp=0(disabled) lockdown=none
+Visibility: pid_ns=isolated (59 procs visible, pid 1="/sbin/fireworks-init", procfs hidepid=0)
+
+CRIT AMR-001 container-socket-exposed: Container runtime API socket is reachable and writable
+HIGH AMR-002 privileged-container: Privileged container: CAP_SYS_ADMIN, seccomp disabled, no MAC confinement
+HIGH AMR-023 kernel-module-loading-permitted: Kernel module loading is permitted: ring 0 execution accessible via finit_module/init_module or unconstrained modules
+
+3 findings (c1 h2 m0 l0 i0)
+```
 ## Colour
 
 `text`, `markdown`, `json` and `yaml` paint their output with the OMP
@@ -131,6 +178,15 @@ leftover state is structurally possible and no unload CLI exists. Rebuilding the
 embedded object is a nightly-only contributor path (`bash bpf/build.sh`); the normal
 stable/musl build just embeds the committed artifact.
 
+`--probe-kernel-execution` (alias `--probe-kernel`) risk & isolation note: actively tests
+kernel-mode execution boundaries (`finit_module`, `init_module`, `kexec_file_load`, `kexec_load`,
+and on x86 `iopl`). All tests strictly invoke kernel-validated boundary arguments (`finit_module(-1)`,
+`init_module(NULL)`, `kexec_file_load(-1)`, `kexec_load(ULONG_MAX)`, `iopl(3)`) that fail
+deterministically before mutating kernel state. The probe executes inside an isolated forked worker
+process under a 5-second deadline; any hanging worker is terminated via `SIGKILL` without affecting
+the main scan. When all tested entry points are confirmed closed or restricted, rule AMR-029
+affirmatively reports the verified boundary status.
+
 `--fixture-root <DIR>` (hidden, for tests) relocates every pseudo-file read under
 `<DIR>/proc`, `<DIR>/sys`, … — the whole fixture corpus (9 scenarios, golden tests)
 runs on it.
@@ -150,12 +206,18 @@ runs on it.
 | `sockets` | candidate socket probe + `GET /info` over UDS | — | socket absent/unwritable ⇒ quiet (environment-only evidence) |
 | `k8s` | env vars, serviceaccount dir | — | outside a pod ⇒ silent |
 | `runtime` | composite fusion of all the above | — | low-confidence verdict ⇒ AMR-015 tells you to audit manually |
+| `kernel-config` | discover `/proc/config.gz`, `/boot/config-*`, `/proc/config` | — | no config found ⇒ `degraded` (pure-Rust decompression + dual SHA-256) |
+| `kernel-surface` | sysctl (`modules_disabled`, `kexec_load_disabled`), lockdown, `/dev/mem`, USMH, ACPI | + test open | unreadable paths ⇒ reported independently |
+| `kernel-exec` | *(opt-in: `--probe-kernel-execution`)* isolated worker testing `finit_module`, `init_module`, `kexec_file_load`, `kexec_load`, `iopl` | + elevated capabilities | worker timeout (5s) ⇒ `degraded` |
 
 `--probe-syscalls` adds the `syscall-probe` event to the stream (see risk note above).
 `--probe-ebpf` adds the selected `ebpf-load`, `ebpf-btf` and/or `ebpf-types` events
 (fact namespaces `ebpf.load`, `ebpf.btf`, `ebpf.types`); all touch `bpf(2)`, and only
 `load` success arms AMR-021. `btf` reports the `btfSyscall`/`vmlinuxBtf`/`fentry`
 layering; `types` reports `loadable`/`absent`/`denied`/`rejected` per prog type.
+`--probe-kernel-execution` adds the `kernel-exec` event (fact namespace `kernel.exec`)
+evaluating Ring 0 execution pathways; safe closure triggers AMR-029.
+
 
 ## Exit codes
 
@@ -172,7 +234,7 @@ timed out: a per-probe timeout (`--probe-timeout`) yields a `timed_out` probe an
 probe facts (e.g. `namespaces` on a hardened host) stay visible in each probe's
 `availability` and never flip the scan to incomplete.
 
-## Rule catalog (v1)
+## Rule catalog (v0.2.0)
 
 Severity = how much closer to host root the state puts an attacker already inside
 the environment. Container-gated rules stay silent unless the verdict is a
@@ -205,10 +267,20 @@ report `info` + "insufficient privilege to assess" when run unprivileged.
 | AMR-020 | `cap-bpf-or-perfmon` | low | CapEff includes CAP_BPF or CAP_PERFMON: program load / map read possible without full root |
 | AMR-021 | `ebpf-load-succeeded` | high | `--probe-ebpf` only: trivial program load succeeded while in a shared-kernel container — `bpf()` reachable past seccomp/LSM/cap drops; kernel attack surface confirmed open *(same container gate: silent at Host verdicts — root loading is ordinary there — and at VM-family verdicts — the program lands in the guest kernel; spec §6 erratum 2026-10-01)* |
 | AMR-022 | `rootless-socket-exposed` | high | Rootless container runtime API socket is reachable and writable (escape to an unprivileged host uid — not a host-root promise) |
+| AMR-023 | `kernel-module-loading-permitted` | high | Kernel module loading is permitted: ring 0 execution accessible via finit_module/init_module or unconstrained modules |
+| AMR-024 | `kexec-kernel-replacement-permitted` | high | Kexec kernel replacement is permitted: new kernel image can be loaded and booted directly into ring 0 |
+| AMR-025 | `raw-memory-access-permitted` | critical | Raw physical memory or port I/O access is permitted via /dev/mem, /dev/kmem, or iopl |
+| AMR-026 | `user-mode-helper-writable` | high | Kernel user-mode helper path (core_pattern or modprobe) is writable |
+| AMR-027 | `acpi-table-injection-writable` | high | ACPI table customization interface (/sys/kernel/config/acpi/table) is writable |
+| AMR-028 | `kexec-module-lockdown-bypass` | high | Kexec kernel replacement is permitted while kernel module loading is blocked (lockdown bypass; suppressed when AMR-023 fires) |
+| AMR-029 | `kernel-execution-probe-report` | info | Active kernel execution probe confirmed all tested ring 0 pathways are closed or restricted |
 
-*Notes:* the 22-id v1 catalog is complete; the id-space is append-only. AMR-021 is
-the only rule whose evidence requires an opt-in probe (`--probe-ebpf`): without the
-flag the fact never exists and the rule can never fire.
+*Notes:* the 29-id catalog (v0.2.0) is complete; the id-space is append-only. AMR-021
+and AMR-029 are rules whose evidence requires opt-in probes (`--probe-ebpf` and
+`--probe-kernel-execution` respectively): without the corresponding flag the fact never
+exists and the rule can never fire. AMR-028 is a chained bypass rule that triggers when
+kexec kernel replacement is open while module loading is blocked, but is suppressed when
+direct module loading (AMR-023) is already open to avoid redundant alerts.
 
 ## Development
 
@@ -230,12 +302,18 @@ SARIF 2.1.0). Its `--fail-on high ⇒ 1 / critical ⇒ 0` exit-code asserts are
 
 The binary is read-only with respect to the system: it never writes files (except
 `-o`), never changes kernel state. The only syscalls with any effect are the opt-in
-`--probe-syscalls` null-arg probes, `seccomp(GET_ACTION_AVAIL)` (inert), and — with
-`--probe-ebpf` — its `bpf(BPF_PROG_LOAD)` attempts (plus aya's one-time feature
-detection: a few transient bpf() calls, all fds closed immediately); `btf` additionally
-loads BTF objects into the kernel's in-memory table (freed at process exit; it never
-touches `/sys/fs/bpf` or any file). Programs are never pinned, never attached and
-fd-dropped before the process exits (crash included: exit closes fds and the kernel
-frees the program).
+`--probe-syscalls` null-arg probes, `seccomp(GET_ACTION_AVAIL)` (inert),
+`--probe-ebpf` `bpf(BPF_PROG_LOAD)` attempts (plus aya's one-time feature
+detection: a few transient bpf() calls, all fds closed immediately; `btf` additionally
+loads BTF objects into the kernel's in-memory table, freed at process exit), and
+`--probe-kernel-execution` boundary probes (`finit_module(-1)`, `init_module(NULL)`,
+`kexec_file_load(-1)`, `kexec_load(ULONG_MAX)`, `iopl(3)`).
+
+Boundary execution probing runs inside an isolated forked worker child with a 5-second
+deadline; any hung or unresponsive child is forcefully killed with `SIGKILL`. The boundary
+arguments ensure the kernel performs privilege checks and fails deterministically before
+any state can mutate. Programs are never pinned, never attached, and fd-dropped before
+the process exits.
 Findings are evidence-cited facts, and anything the tool cannot assess at the
-current privilege level says so instead of overclaiming.
+current privilege level says so instead of overclaiming. Architectural contracts and
+core tenets are permanently codified in `AGENTS.md`.
