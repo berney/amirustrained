@@ -62,7 +62,165 @@ pub fn probe_kernel_exec(cx: &Ctx) -> ProbeOutcome {
     if !cx.opts.probe_kernel_execution {
         return ProbeOutcome::empty(PROBE);
     }
+    if cx.fs.is_fixture() {
+        return simulate_fixture_probe(cx);
+    }
     run_isolated_probe()
+}
+
+pub fn simulate_fixture_probe(cx: &Ctx) -> ProbeOutcome {
+    let modules_disabled = cx
+        .prior
+        .facts
+        .get("kernel.surface.modules_disabled")
+        .and_then(|v| v.as_bool())
+        .or_else(|| {
+            cx.fs
+                .read("/proc/sys/kernel/modules_disabled")
+                .ok()
+                .and_then(|s| crate::probes::kernel_surface::parse_sysctl_bool(&s))
+        })
+        .unwrap_or(false);
+
+    let kexec_load_disabled = cx
+        .prior
+        .facts
+        .get("kernel.surface.kexec_load_disabled")
+        .and_then(|v| v.as_bool())
+        .or_else(|| {
+            cx.fs
+                .read("/proc/sys/kernel/kexec_load_disabled")
+                .ok()
+                .and_then(|s| crate::probes::kernel_surface::parse_sysctl_bool(&s))
+        })
+        .unwrap_or(false);
+
+    let is_locked_down = cx
+        .prior
+        .facts
+        .get("kernel.surface.lockdown")
+        .or_else(|| cx.prior.facts.get("lsm.lockdown"))
+        .and_then(|v| v.as_str())
+        .map(|s| matches!(s, "integrity" | "confidentiality"))
+        .or_else(|| {
+            cx.fs
+                .read("/sys/kernel/security/lockdown")
+                .ok()
+                .and_then(|s| crate::probes::kernel_surface::parse_lockdown(&s))
+                .map(|s| matches!(s.as_str(), "integrity" | "confidentiality"))
+        })
+        .unwrap_or(false);
+
+    let has_cap_rawio = cx
+        .prior
+        .facts
+        .get("capabilities.effective")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().any(|c| c.as_str() == Some("cap_sys_rawio")))
+        .unwrap_or_else(|| cx.os.is_root());
+
+    let finit_module = if modules_disabled || is_locked_down {
+        SyscallResult {
+            status: Status::Denied,
+            errno: libc::EPERM,
+            error_name: "EPERM".to_string(),
+        }
+    } else {
+        SyscallResult {
+            status: Status::Permitted,
+            errno: 0,
+            error_name: String::new(),
+        }
+    };
+
+    let init_module = if modules_disabled || is_locked_down {
+        SyscallResult {
+            status: Status::Denied,
+            errno: libc::EPERM,
+            error_name: "EPERM".to_string(),
+        }
+    } else {
+        SyscallResult {
+            status: Status::Permitted,
+            errno: 0,
+            error_name: String::new(),
+        }
+    };
+
+    let kexec_file_load = if kexec_load_disabled || is_locked_down {
+        SyscallResult {
+            status: Status::Denied,
+            errno: libc::EPERM,
+            error_name: "EPERM".to_string(),
+        }
+    } else {
+        SyscallResult {
+            status: Status::Permitted,
+            errno: 0,
+            error_name: String::new(),
+        }
+    };
+
+    let kexec_load = if kexec_load_disabled || is_locked_down {
+        SyscallResult {
+            status: Status::Denied,
+            errno: libc::EPERM,
+            error_name: "EPERM".to_string(),
+        }
+    } else {
+        SyscallResult {
+            status: Status::Permitted,
+            errno: 0,
+            error_name: String::new(),
+        }
+    };
+
+    let iopl = if !is_locked_down && has_cap_rawio {
+        SyscallResult {
+            status: Status::Permitted,
+            errno: 0,
+            error_name: String::new(),
+        }
+    } else {
+        SyscallResult {
+            status: Status::Denied,
+            errno: libc::EPERM,
+            error_name: "EPERM".to_string(),
+        }
+    };
+
+    let mut o = ProbeOutcome::empty(PROBE);
+    o = o.with_fact(Fact::ok(
+        FACT_PROBE,
+        "finit_module",
+        serde_json::to_value(&finit_module).expect("serializable"),
+        "finit_module".into(),
+    ));
+    o = o.with_fact(Fact::ok(
+        FACT_PROBE,
+        "init_module",
+        serde_json::to_value(&init_module).expect("serializable"),
+        "init_module".into(),
+    ));
+    o = o.with_fact(Fact::ok(
+        FACT_PROBE,
+        "kexec_file_load",
+        serde_json::to_value(&kexec_file_load).expect("serializable"),
+        "kexec_file_load".into(),
+    ));
+    o = o.with_fact(Fact::ok(
+        FACT_PROBE,
+        "kexec_load",
+        serde_json::to_value(&kexec_load).expect("serializable"),
+        "kexec_load".into(),
+    ));
+    o = o.with_fact(Fact::ok(
+        FACT_PROBE,
+        "iopl",
+        serde_json::to_value(&iopl).expect("serializable"),
+        "iopl".into(),
+    ));
+    o
 }
 
 pub fn errno_name(errno: i32) -> String {
@@ -751,6 +909,122 @@ mod tests {
             assert!(f.value.get("status").is_some());
             assert!(f.value.get("errno").is_some());
             assert!(f.value.get("error_name").is_some());
+        }
+    }
+
+    #[test]
+    fn probe_fixture_simulates_boundary_results_when_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let proc_sys = dir.path().join("proc/sys/kernel");
+        std::fs::create_dir_all(&proc_sys).unwrap();
+        std::fs::write(proc_sys.join("modules_disabled"), "1\n").unwrap();
+        std::fs::write(proc_sys.join("kexec_load_disabled"), "1\n").unwrap();
+
+        let fs = PseudoFs::new(dir.path().to_path_buf());
+        let os = RealOs;
+        let opts = Opts {
+            pid: None,
+            probe_syscalls: false,
+            probe_kernel_execution: true,
+            compact: false,
+            probe_ebpf: Vec::new(),
+            dump_filters: false,
+            probe_timeout: None,
+            fail_on: None,
+        };
+        let cx = Ctx {
+            pid: std::process::id(),
+            uid: 1000,
+            fs: &fs,
+            os: &os,
+            opts: &opts,
+            prior: Prior::default(),
+        };
+
+        let probe = KernelExec;
+        let outcome = probe.run(&cx);
+        assert_eq!(outcome.name, PROBE);
+        assert_eq!(outcome.facts.len(), 5);
+
+        for key in [
+            "finit_module",
+            "init_module",
+            "kexec_file_load",
+            "kexec_load",
+            "iopl",
+        ] {
+            let f = outcome
+                .facts
+                .iter()
+                .find(|f| f.probe == FACT_PROBE && f.key == key)
+                .unwrap();
+            assert_eq!(
+                f.value.get("status").and_then(|s| s.as_str()),
+                Some("denied")
+            );
+            assert_eq!(
+                f.value.get("errno").and_then(|s| s.as_i64()),
+                Some(libc::EPERM as i64)
+            );
+        }
+    }
+
+    #[test]
+    fn probe_fixture_simulates_permitted_when_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let proc_sys = dir.path().join("proc/sys/kernel");
+        std::fs::create_dir_all(&proc_sys).unwrap();
+        std::fs::write(proc_sys.join("modules_disabled"), "0\n").unwrap();
+        std::fs::write(proc_sys.join("kexec_load_disabled"), "0\n").unwrap();
+
+        let fs = PseudoFs::new(dir.path().to_path_buf());
+        let os = RealOs;
+        let opts = Opts {
+            pid: None,
+            probe_syscalls: false,
+            probe_kernel_execution: true,
+            compact: false,
+            probe_ebpf: Vec::new(),
+            dump_filters: false,
+            probe_timeout: None,
+            fail_on: None,
+        };
+        let mut prior = Prior::default();
+        prior.facts.insert(
+            "capabilities.effective".to_string(),
+            serde_json::json!(["cap_sys_rawio"]),
+        );
+        let cx = Ctx {
+            pid: std::process::id(),
+            uid: 0,
+            fs: &fs,
+            os: &os,
+            opts: &opts,
+            prior,
+        };
+
+        let probe = KernelExec;
+        let outcome = probe.run(&cx);
+        assert_eq!(outcome.name, PROBE);
+        assert_eq!(outcome.facts.len(), 5);
+
+        for key in [
+            "finit_module",
+            "init_module",
+            "kexec_file_load",
+            "kexec_load",
+            "iopl",
+        ] {
+            let f = outcome
+                .facts
+                .iter()
+                .find(|f| f.probe == FACT_PROBE && f.key == key)
+                .unwrap();
+            assert_eq!(
+                f.value.get("status").and_then(|s| s.as_str()),
+                Some("permitted"),
+                "key {key} must be permitted"
+            );
         }
     }
 }

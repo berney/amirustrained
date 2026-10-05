@@ -278,7 +278,7 @@ fn format_identity_header(
         .unwrap_or("unknown");
     let lockdown = report
         .fact("lsm", "lockdown")
-        .or_else(|| report.fact("kernel-surface", "lockdown"))
+        .or_else(|| report.fact("kernel.surface", "lockdown"))
         .and_then(|f| f.value.as_str())
         .unwrap_or("none");
     writeln!(
@@ -943,6 +943,26 @@ Visibility: pid_ns=host (120 procs visible, pid 1=\"/usr/lib/systemd/systemd\", 
         assert!(
             !render_text(&summary_report(true), ColorSupport::Off).contains('\x1b'),
             "Off must emit no escape bytes"
+        );
+    }
+
+    #[test]
+    fn format_identity_header_falls_back_to_kernel_surface_lockdown() {
+        let mut r = Report::blank(ScanMeta::stub(), 1);
+        let mut surface = ProbeOutcome::empty("kernel-surface");
+        surface = surface.with_fact(crate::model::Fact::ok(
+            "kernel.surface",
+            "lockdown",
+            serde_json::json!("confidentiality"),
+            "/sys/kernel/security/lockdown".into(),
+        ));
+        r.push_probe(surface);
+        let mut buf = Vec::new();
+        format_identity_header(&mut buf, &r, None, ColorSupport::Off).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(
+            s.contains("lockdown=confidentiality"),
+            "header must show fallback lockdown: {s}"
         );
     }
 

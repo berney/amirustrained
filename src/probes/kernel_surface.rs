@@ -29,14 +29,20 @@ pub fn parse_sysctl_bool(raw: &str) -> Option<bool> {
 }
 
 pub fn parse_lockdown(raw: &str) -> Option<String> {
-    let start = raw.find('[')?;
-    let rest = &raw[start + 1..];
-    let end = rest.find(']')?;
-    let mode = rest[..end].trim();
-    if mode.is_empty() {
-        None
+    let trimmed = raw.trim();
+    if let Some(start) = trimmed.find('[') {
+        let rest = &trimmed[start + 1..];
+        let end = rest.find(']')?;
+        let mode = rest[..end].trim();
+        if mode.is_empty() {
+            None
+        } else {
+            Some(mode.to_string())
+        }
+    } else if matches!(trimmed, "none" | "integrity" | "confidentiality") {
+        Some(trimmed.to_string())
     } else {
-        Some(mode.to_string())
+        None
     }
 }
 
@@ -195,6 +201,17 @@ mod tests {
         );
         assert_eq!(parse_lockdown("invalid"), None);
         assert_eq!(parse_lockdown("[]"), None);
+    }
+
+    #[test]
+    fn lockdown_parses_bare_mode() {
+        assert_eq!(parse_lockdown("none\n"), Some("none".to_string()));
+        assert_eq!(parse_lockdown("integrity\n"), Some("integrity".to_string()));
+        assert_eq!(
+            parse_lockdown("confidentiality"),
+            Some("confidentiality".to_string())
+        );
+        assert_eq!(parse_lockdown("unknown_mode\n"), None);
     }
 
     #[test]
