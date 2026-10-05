@@ -4,15 +4,18 @@ This document tracks prioritized future capability and audit milestones descoped
 
 ---
 
-## 1. Mounts & Filesystem Isolation Audit (Next Priority)
-**Theme:** Filesystem sandboxing, payload staging ground identification, and mount flag hygiene.
-- **Data Source:** `/proc/self/mountinfo`.
-- **Target Analysis:**
-  - Enumerate writable (`rw`) mount points that lack `noexec` and `nosuid` (prime staging locations for binaries, exploits, or shared libraries).
-  - Enumerate mounts with `dev` enabled in unprivileged or container contexts.
-  - Detect unmasked or sensitive pseudo-filesystem mounts (e.g. unmasked `/proc/kcore`, `/proc/sched_debug`, `/sys/firmware`, `/sys/fs/cgroup` writable).
-  - Detect shared mounts or host root leaks (`/`, `/host`, `/var/run`).
-- **Output:** Flag writable+executable mounts, suspicious mount propagation (`shared`), and missing hardening flags on `tmpfs`/`/dev/shm`.
+## 1. Mounts & Filesystem Isolation Audit (In Progress — Spec: 2026-10-06)
+**Theme:** Filesystem sandboxing, payload staging ground identification, and mount flag hygiene via `/proc/self/mountinfo`.
+- **Current Scope:**
+  - Full `/proc/self/mountinfo` parsing (mount options, in-tree root, propagation tags).
+  - Capability/DAC-driven staging detection: checks `rw`, lack of `noexec`, and $O(1)$ DAC writability (`fs.writable`).
+  - Rules `AMR-030..033` (staging, unmasked proc/sys, shared propagation, host root leaks).
+  - `Rule.verbose_only` suppression mechanism for low-priority informational posture.
+- **Follow-up Sub-Item: Recursive Filesystem Staging Hunter (`--hunt-staging [PATH]` / `--hunt-writable`)**
+  - Opt-in CLI recursive directory traversal (`fd`-style tree crawler).
+  - Bound strictly to a single filesystem (`-xdev` / `--one-file-system`).
+  - Enforce bounded depth (max depth 4), directory count cap (1,000 dirs), and strict 5-second deadline.
+  - Recursively identifies nested subdirectories/files writable by current credentials on non-`noexec` mounts.
 
 ---
 
