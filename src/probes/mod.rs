@@ -27,6 +27,7 @@ pub mod kernel_config;
 pub mod kernel_exec;
 pub mod kernel_surface;
 pub mod lsm;
+pub mod mounts;
 pub mod namespaces;
 pub mod runtime;
 pub mod seccomp;
@@ -69,6 +70,7 @@ pub fn registry(opts: &Opts) -> Vec<Arc<dyn Probe>> {
         Arc::new(vmm::Vmm),
         Arc::new(sockets::Sockets),
         Arc::new(cgroup::Cgroup),
+        Arc::new(mounts::Mounts),
         Arc::new(k8s::K8s),
         Arc::new(kernel_config::KernelConfig),
         Arc::new(kernel_surface::KernelSurface),
