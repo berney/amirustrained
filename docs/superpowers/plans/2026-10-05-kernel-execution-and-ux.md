@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Implement passive kernel config parsing (with pure-Rust gzip decompression and dual SHA-256), passive kernel attack surface inspection (modules, kexec, memory/IO, USMH, ACPI), active non-destructive boundary execution probing (`--probe-kernel-execution`, alias `--probe-kernel`), rules `AMR-022..028` (including chained kexec bypass and opt-in feedback guarantee), and an output UX overhaul (silencing probe noise, high-density identity/capability-hex header, `--compact`/`--terse` diff mode, CPU arch and `/etc/os-release` capture, and `AGENTS.md`).
+**Goal:** Implement passive kernel config parsing (with pure-Rust gzip decompression and dual SHA-256), passive kernel attack surface inspection (modules, kexec, memory/IO, USMH, ACPI), active non-destructive boundary execution probing (`--probe-kernel-execution`, alias `--probe-kernel`), rules `AMR-023..029` (including chained kexec bypass and opt-in feedback guarantee), and an output UX overhaul (silencing probe noise, high-density identity/capability-hex header, `--compact`/`--terse` diff mode, CPU arch and `/etc/os-release` capture, and `AGENTS.md`).
 
 **Architecture:** Split into modular passive probes (`kernel_config.rs`, `kernel_surface.rs`) running in the default pipeline and an active probe (`kernel_exec.rs`) running inside an isolated forked worker process under a 5-second deadline when opt-in flags are passed. Rule evaluation handles discrete findings and composite suppression logic in `rules.rs`. Output rendering in `render/text.rs` replaces probe execution noise with an identity/sandbox context header and provides a single-line compact format for fast diffing across privilege boundaries.
 
@@ -15,7 +15,7 @@
 - Non-destructive probing: active syscall tests must ONLY use kernel-validated boundary arguments (`finit_module(-1)`, `init_module(NULL)`, `kexec_file_load(-1)`, `kexec_load(ULONG_MAX)`, `iopl(3)`) that fail deterministically before mutating state.
 - Isolation: active probe MUST run in a forked worker child with a 5-second timeout; stalls must be killed via `SIGKILL` and recorded as timeouts without hanging the main scan.
 - Output contract: human mode is concise and avoids noise; machine formats (JSON/YAML/SARIF) are exhaustive and always include full hashes, option dictionaries, and syscall diagnostics.
-- Opt-in expressiveness: opt-in flags (`--probe-*`) must always emit visible human feedback explaining the outcome of the tested surface, even when the verdict is negative/closed (`AMR-028`).
+- Opt-in expressiveness: opt-in flags (`--probe-*`) must always emit visible human feedback explaining the outcome of the tested surface, even when the verdict is negative/closed (`AMR-029`).
 
 ---
 
@@ -294,7 +294,7 @@ git commit -m "feat(probes): add active isolated kernel execution boundary probe
 
 ---
 
-### Task 6: Rule Evaluation: `AMR-022` through `AMR-028` (`src/model/rules.rs`)
+### Task 6: Rule Evaluation: `AMR-023` through `AMR-029` (`src/model/rules.rs`)
 
 **Files:**
 - Modify: `src/model/rules.rs`
@@ -302,29 +302,29 @@ git commit -m "feat(probes): add active isolated kernel execution boundary probe
 
 **Interfaces:**
 - Produces:
-  - `AMR-022`: `kernel-module-loading-permitted` (High)
-  - `AMR-023`: `kexec-kernel-replacement-permitted` (High)
-  - `AMR-024`: `raw-memory-access-permitted` (Critical)
-  - `AMR-025`: `user-mode-helper-writable` (High)
-  - `AMR-026`: `acpi-table-injection-writable` (High)
-  - `AMR-027`: `kexec-module-lockdown-bypass` (High, chained, suppressed if `AMR-022` fires)
-  - `AMR-028`: `kernel-execution-probe-report` (Info, fires when opt-in probe confirms all closed)
+  - `AMR-023`: `kernel-module-loading-permitted` (High)
+  - `AMR-024`: `kexec-kernel-replacement-permitted` (High)
+  - `AMR-025`: `raw-memory-access-permitted` (Critical)
+  - `AMR-026`: `user-mode-helper-writable` (High)
+  - `AMR-027`: `acpi-table-injection-writable` (High)
+  - `AMR-028`: `kexec-module-lockdown-bypass` (High, chained, suppressed if `AMR-023` fires)
+  - `AMR-029`: `kernel-execution-probe-report` (Info, fires when opt-in probe confirms all closed)
 
 - [ ] **Step 1: Write rule engine unit tests in `src/model/rules.rs`**
 Write tests covering:
-1. `AMR-022` fires when `finit_module` is permitted or `CAP_SYS_MODULE` + config allows modules.
-2. `AMR-027` fires when modules are blocked AND kexec is permitted.
-3. `AMR-027` is SUPPRESSED when direct module loading is open (`AMR-022` fires).
-4. `AMR-028` fires under `--probe-kernel-execution` when all pathways are denied/unsupported.
+1. `AMR-023` fires when `finit_module` is permitted or `CAP_SYS_MODULE` + config allows modules.
+2. `AMR-028` fires when modules are blocked AND kexec is permitted.
+3. `AMR-028` is SUPPRESSED when direct module loading is open (`AMR-023` fires).
+4. `AMR-029` fires under `--probe-kernel-execution` when all pathways are denied/unsupported.
 
 - [ ] **Step 2: Run test to verify it fails**
 Run: `cargo test model::rules::tests::kernel_execution_rules`
 Expected: FAIL.
 
-- [ ] **Step 3: Implement rules `AMR-022` through `AMR-028` in `src/model/rules.rs`**
+- [ ] **Step 3: Implement rules `AMR-023` through `AMR-029` in `src/model/rules.rs`**
 Add rule definitions and evaluations according to spec §4.
-Wire `AMR-027` chain suppression logic.
-Wire `AMR-028` opt-in report generation when `opts.probe_kernel_execution` is active and none of `AMR-022..027` fired.
+Wire `AMR-028` chain suppression logic.
+Wire `AMR-029` opt-in report generation when `opts.probe_kernel_execution` is active and none of `AMR-023..027` fired.
 
 - [ ] **Step 4: Run tests to verify they pass**
 Run: `cargo test model::rules::tests`
@@ -333,7 +333,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 ```bash
 git add src/model/rules.rs src/model/finding.rs
-git commit -m "feat(rules): add AMR-022..AMR-028 for kernel execution and chained bypass"
+git commit -m "feat(rules): add AMR-023..AMR-029 for kernel execution and chained bypass"
 ```
 
 ---
@@ -486,9 +486,9 @@ Create simulated `/proc`, `/sys`, `/boot` files for:
 
 - [ ] **Step 2: Write scenario assertions in `tests/scenarios.rs`**
 Assert:
-- `monolithic-kernel`: `AMR-027` fires; `AMR-022` does not fire.
-- `locked-down-kernel`: `AMR-023` and `AMR-024` do not fire.
-- `hardened-microvm`: `AMR-028` fires under `--probe-kernel-execution`.
+- `monolithic-kernel`: `AMR-028` fires; `AMR-023` does not fire.
+- `locked-down-kernel`: `AMR-024` and `AMR-025` do not fire.
+- `hardened-microvm`: `AMR-029` fires under `--probe-kernel-execution`.
 
 - [ ] **Step 3: Run scenario suite to verify it passes**
 Run: `cargo test --test scenarios`
@@ -518,7 +518,7 @@ Document the repository tenets:
 - [ ] **Step 2: Update `README.md`**
 Document:
 - New CLI options: `--probe-kernel-execution` (alias `--probe-kernel`), `--compact` (alias `--terse`).
-- New rules: `AMR-022` through `AMR-028`.
+- New rules: `AMR-023` through `AMR-029`.
 - Updated terminal output examples showing the Identity Header.
 
 - [ ] **Step 3: Run full quality gates**

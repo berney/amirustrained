@@ -24,10 +24,10 @@ This specification introduces comprehensive audit capabilities for **standard, s
 3. **Active Kernel Execution Boundary Probing (`--probe-kernel-execution`, alias `--probe-kernel`):**
    - Forked worker child process isolated by a 5-second deadline.
    - Non-destructive, kernel-validated boundary syscalls: `finit_module(-1)`, `init_module(NULL)`, `kexec_file_load(-1)`, `kexec_load(ULONG_MAX)`, and `iopl(3)` (x86_64 only).
-4. **Discrete & Chained Rule Evaluation (`AMR-022` through `AMR-028`):**
+4. **Discrete & Chained Rule Evaluation (`AMR-023` through `AMR-029`):**
    - Discrete findings for modules, kexec, memory/IO, USMH, and ACPI.
-   - Chained escalation finding (`AMR-027`): flags unconstrained kexec as a bypass for disabled module loading, suppressed when direct module loading is already open.
-   - Opt-in feedback guarantee (`AMR-028`): ensures opt-in CLI runs never exit silently when all entry points are closed.
+   - Chained escalation finding (`AMR-028`): flags unconstrained kexec as a bypass for disabled module loading, suppressed when direct module loading is already open.
+   - Opt-in feedback guarantee (`AMR-029`): ensures opt-in CLI runs never exit silently when all entry points are closed.
 5. **UX Overhaul & Output Philosophy:**
    - Silence `probe <name>: ok` progress noise in default human output (moved to `--verbose`; degraded probes log concise warnings to stderr).
    - Standard **Environment & Identity Header**: UID/GID, supplemental groups with privileged GID mapping, 64-bit hexadecimal capabilities mask + mnemonics, sandboxing status, and PID namespace visibility.
@@ -68,7 +68,7 @@ graph TD
     CAP --> Facts
     UID --> Facts
 
-    Facts --> RulesEngine[src/model/rules.rs<br/>Discrete Findings AMR-022..026<br/>Chained Finding AMR-027<br/>Opt-in Verdict AMR-028]
+    Facts --> RulesEngine[src/model/rules.rs<br/>Discrete Findings AMR-023..026<br/>Chained Finding AMR-028<br/>Opt-in Verdict AMR-029]
     RulesEngine --> Renderer[src/render/*<br/>Identity Header + Concise Findings<br/>Compact Mode / Verbose Mode / Machine Formats]
 ```
 
@@ -133,24 +133,24 @@ Runs **only** when `--probe-kernel-execution` (or `--probe-kernel`) is provided.
 
 | Rule ID | Identifier | Severity | Trigger Invariants |
 | :--- | :--- | :--- | :--- |
-| **`AMR-022`** | `kernel-module-loading-permitted` | **High** | Holds `CAP_SYS_MODULE` + `modules_disabled == 0` + (`finit_module`/`init_module` permitted OR config `CONFIG_MODULES=y` with no forced sigs). |
-| **`AMR-023`** | `kexec-kernel-replacement-permitted` | **High** | Holds `CAP_SYS_BOOT` + `kexec_load_disabled == 0` + (`kexec_load` or `kexec_file_load` permitted). |
-| **`AMR-024`** | `raw-memory-access-permitted` | **Critical** | `/dev/mem` or `/dev/kmem` openable for write with lockdown off, OR `iopl(3)` returned `Ok(0)`. |
-| **`AMR-025`** | `user-mode-helper-writable` | **High** | `/proc/sys/kernel/core_pattern` or `modprobe` is writable from caller's namespace. |
-| **`AMR-026`** | `acpi-table-injection-writable` | **High** | `/sys/kernel/config/acpi/table` exists and is writable (`CONFIG_ACPI_CUSTOM_METHOD=y`). |
+| **`AMR-023`** | `kernel-module-loading-permitted` | **High** | Holds `CAP_SYS_MODULE` + `modules_disabled == 0` + (`finit_module`/`init_module` permitted OR config `CONFIG_MODULES=y` with no forced sigs). |
+| **`AMR-024`** | `kexec-kernel-replacement-permitted` | **High** | Holds `CAP_SYS_BOOT` + `kexec_load_disabled == 0` + (`kexec_load` or `kexec_file_load` permitted). |
+| **`AMR-025`** | `raw-memory-access-permitted` | **Critical** | `/dev/mem` or `/dev/kmem` openable for write with lockdown off, OR `iopl(3)` returned `Ok(0)`. |
+| **`AMR-026`** | `user-mode-helper-writable` | **High** | `/proc/sys/kernel/core_pattern` or `modprobe` is writable from caller's namespace. |
+| **`AMR-027`** | `acpi-table-injection-writable` | **High** | `/sys/kernel/config/acpi/table` exists and is writable (`CONFIG_ACPI_CUSTOM_METHOD=y`). |
 
-### 4.2 Chained Escalation Finding (`AMR-027`)
+### 4.2 Chained Escalation Finding (`AMR-028`)
 - **Identifier:** `kexec-module-lockdown-bypass`
 - **Severity:** **High**
 - **Trigger Conditions:**
-  1. Direct module loading is **CLOSED** (`AMR-022` does NOT fire: e.g. `CONFIG_MODULES=n`, `modules_disabled=1`, `module.sig_enforce=1`, or active probe denied).
-  2. Kexec replacement is **OPEN** (`AMR-023` fires: `CAP_SYS_BOOT`, lockdown off, syscall permitted).
-- **Suppression Invariant:** If direct module loading is **OPEN** (`AMR-022` fires), `AMR-027` is **strictly suppressed** to eliminate redundant noise (direct Ring 0 is already reported).
+  1. Direct module loading is **CLOSED** (`AMR-023` does NOT fire: e.g. `CONFIG_MODULES=n`, `modules_disabled=1`, `module.sig_enforce=1`, or active probe denied).
+  2. Kexec replacement is **OPEN** (`AMR-024` fires: `CAP_SYS_BOOT`, lockdown off, syscall permitted).
+- **Suppression Invariant:** If direct module loading is **OPEN** (`AMR-023` fires), `AMR-028` is **strictly suppressed** to eliminate redundant noise (direct Ring 0 is already reported).
 
-### 4.3 Opt-In Execution Report Finding (`AMR-028`)
+### 4.3 Opt-In Execution Report Finding (`AMR-029`)
 - **Identifier:** `kernel-execution-probe-report`
 - **Severity:** **Info**
-- **Trigger Conditions:** `--probe-kernel-execution` was specified on CLI, but **none** of `AMR-022..027` fired (all Ring 0 pathways verified closed). Emits explicit human-visible confirmation that module loading, kexec, and raw memory access were actively tested and confirmed denied.
+- **Trigger Conditions:** `--probe-kernel-execution` was specified on CLI, but **none** of `AMR-023..027` fired (all Ring 0 pathways verified closed). Emits explicit human-visible confirmation that module loading, kexec, and raw memory access were actively tested and confirmed denied.
 
 ---
 
@@ -182,8 +182,8 @@ Visibility: pid_ns=isolated (59 procs visible, pid 1="/sbin/fireworks-init", pro
 ### 5.3 Diffable Single-Line Mode (`--compact`, alias `--terse`)
 CLI flag `--compact` (with alias `--terse`) switches the finding presentation to one line per finding:
 ```text
-HIGH     AMR-022 kernel-module-loading-permitted: finit_module permitted (CAP_SYS_MODULE, modules_disabled=0)
-CRITICAL AMR-024 raw-memory-access-permitted: /dev/mem writable (lockdown=none)
+HIGH     AMR-023 kernel-module-loading-permitted: finit_module permitted (CAP_SYS_MODULE, modules_disabled=0)
+CRITICAL AMR-025 raw-memory-access-permitted: /dev/mem writable (lockdown=none)
 INFO     AMR-012 landlock-abi-available: ABI 10
 ```
 This enables `diff -u before.txt after.txt` to clearly show gained privileges and new findings after executing an exploit or container escape.
@@ -209,8 +209,8 @@ A repository-level `AGENTS.md` file will permanently codify these tenets:
    - Identity header formatting and hex bitmask formatting tests.
 2. **Fixture-Driven Scenario Tests (`tests/scenarios.rs`):**
    - New scenario fixtures simulating various kernel security states:
-     - `monolithic-kernel`: `/proc/modules` absent, `CONFIG_MODULES=n` in config, kexec enabled. Asserts `AMR-027` fires and `AMR-022` does not.
-     - `locked-down-kernel`: `lockdown=integrity`, `CONFIG_KEXEC_SIG_FORCE=y`, `/dev/mem` unopenable. Asserts `AMR-023` and `AMR-024` do NOT fire.
-     - `hardened-microvm`: `modules_disabled=1`, `kexec_load_disabled=1`, unprivileged user. Asserts `AMR-028` fires under `--probe-kernel-execution`.
+     - `monolithic-kernel`: `/proc/modules` absent, `CONFIG_MODULES=n` in config, kexec enabled. Asserts `AMR-028` fires and `AMR-023` does not.
+     - `locked-down-kernel`: `lockdown=integrity`, `CONFIG_KEXEC_SIG_FORCE=y`, `/dev/mem` unopenable. Asserts `AMR-024` and `AMR-025` do NOT fire.
+     - `hardened-microvm`: `modules_disabled=1`, `kexec_load_disabled=1`, unprivileged user. Asserts `AMR-029` fires under `--probe-kernel-execution`.
 3. **Live Smoke Tests:**
    - Execute on the host workstation and in test containers to verify clean, non-noisy terminal output, correct identity headers, and safe active probe execution.
