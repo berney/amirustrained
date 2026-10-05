@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -174,6 +175,145 @@ pub fn errno_of(e: &ProbeIo) -> Option<i32> {
     }
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MountEntry {
+    pub mount_id: u32,
+    pub parent_id: u32,
+    pub major_minor: String,
+    pub root: String,
+    pub mount_point: String,
+    pub mount_options: Vec<String>,
+    pub optional_fields: Vec<String>,
+    pub fstype: String,
+    pub mount_source: String,
+    pub super_options: Vec<String>,
+}
+
+#[allow(dead_code)]
+/// Decodes Linux procfs octal escape sequences (e.g. `\040` -> space, `\011` -> tab, `\012` -> newline, `\134` -> `\`).
+pub fn unescape_octal(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 3 < bytes.len() {
+            let b1 = bytes[i + 1];
+            let b2 = bytes[i + 2];
+            let b3 = bytes[i + 3];
+            if (b'0'..=b'7').contains(&b1)
+                && (b'0'..=b'7').contains(&b2)
+                && (b'0'..=b'7').contains(&b3)
+            {
+                let val = (b1 - b'0') * 64 + (b2 - b'0') * 8 + (b3 - b'0');
+                out.push(val);
+                i += 4;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+#[allow(dead_code)]
+/// Parses `/proc/[pid]/mountinfo` content, falling back to legacy `/proc/mounts` format.
+pub fn parse_mountinfo(content: &str) -> Vec<MountEntry> {
+    let mut entries = Vec::new();
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+        if tokens.is_empty() {
+            continue;
+        }
+
+        if let Some(dash_idx) = tokens.iter().position(|&t| t == "-") {
+            // Standard mountinfo format:
+            // Left: mount_id parent_id major_minor root mount_point mount_options [optional_fields...]
+            // Right: fstype mount_source [super_options]
+            let left = &tokens[..dash_idx];
+            let right = &tokens[dash_idx + 1..];
+
+            if left.len() < 6 || right.len() < 2 {
+                continue;
+            }
+
+            let Ok(mount_id) = left[0].parse::<u32>() else {
+                continue;
+            };
+            let Ok(parent_id) = left[1].parse::<u32>() else {
+                continue;
+            };
+            let major_minor = left[2].to_string();
+            let root = unescape_octal(left[3]);
+            let mount_point = unescape_octal(left[4]);
+            let mount_options = left[5]
+                .split(',')
+                .filter(|opt| !opt.is_empty())
+                .map(String::from)
+                .collect();
+            let optional_fields = left[6..].iter().map(|&s| s.to_string()).collect();
+
+            let fstype = right[0].to_string();
+            let mount_source = unescape_octal(right[1]);
+            let super_options = if right.len() > 2 {
+                right[2]
+                    .split(',')
+                    .filter(|opt| !opt.is_empty())
+                    .map(String::from)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+
+            entries.push(MountEntry {
+                mount_id,
+                parent_id,
+                major_minor,
+                root,
+                mount_point,
+                mount_options,
+                optional_fields,
+                fstype,
+                mount_source,
+                super_options,
+            });
+        } else if tokens.len() >= 4 {
+            // Legacy /proc/mounts format:
+            // source mount_point fstype options [freq passno]
+            let mount_source = unescape_octal(tokens[0]);
+            let mount_point = unescape_octal(tokens[1]);
+            let fstype = tokens[2].to_string();
+            let mount_options = tokens[3]
+                .split(',')
+                .filter(|opt| !opt.is_empty())
+                .map(String::from)
+                .collect();
+
+            entries.push(MountEntry {
+                mount_id: 0,
+                parent_id: 0,
+                major_minor: String::new(),
+                root: "/".into(),
+                mount_point,
+                mount_options,
+                optional_fields: Vec::new(),
+                fstype,
+                mount_source,
+                super_options: Vec::new(),
+            });
+        }
+    }
+
+    entries
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,5 +467,133 @@ mod tests {
             fs.read("/proc/99/status").unwrap(),
             "CapEff:\t00000000ffffffff",
         );
+    }
+    mod mountinfo {
+        use super::*;
+
+        #[test]
+        fn test_unescape_octal() {
+            assert_eq!(unescape_octal(r"foo\040bar"), "foo bar");
+            assert_eq!(
+                unescape_octal(r"tab\011newline\012slash\134"),
+                "tab\tnewline\nslash\\"
+            );
+            assert_eq!(unescape_octal("/var/run"), "/var/run");
+            assert_eq!(unescape_octal(r"foo\04"), r"foo\04");
+            assert_eq!(unescape_octal(r"foo\"), r"foo\");
+            assert_eq!(unescape_octal(r"foo\899"), r"foo\899");
+        }
+
+        #[test]
+        fn test_parse_mountinfo_11_field_with_optional() {
+            let line = "23 61 0:22 / /sys rw,nosuid shared:1 master:2 - sysfs sysfs rw\n";
+            let entries = parse_mountinfo(line);
+            assert_eq!(entries.len(), 1);
+            let e = &entries[0];
+            assert_eq!(e.mount_id, 23);
+            assert_eq!(e.parent_id, 61);
+            assert_eq!(e.major_minor, "0:22");
+            assert_eq!(e.root, "/");
+            assert_eq!(e.mount_point, "/sys");
+            assert_eq!(e.mount_options, vec!["rw", "nosuid"]);
+            assert_eq!(e.optional_fields, vec!["shared:1", "master:2"]);
+            assert_eq!(e.fstype, "sysfs");
+            assert_eq!(e.mount_source, "sysfs");
+            assert_eq!(e.super_options, vec!["rw"]);
+        }
+
+        #[test]
+        fn test_parse_mountinfo_10_field_without_optional() {
+            let line = "27 20 0:25 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw\n";
+            let entries = parse_mountinfo(line);
+            assert_eq!(entries.len(), 1);
+            let e = &entries[0];
+            assert_eq!(e.mount_id, 27);
+            assert_eq!(e.parent_id, 20);
+            assert_eq!(e.major_minor, "0:25");
+            assert_eq!(e.root, "/");
+            assert_eq!(e.mount_point, "/proc");
+            assert_eq!(
+                e.mount_options,
+                vec!["rw", "nosuid", "nodev", "noexec", "relatime"]
+            );
+            assert!(e.optional_fields.is_empty());
+            assert_eq!(e.fstype, "proc");
+            assert_eq!(e.mount_source, "proc");
+            assert_eq!(e.super_options, vec!["rw"]);
+        }
+
+        #[test]
+        fn test_parse_mountinfo_legacy_mounts_fallback() {
+            let line = "proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n\
+                        /dev/sda1 /mnt ext4 rw\n";
+            let entries = parse_mountinfo(line);
+            assert_eq!(entries.len(), 2);
+            assert_eq!(
+                entries[0],
+                MountEntry {
+                    mount_id: 0,
+                    parent_id: 0,
+                    major_minor: String::new(),
+                    root: "/".into(),
+                    mount_point: "/proc".into(),
+                    mount_options: vec![
+                        "rw".into(),
+                        "nosuid".into(),
+                        "nodev".into(),
+                        "noexec".into(),
+                        "relatime".into()
+                    ],
+                    optional_fields: Vec::new(),
+                    fstype: "proc".into(),
+                    mount_source: "proc".into(),
+                    super_options: Vec::new(),
+                }
+            );
+            assert_eq!(
+                entries[1],
+                MountEntry {
+                    mount_id: 0,
+                    parent_id: 0,
+                    major_minor: String::new(),
+                    root: "/".into(),
+                    mount_point: "/mnt".into(),
+                    mount_options: vec!["rw".into()],
+                    optional_fields: Vec::new(),
+                    fstype: "ext4".into(),
+                    mount_source: "/dev/sda1".into(),
+                    super_options: Vec::new(),
+                }
+            );
+        }
+
+        #[test]
+        fn test_parse_mountinfo_octal_unescaping() {
+            let line = "40 20 8:1 /dir\\040root /mount\\040point rw - ext4 /dev/disk\\0401 rw\n";
+            let entries = parse_mountinfo(line);
+            assert_eq!(entries.len(), 1);
+            let e = &entries[0];
+            assert_eq!(e.root, "/dir root");
+            assert_eq!(e.mount_point, "/mount point");
+            assert_eq!(e.mount_source, "/dev/disk 1");
+        }
+
+        #[test]
+        fn test_parse_mountinfo_malformed_lines() {
+            let content = "\n\
+                           \n\
+                           too few tokens\n\
+                           abc 20 0:25 / /proc rw - proc proc rw\n\
+                           27 def 0:25 / /proc rw - proc proc rw\n\
+                           1 2 3 - ext4 /dev/sda1 rw\n\
+                           27 20 0:25 / /proc rw - proc\n\
+                           27 20 0:25 / /proc rw,nosuid - proc proc rw\n";
+            let entries = parse_mountinfo(content);
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].mount_id, 27);
+            assert_eq!(entries[0].parent_id, 20);
+            assert_eq!(entries[0].mount_point, "/proc");
+            assert_eq!(entries[0].fstype, "proc");
+        }
     }
 }
