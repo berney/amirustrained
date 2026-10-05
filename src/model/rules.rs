@@ -984,10 +984,15 @@ fn check_amr023(a: &Assess) -> Option<Vec<Fact>> {
 
     let has_exec = exec_finit.is_some() || exec_init.is_some();
     let config_opts = a.fact("kernel.config", "options");
-    let config_permitted = config_opts
+    let config_modules = config_opts
         .and_then(|f| f.value.get("CONFIG_MODULES"))
         .and_then(|v| v.as_str())
         == Some("y");
+    let config_sig_force = config_opts
+        .and_then(|f| f.value.get("CONFIG_MODULE_SIG_FORCE"))
+        .and_then(|v| v.as_str())
+        == Some("y");
+    let config_permitted = config_modules && !config_sig_force;
 
     let permitted = if has_exec {
         finit_permitted || init_permitted
@@ -1167,6 +1172,18 @@ fn check_amr028(a: &Assess) -> Option<Vec<Fact>> {
     {
         ev.push(f.clone());
     }
+    if let Some(f) = a.fact("kernel.config", "options")
+        && !ev.iter().any(|e| e.probe == f.probe && e.key == f.key)
+    {
+        ev.push(f.clone());
+    }
+    for key in ["finit_module", "init_module"] {
+        if let Some(f) = a.fact("kernel.exec", key)
+            && !ev.iter().any(|e| e.probe == f.probe && e.key == f.key)
+        {
+            ev.push(f.clone());
+        }
+    }
     Some(ev)
 }
 
@@ -1185,6 +1202,26 @@ fn check_amr029(a: &Assess) -> Option<Vec<Fact>> {
         }
     }
     if ev.is_empty() {
+        return None;
+    }
+
+    // AMR-029 confirms all Ring 0 pathways are verified closed.
+    // All present execution tests must report "denied", "unsupported", or "unsupported_arch".
+    // If any test reported "error" (e.g. IPC failure or timeout), it is NOT verified closed.
+    let all_closed = ev.iter().all(|f| {
+        matches!(
+            f.value.get("status").and_then(|s| s.as_str()),
+            Some("denied" | "unsupported" | "unsupported_arch")
+        )
+    });
+    if !all_closed {
+        return None;
+    }
+
+    let any_error = a.report.probes.iter().flat_map(|p| &p.facts).any(|f| {
+        f.probe == "kernel.exec" && f.value.get("status").and_then(|s| s.as_str()) == Some("error")
+    });
+    if any_error {
         return None;
     }
 
@@ -2789,6 +2826,23 @@ mod tests {
         ]);
         assert!(rule("AMR-023").evaluate(&r_cfg, false).is_some());
 
+        // Silent on passive config alone when CONFIG_MODULE_SIG_FORCE == "y"
+        let r_cfg_sig_force = report_with(&[
+            ("capabilities", "effective", json!(["cap_sys_module"])),
+            (
+                "kernel.config",
+                "options",
+                json!({
+                    "CONFIG_MODULES": "y",
+                    "CONFIG_MODULE_SIG_FORCE": "y",
+                }),
+            ),
+        ]);
+        assert!(
+            rule("AMR-023").evaluate(&r_cfg_sig_force, false).is_none(),
+            "AMR-023 must NOT fire on passive config alone when CONFIG_MODULE_SIG_FORCE == y"
+        );
+
         // Silent when modules_disabled == true
         let r_dis = report_with(&[
             ("capabilities", "effective", json!(["cap_sys_module"])),
@@ -3044,6 +3098,36 @@ mod tests {
             rule("AMR-028").evaluate(&r_active_blocked, false).is_some(),
             "AMR-028 must fire when active probe confirmed modules blocked"
         );
+
+        // AMR-028 fires when module loading is blocked passively by CONFIG_MODULE_SIG_FORCE=y and kexec is open
+        let r_sig_force_kexec = report_with(&[
+            (
+                "capabilities",
+                "effective",
+                json!(["cap_sys_boot", "cap_sys_module"]),
+            ),
+            (
+                "kernel.config",
+                "options",
+                json!({
+                    "CONFIG_MODULES": "y",
+                    "CONFIG_MODULE_SIG_FORCE": "y",
+                    "CONFIG_KEXEC": "y",
+                }),
+            ),
+        ]);
+        assert!(
+            rule("AMR-023")
+                .evaluate(&r_sig_force_kexec, false)
+                .is_none(),
+            "AMR-023 must not fire when CONFIG_MODULE_SIG_FORCE=y"
+        );
+        assert!(
+            rule("AMR-028")
+                .evaluate(&r_sig_force_kexec, false)
+                .is_some(),
+            "AMR-028 must fire when module loading is blocked by CONFIG_MODULE_SIG_FORCE=y and kexec is open"
+        );
     }
 
     #[test]
@@ -3188,5 +3272,143 @@ mod tests {
         ]);
         assert!(rule("AMR-025").evaluate(&r_unsafe, false).is_some());
         assert!(rule("AMR-029").evaluate(&r_unsafe, false).is_none());
+
+        // AMR-029 does NOT fire when any active probe test reported status == "error" (e.g. timeout / IPC failure)
+        let r_error = report_with(&[
+            (
+                "kernel.exec",
+                "finit_module",
+                json!({"status": "error", "errno": libc::ETIMEDOUT, "error_name": "ETIMEDOUT"}),
+            ),
+            (
+                "kernel.exec",
+                "init_module",
+                json!({"status": "denied", "errno": 1, "error_name": "EPERM"}),
+            ),
+            (
+                "kernel.exec",
+                "kexec_load",
+                json!({"status": "denied", "errno": 1, "error_name": "EPERM"}),
+            ),
+            (
+                "kernel.exec",
+                "kexec_file_load",
+                json!({"status": "denied", "errno": 1, "error_name": "EPERM"}),
+            ),
+            (
+                "kernel.exec",
+                "iopl",
+                json!({"status": "denied", "errno": 1, "error_name": "EPERM"}),
+            ),
+            ("kernel.surface", "dev_mem", json!("absent")),
+            ("kernel.surface", "dev_kmem", json!("absent")),
+            (
+                "kernel.surface",
+                "core_pattern",
+                json!({"pattern": "|/bin/helper", "writable": false}),
+            ),
+            (
+                "kernel.surface",
+                "modprobe",
+                json!({"path": "/sbin/modprobe", "writable": false}),
+            ),
+            ("kernel.surface", "acpi_table_writable", json!(false)),
+        ]);
+        assert!(
+            rule("AMR-029").evaluate(&r_error, false).is_none(),
+            "AMR-029 must not fire when any test has status == error"
+        );
+
+        // AMR-029 does NOT fire when all tests timed out / errored
+        let r_all_error = report_with(&[
+            (
+                "kernel.exec",
+                "finit_module",
+                json!({"status": "error", "errno": libc::ETIMEDOUT, "error_name": "ETIMEDOUT"}),
+            ),
+            (
+                "kernel.exec",
+                "init_module",
+                json!({"status": "error", "errno": libc::ETIMEDOUT, "error_name": "ETIMEDOUT"}),
+            ),
+            (
+                "kernel.exec",
+                "kexec_load",
+                json!({"status": "error", "errno": libc::ETIMEDOUT, "error_name": "ETIMEDOUT"}),
+            ),
+            (
+                "kernel.exec",
+                "kexec_file_load",
+                json!({"status": "error", "errno": libc::ETIMEDOUT, "error_name": "ETIMEDOUT"}),
+            ),
+            (
+                "kernel.exec",
+                "iopl",
+                json!({"status": "error", "errno": libc::ETIMEDOUT, "error_name": "ETIMEDOUT"}),
+            ),
+            ("kernel.surface", "dev_mem", json!("absent")),
+            ("kernel.surface", "dev_kmem", json!("absent")),
+            (
+                "kernel.surface",
+                "core_pattern",
+                json!({"pattern": "|/bin/helper", "writable": false}),
+            ),
+            (
+                "kernel.surface",
+                "modprobe",
+                json!({"path": "/sbin/modprobe", "writable": false}),
+            ),
+            ("kernel.surface", "acpi_table_writable", json!(false)),
+        ]);
+        assert!(
+            rule("AMR-029").evaluate(&r_all_error, false).is_none(),
+            "AMR-029 must not fire when all tests timed out / errored"
+        );
+
+        // AMR-029 fires when tests are a combination of denied and unsupported
+        let r_unsupported = report_with(&[
+            (
+                "kernel.exec",
+                "finit_module",
+                json!({"status": "unsupported", "errno": libc::ENOSYS, "error_name": "ENOSYS"}),
+            ),
+            (
+                "kernel.exec",
+                "init_module",
+                json!({"status": "denied", "errno": 1, "error_name": "EPERM"}),
+            ),
+            (
+                "kernel.exec",
+                "kexec_load",
+                json!({"status": "denied", "errno": 1, "error_name": "EPERM"}),
+            ),
+            (
+                "kernel.exec",
+                "kexec_file_load",
+                json!({"status": "unsupported", "errno": libc::ENOSYS, "error_name": "ENOSYS"}),
+            ),
+            (
+                "kernel.exec",
+                "iopl",
+                json!({"status": "unsupported_arch", "errno": libc::ENOSYS, "error_name": "ENOSYS"}),
+            ),
+            ("kernel.surface", "dev_mem", json!("absent")),
+            ("kernel.surface", "dev_kmem", json!("absent")),
+            (
+                "kernel.surface",
+                "core_pattern",
+                json!({"pattern": "|/bin/helper", "writable": false}),
+            ),
+            (
+                "kernel.surface",
+                "modprobe",
+                json!({"path": "/sbin/modprobe", "writable": false}),
+            ),
+            ("kernel.surface", "acpi_table_writable", json!(false)),
+        ]);
+        assert!(
+            rule("AMR-029").evaluate(&r_unsupported, false).is_some(),
+            "AMR-029 must fire when all pathways are verified denied, unsupported, or unsupported_arch"
+        );
     }
 }
