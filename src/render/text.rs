@@ -428,6 +428,7 @@ fn summary_block(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::GroupEntry;
     #[test]
     fn minimal_text_suppresses_probe_ok_lines() {
         let mut buf = vec![];
@@ -552,8 +553,18 @@ mod tests {
             ScanMeta {
                 target_pid: 1,
                 uid,
+                user: Some(if uid == 0 {
+                    "root".into()
+                } else {
+                    "user".into()
+                }),
+                full_name: None,
                 gid: 0,
-                groups: vec![0],
+                group: Some("root".into()),
+                groups: vec![GroupEntry {
+                    gid: 0,
+                    name: Some("root".into()),
+                }],
                 timestamp: "123".into(),
                 kernel: kernel.into(),
                 arch: arch.into(),

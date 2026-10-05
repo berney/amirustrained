@@ -83,6 +83,35 @@ pub fn parse_etc_group(content: &str) -> HashMap<u32, String> {
     map
 }
 
+/// Parses `/etc/passwd` lines into a UID -> (username, Option<full_name>) map.
+pub fn parse_etc_passwd_full(content: &str) -> HashMap<u32, (String, Option<String>)> {
+    let mut map = HashMap::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let parts: Vec<&str> = line.split(':').collect();
+        if parts.len() >= 3 {
+            let name = parts[0].trim().to_string();
+            let full_name = if parts.len() >= 5 {
+                let gecos = parts[4].split(',').next().unwrap_or("").trim();
+                if gecos.is_empty() {
+                    None
+                } else {
+                    Some(gecos.to_string())
+                }
+            } else {
+                None
+            };
+            if let Ok(uid) = parts[2].trim().parse::<u32>() {
+                map.insert(uid, (name, full_name));
+            }
+        }
+    }
+    map
+}
+
 /// Parses `/etc/passwd` lines into a UID -> user name map.
 pub fn parse_etc_passwd(content: &str) -> HashMap<u32, String> {
     let mut map = HashMap::new();

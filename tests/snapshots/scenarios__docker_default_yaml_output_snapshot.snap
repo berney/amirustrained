@@ -9,7 +9,10 @@ tool:
 scan:
   targetPid: <targetPid>
   uid: <uid>
+  user: <user>
+  fullName: <fullName>
   gid: <gid>
+  group: <group>
   groups: <groups>
   timestamp: <timestamp>
   kernel: <kernel>

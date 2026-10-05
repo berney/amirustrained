@@ -9,13 +9,23 @@ pub struct Tool {
     pub version: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupEntry {
+    pub gid: u32,
+    pub name: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanMeta {
     pub target_pid: u32,
     pub uid: u32,
+    pub user: Option<String>,
+    pub full_name: Option<String>,
     pub gid: u32,
-    pub groups: Vec<u32>,
+    pub group: Option<String>,
+    pub groups: Vec<GroupEntry>,
     pub timestamp: String,
     pub kernel: String,
     pub arch: String,
@@ -55,8 +65,14 @@ impl ScanMeta {
         ScanMeta {
             target_pid: 0,
             uid: 0,
+            user: Some("root".into()),
+            full_name: Some("root".into()),
             gid: 0,
-            groups: vec![0],
+            group: Some("root".into()),
+            groups: vec![GroupEntry {
+                gid: 0,
+                name: Some("root".into()),
+            }],
             timestamp: "T".into(),
             kernel: "K".into(),
             arch: "A".into(),
@@ -124,8 +140,20 @@ mod tests {
         let meta = ScanMeta {
             target_pid: 1234,
             uid: 1000,
+            user: Some("user".into()),
+            full_name: Some("User Name".into()),
             gid: 1000,
-            groups: vec![1000, 10],
+            group: Some("user".into()),
+            groups: vec![
+                GroupEntry {
+                    gid: 1000,
+                    name: Some("user".into()),
+                },
+                GroupEntry {
+                    gid: 10,
+                    name: Some("wheel".into()),
+                },
+            ],
             timestamp: "1234567890".into(),
             kernel: "6.8.0".into(),
             arch: "x86_64".into(),

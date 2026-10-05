@@ -158,11 +158,47 @@ pub fn scan_with_probes(
                     .collect(),
             )
         });
+    let passwd_map = fs
+        .read("/etc/passwd")
+        .ok()
+        .map(|s| crate::probes::uidmap::parse_etc_passwd_full(&s));
+    let group_map = fs
+        .read("/etc/group")
+        .ok()
+        .map(|s| crate::probes::uidmap::parse_etc_group(&s));
+
+    let (user, full_name) = match passwd_map.as_ref().and_then(|m| m.get(&uid)) {
+        Some((name, fname)) => (Some(name.clone()), fname.clone()),
+        None => (
+            if uid == 0 { Some("root".into()) } else { None },
+            if uid == 0 { Some("root".into()) } else { None },
+        ),
+    };
+
+    let group = group_map
+        .as_ref()
+        .and_then(|m| m.get(&gid).cloned())
+        .or_else(|| if gid == 0 { Some("root".into()) } else { None });
+
+    let groups_entries: Vec<crate::model::GroupEntry> = groups
+        .into_iter()
+        .map(|g| {
+            let name = group_map
+                .as_ref()
+                .and_then(|m| m.get(&g).cloned())
+                .or_else(|| if g == 0 { Some("root".into()) } else { None });
+            crate::model::GroupEntry { gid: g, name }
+        })
+        .collect();
+
     let meta = ScanMeta {
         target_pid,
         uid,
+        user,
+        full_name,
         gid,
-        groups,
+        group,
+        groups: groups_entries,
         timestamp: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs().to_string())
