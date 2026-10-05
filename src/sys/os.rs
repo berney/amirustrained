@@ -8,7 +8,7 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use crate::sys::fs::ProbeIo;
+use crate::sys::fs::{ProbeIo, PseudoFs};
 use serde::Serialize;
 
 #[derive(Clone, Debug, Default)]
@@ -471,6 +471,62 @@ fn connect_uds_timeout(
     Ok(std::os::unix::net::UnixStream::from(owned))
 }
 
+fn strip_quotes(s: &str) -> &str {
+    let s = s.trim();
+    if (s.starts_with('"') && s.ends_with('"') && s.len() >= 2)
+        || (s.starts_with('\'') && s.ends_with('\'') && s.len() >= 2)
+    {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    }
+}
+
+fn parse_os_release_content(content: &str) -> Option<String> {
+    let mut pretty_name = None;
+    let mut name = None;
+    let mut version_id = None;
+    let mut version = None;
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((k, v)) = line.split_once('=') {
+            let val = strip_quotes(v);
+            match k.trim() {
+                "PRETTY_NAME" => pretty_name = Some(val.to_string()),
+                "NAME" => name = Some(val.to_string()),
+                "VERSION_ID" => version_id = Some(val.to_string()),
+                "VERSION" => version = Some(val.to_string()),
+                _ => {}
+            }
+        }
+    }
+
+    if let Some(pretty) = pretty_name.filter(|p| !p.is_empty()) {
+        return Some(pretty);
+    }
+
+    match (name, version_id.or(version)) {
+        (Some(n), Some(v)) if !n.is_empty() && !v.is_empty() => Some(format!("{n} {v}")),
+        (Some(n), _) if !n.is_empty() => Some(n),
+        _ => None,
+    }
+}
+
+/// Read and parse distribution identity from `/etc/os-release` (fallback `/usr/lib/os-release`).
+pub fn parse_os_release(fs: &PseudoFs) -> Option<String> {
+    ["/etc/os-release", "/usr/lib/os-release"]
+        .into_iter()
+        .find_map(|path| {
+            fs.read(path)
+                .ok()
+                .and_then(|c| parse_os_release_content(&c))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -712,5 +768,72 @@ mod tests {
             http_body(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nab"),
             "ab" // read cap truncated the 4-byte chunk after 2 bytes
         );
+    }
+
+    #[test]
+    fn os_release_parsing() {
+        let dir = tempfile::tempdir().unwrap();
+        let fs = PseudoFs::new(dir.path().into());
+
+        // 1. Missing files: returns None
+        assert_eq!(parse_os_release(&fs), None);
+
+        // 2. Standard PRETTY_NAME with double quotes
+        let etc = dir.path().join("etc");
+        std::fs::create_dir_all(&etc).unwrap();
+        let os_release_path = etc.join("os-release");
+        std::fs::write(
+            &os_release_path,
+            "PRETTY_NAME=\"Ubuntu 22.04.4 LTS\"\nNAME=\"Ubuntu\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            parse_os_release(&fs),
+            Some("Ubuntu 22.04.4 LTS".to_string())
+        );
+
+        // 3. Single quotes stripping
+        std::fs::write(&os_release_path, "PRETTY_NAME='Alpine Linux v3.19'\n").unwrap();
+        assert_eq!(
+            parse_os_release(&fs),
+            Some("Alpine Linux v3.19".to_string())
+        );
+
+        // 4. Unquoted PRETTY_NAME
+        std::fs::write(&os_release_path, "PRETTY_NAME=Debian\n").unwrap();
+        assert_eq!(parse_os_release(&fs), Some("Debian".to_string()));
+
+        // 5. Fallback to NAME + VERSION_ID when PRETTY_NAME is absent
+        std::fs::write(
+            &os_release_path,
+            "NAME=\"Debian GNU/Linux\"\nVERSION_ID=\"12\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            parse_os_release(&fs),
+            Some("Debian GNU/Linux 12".to_string())
+        );
+
+        // 6. Fallback to NAME + VERSION when VERSION_ID is absent
+        std::fs::write(
+            &os_release_path,
+            "NAME=\"Debian GNU/Linux\"\nVERSION=\"12 (bookworm)\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            parse_os_release(&fs),
+            Some("Debian GNU/Linux 12 (bookworm)".to_string())
+        );
+
+        // 7. Fallback to NAME alone
+        std::fs::write(&os_release_path, "NAME=\"Gentoo\"\n").unwrap();
+        assert_eq!(parse_os_release(&fs), Some("Gentoo".to_string()));
+
+        // 8. Fallback to /usr/lib/os-release when /etc/os-release is absent
+        std::fs::remove_file(&os_release_path).unwrap();
+        let usr_lib = dir.path().join("usr/lib");
+        std::fs::create_dir_all(&usr_lib).unwrap();
+        std::fs::write(usr_lib.join("os-release"), "PRETTY_NAME=\"Arch Linux\"\n").unwrap();
+        assert_eq!(parse_os_release(&fs), Some("Arch Linux".to_string()));
     }
 }

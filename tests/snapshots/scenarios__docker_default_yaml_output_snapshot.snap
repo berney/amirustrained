@@ -11,6 +11,8 @@ scan:
   uid: <uid>
   timestamp: <timestamp>
   kernel: <kernel>
+  arch: <arch>
+  distro: null
   complete: true
   probeTimeoutS: null
 verdict:
@@ -394,6 +396,95 @@ probes:
     key: qos
     value: besteffort
     source: /sys/fs/cgroup limits
+    status: ok
+  timedOut: false
+- name: kernel-config
+  availability:
+    state: ok
+  facts:
+  - probe: kernel.config
+    key: path
+    value: null
+    source: /proc/config.gz
+    status: ok
+  - probe: kernel.config
+    key: raw_sha256
+    value: null
+    source: /proc/config.gz
+    status: ok
+  - probe: kernel.config
+    key: uncompressed_sha256
+    value: null
+    source: /proc/config.gz
+    status: ok
+  - probe: kernel.config
+    key: options
+    value: null
+    source: /proc/config.gz
+    status: ok
+  timedOut: false
+- name: kernel-surface
+  availability:
+    state: ok
+  facts:
+  - probe: kernel.surface
+    key: modules_disabled
+    value: null
+    source: /proc/sys/kernel/modules_disabled
+    status: ok
+  - probe: kernel.surface
+    key: kexec_load_disabled
+    value: null
+    source: /proc/sys/kernel/kexec_load_disabled
+    status: ok
+  - probe: kernel.surface
+    key: kexec_loaded
+    value: null
+    source: /sys/kernel/kexec_loaded
+    status: ok
+  - probe: kernel.surface
+    key: lockdown
+    value: null
+    source: /sys/kernel/security/lockdown
+    status: ok
+  - probe: kernel.surface
+    key: dev_mem
+    value: absent
+    source: /dev/mem
+    status: ok
+  - probe: kernel.surface
+    key: dev_kmem
+    value: absent
+    source: /dev/kmem
+    status: ok
+  - probe: kernel.surface
+    key: dev_port
+    value: absent
+    source: /dev/port
+    status: ok
+  - probe: kernel.surface
+    key: core_pattern
+    value:
+      pattern: null
+      writable: false
+    source: /proc/sys/kernel/core_pattern
+    status: ok
+  - probe: kernel.surface
+    key: modprobe
+    value:
+      path: null
+      writable: false
+    source: /proc/sys/kernel/modprobe
+    status: ok
+  - probe: kernel.surface
+    key: livepatch_present
+    value: false
+    source: /sys/kernel/livepatch
+    status: ok
+  - probe: kernel.surface
+    key: acpi_table_writable
+    value: false
+    source: /sys/kernel/config/acpi/table
     status: ok
   timedOut: false
 - name: runtime

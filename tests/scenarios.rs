@@ -620,7 +620,7 @@ fn docker_privileged_text_output_snapshot() {
 /// four directly under `scan:`.
 fn normalize_scan_meta(text: &str) -> String {
     let mut out = text.to_string();
-    for key in ["timestamp", "kernel", "uid", "targetPid"] {
+    for key in ["timestamp", "kernel", "arch", "uid", "targetPid"] {
         let pat = format!("\n  {key}: ");
         if let Some(s) = out.find(&pat) {
             let v = s + pat.len();

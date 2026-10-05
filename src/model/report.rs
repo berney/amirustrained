@@ -16,9 +16,13 @@ pub struct ScanMeta {
     pub uid: u32,
     pub timestamp: String,
     pub kernel: String,
+    pub arch: String,
+    pub distro: Option<String>,
     pub complete: bool,
     pub probe_timeout_s: Option<u64>,
 }
+
+pub type ReportMeta = ScanMeta;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -51,6 +55,8 @@ impl ScanMeta {
             uid: 0,
             timestamp: "T".into(),
             kernel: "K".into(),
+            arch: "A".into(),
+            distro: None,
             complete: true,
             probe_timeout_s: None,
         }
@@ -108,5 +114,21 @@ mod tests {
             Some(13),
         )));
         assert!(r.fact("uidmap", "uidMap").is_none());
+    }
+    #[test]
+    fn scan_meta_serializes_arch_and_distro() {
+        let meta = ScanMeta {
+            target_pid: 1234,
+            uid: 1000,
+            timestamp: "1234567890".into(),
+            kernel: "6.8.0".into(),
+            arch: "x86_64".into(),
+            distro: Some("Ubuntu 22.04.4 LTS".into()),
+            complete: true,
+            probe_timeout_s: None,
+        };
+        let val = serde_json::to_value(&meta).unwrap();
+        assert_eq!(val["arch"], "x86_64");
+        assert_eq!(val["distro"], "Ubuntu 22.04.4 LTS");
     }
 }

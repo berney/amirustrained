@@ -6,7 +6,7 @@ use crate::model::*;
 use crate::opts::Opts;
 use crate::probes::Probe;
 use crate::sys::fs::PseudoFs;
-use crate::sys::os::OsApi;
+use crate::sys::os::{OsApi, parse_os_release};
 
 /// What earlier probes accumulated, snapshotted per dispatch (probes run one at
 /// a time, so building it between dispatches is race-free).
@@ -127,6 +127,7 @@ pub fn scan_with_probes(
     sink: &mut dyn FnMut(&Event),
 ) -> Report {
     let target_pid = opts.pid.unwrap_or_else(std::process::id);
+    let uname = rustix::system::uname();
     let meta = ScanMeta {
         target_pid,
         uid: unsafe {
@@ -137,10 +138,9 @@ pub fn scan_with_probes(
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs().to_string())
             .unwrap_or_default(),
-        kernel: rustix::system::uname()
-            .release()
-            .to_string_lossy()
-            .into_owned(),
+        kernel: uname.release().to_string_lossy().into_owned(),
+        arch: uname.machine().to_string_lossy().into_owned(),
+        distro: parse_os_release(&fs),
         complete: false,
         probe_timeout_s: opts.probe_timeout.map(|d| d.as_secs()),
     };

@@ -12,6 +12,8 @@ probe vmm: ok
 probe sockets: ok
 probe cgroup: ok
 probe k8s: ok
+probe kernel-config: ok
+probe kernel-surface: ok
 probe runtime: ok
 runtime docker (confidence high)
 
