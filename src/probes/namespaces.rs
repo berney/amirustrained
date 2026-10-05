@@ -32,6 +32,56 @@ fn ns_link(fs: &PseudoFs, pid: u32, ns: &str) -> Option<String> {
     fs.read_link(&format!("/proc/{pid}/ns/{ns}")).ok()
 }
 
+/// Counts numeric directory entries in `/proc` visible to this process.
+pub fn visible_pid_count(fs: &PseudoFs) -> usize {
+    fs.list_dir("/proc")
+        .map(|entries| {
+            entries
+                .into_iter()
+                .filter(|e| !e.is_empty() && e.chars().all(|c| c.is_ascii_digit()))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// Reads PID 1's cmdline, falling back to `/proc/1/comm`, then `"unknown"`.
+pub fn pid1_cmdline(fs: &PseudoFs) -> String {
+    if let Ok(bytes) = fs.read_bytes("/proc/1/cmdline") {
+        let parts: Vec<&str> = bytes
+            .split(|&b| b == 0)
+            .filter_map(|s| {
+                let s = std::str::from_utf8(s).ok()?.trim();
+                if s.is_empty() { None } else { Some(s) }
+            })
+            .collect();
+        if !parts.is_empty() {
+            return parts.join(" ");
+        }
+    }
+    if let Ok(comm) = fs.read("/proc/1/comm") {
+        let trimmed = comm.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    "unknown".to_string()
+}
+
+/// Parses `/proc/mounts` or mount options looking for `hidepid=<val>`.
+pub fn parse_hidepid(mounts_content: &str) -> String {
+    for line in mounts_content.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 4 && (parts[1] == "/proc" || parts[2] == "proc") {
+            for opt in parts[3].split(',') {
+                if let Some(val) = opt.strip_prefix("hidepid=") {
+                    return val.to_string();
+                }
+            }
+        }
+    }
+    "0".to_string()
+}
+
 /// Compares the target's namespaces against pid 1, the host root namespace:
 /// differing inodes ⇒ the process is isolated in that namespace type.
 ///
@@ -126,7 +176,34 @@ pub fn probe_namespaces(fs: &PseudoFs, os: &dyn OsApi, pid: u32) -> ProbeOutcome
             env_only: false,
         });
     }
-    o.with_fact(markers)
+    o = o.with_fact(markers);
+    let visible_procs = visible_pid_count(fs);
+    let pid1_cmd = pid1_cmdline(fs);
+    let hidepid = fs
+        .read("/proc/mounts")
+        .or_else(|_| fs.read("/proc/self/mounts"))
+        .map(|s| parse_hidepid(&s))
+        .unwrap_or_else(|_| "0".to_string());
+
+    o = o.with_fact(Fact::ok(
+        PROBE,
+        "visibleProcs",
+        serde_json::json!(visible_procs),
+        "/proc".into(),
+    ));
+    o = o.with_fact(Fact::ok(
+        PROBE,
+        "pid1Cmdline",
+        serde_json::json!(pid1_cmd),
+        "/proc/1/cmdline".into(),
+    ));
+    o = o.with_fact(Fact::ok(
+        PROBE,
+        "hidepid",
+        serde_json::json!(hidepid),
+        "/proc/mounts".into(),
+    ));
+    o
 }
 
 pub struct Namespaces;
@@ -303,7 +380,7 @@ mod tests {
         let fs = crate::sys::fs::PseudoFs::new(d.path().into());
         let o = probe_namespaces(&fs, &os_with(None), 9);
         assert_eq!(o.name, "namespaces");
-        assert_eq!(o.facts.len(), 4);
+        assert_eq!(o.facts.len(), 7);
         let iso = fact(&o, "isolated");
         assert_eq!(iso.status, FactStatus::Ok);
         for t in NS_TYPES {
@@ -332,13 +409,16 @@ mod tests {
             std::process::id(),
         );
         assert_eq!(o.name, "namespaces");
-        assert_eq!(o.facts.len(), 4);
+        assert_eq!(o.facts.len(), 7);
         assert!(o.facts.iter().all(|f| f.probe == "namespaces"));
         for key in [
             "isolated",
             "inodes",
             "cgroupNsSameAsInit",
             "containerMarkers",
+            "visibleProcs",
+            "pid1Cmdline",
+            "hidepid",
         ] {
             assert!(o.facts.iter().any(|f| f.key == key), "missing {key}");
         }
@@ -354,6 +434,29 @@ mod tests {
         let m = fact(&o, "containerMarkers");
         assert!(m.value["dockerenv"].is_boolean());
         assert!(m.value["containerEnv"].is_null() || m.value["containerEnv"].is_string());
+    }
+
+    #[test]
+    fn visibility_facts_parsing() {
+        assert_eq!(parse_hidepid("proc /proc proc rw,relatime 0 0\n"), "0");
+        assert_eq!(
+            parse_hidepid("proc /proc proc rw,relatime,hidepid=2 0 0\n"),
+            "2"
+        );
+        assert_eq!(
+            parse_hidepid("proc /proc proc rw,relatime,hidepid=invisible 0 0\n"),
+            "invisible"
+        );
+
+        let d = fixture(&[
+            ("proc/1/cmdline", "/sbin/init\0--foo\0"),
+            ("proc/mounts", "proc /proc proc rw,hidepid=2 0 0\n"),
+            ("proc/1/status", "Name: init\n"),
+            ("proc/2/status", "Name: kthreadd\n"),
+        ]);
+        let fs = crate::sys::fs::PseudoFs::new(d.path().into());
+        assert_eq!(pid1_cmdline(&fs), "/sbin/init --foo");
+        assert_eq!(visible_pid_count(&fs), 2);
     }
 
     #[test]

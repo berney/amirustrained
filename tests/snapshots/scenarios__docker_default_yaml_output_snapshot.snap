@@ -69,6 +69,21 @@ probes:
       containerEnv: null
     source: /.dockerenv + env container
     status: ok
+  - probe: namespaces
+    key: visibleProcs
+    value: 1
+    source: /proc
+    status: ok
+  - probe: namespaces
+    key: pid1Cmdline
+    value: unknown
+    source: /proc/<pid>/cmdline
+    status: ok
+  - probe: namespaces
+    key: hidepid
+    value: "0"
+    source: /proc/mounts
+    status: ok
   timedOut: false
 - name: uidmap
   availability:
@@ -99,6 +114,36 @@ probes:
     key: rootless
     value: false
     source: /proc/<pid>/uid_map
+    status: ok
+  - probe: uidmap
+    key: uid
+    value: 0
+    source: /proc/<pid>/status
+    status: ok
+  - probe: uidmap
+    key: user
+    value: root
+    source: /etc/passwd
+    status: ok
+  - probe: uidmap
+    key: gid
+    value: 0
+    source: /proc/<pid>/status
+    status: ok
+  - probe: uidmap
+    key: group
+    value: root
+    source: /etc/group
+    status: ok
+  - probe: uidmap
+    key: groups
+    value: []
+    source: /proc/<pid>/status
+    status: ok
+  - probe: uidmap
+    key: groupsFormatted
+    value: ""
+    source: /proc/<pid>/status
     status: ok
   timedOut: false
 - name: capabilities
@@ -187,6 +232,21 @@ probes:
     value: null
     source: /proc/<pid>/status
     status: degraded
+  - probe: capabilities
+    key: hex.effective
+    value: 00000000a80425fb
+    source: /proc/<pid>/status
+    status: ok
+  - probe: capabilities
+    key: hex.bounding
+    value: 00000000a80425fb
+    source: /proc/<pid>/status
+    status: ok
+  - probe: capabilities
+    key: hex.inheritable
+    value: "0000000000000000"
+    source: /proc/<pid>/status
+    status: ok
   - probe: capabilities
     key: ptraceScope
     value: null

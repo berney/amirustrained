@@ -572,6 +572,23 @@ fn normalize_pids(text: &str) -> String {
     out
 }
 
+fn normalize_host_meta(text: &str) -> String {
+    let mut out = String::new();
+    for line in text.lines() {
+        if line.starts_with("Host:       ")
+            && let Some(p) = line.find(" | ")
+        {
+            out.push_str("Host:       Linux <kernel> (<arch>)");
+            out.push_str(&line[p..]);
+            out.push('\n');
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
 /// docker-privileged through the shipped text renderer, colourless and
 /// non-verbose (which only suppresses the scan header, not the per-probe
 /// status lines): probe status, verdict line, the whole finding set with its
@@ -609,7 +626,7 @@ fn docker_privileged_text_output_snapshot() {
     );
     renderer.finish(&mut buf).expect("text renderer flushes");
     let text = String::from_utf8(buf).expect("renderer output is utf-8");
-    insta::assert_snapshot!(normalize_pids(&text));
+    insta::assert_snapshot!(normalize_host_meta(&normalize_pids(&text)));
 }
 
 /// The scan-meta block names the machine and the moment, none of it the

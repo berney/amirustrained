@@ -298,6 +298,31 @@ fn quiet_text_omits_the_meta_header() {
 }
 
 #[test]
+fn quiet_text_silences_probe_progress_and_renders_identity_header() {
+    let (code, stdout) = run(&[]);
+    assert_eq!(code, 0);
+    assert!(!stdout.contains("probe namespaces: ok"));
+    assert!(!stdout.contains("probe uidmap: ok"));
+    assert!(!stdout.contains("probe capabilities: ok"));
+
+    // Asserts 5-line Identity & Environment Header is formatted
+    assert!(stdout.contains("Host:       Linux "));
+    assert!(stdout.contains("Identity:   uid="));
+    assert!(stdout.contains("Caps:       "));
+    assert!(stdout.contains("Sandboxing: no_new_privs="));
+    assert!(stdout.contains("Visibility: pid_ns="));
+}
+
+#[test]
+fn verbose_text_includes_probe_progress_lines() {
+    let (code, stdout) = run(&["--verbose"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("probe uidmap: ok"));
+    assert!(stdout.contains("probe capabilities: ok"));
+    assert!(stdout.contains("probe kernel-surface: ok"));
+}
+
+#[test]
 fn piped_text_stdout_carries_no_ansi_escapes() {
     // The harness gives the child a pipe: `is_terminal()` is false, so the
     // renderer must emit plain bytes — `--no-color`/`NO_COLOR` change nothing

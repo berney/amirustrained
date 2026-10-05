@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::collections::HashMap;
 
 use super::Probe;
 use crate::model::{Fact, ProbeOutcome, RuntimeKind, Signal};
@@ -26,6 +27,79 @@ pub fn parse_map(s: &str) -> Vec<MapRow> {
             })
         })
         .collect()
+}
+
+/// Parses Uid, Gid, and Groups from `/proc/<pid>/status`.
+pub fn parse_status_ids(status: &str) -> (Option<u32>, Option<u32>, Vec<u32>) {
+    let mut uid = None;
+    let mut gid = None;
+    let mut groups = Vec::new();
+    for line in status.lines() {
+        let mut it = line.splitn(2, ':');
+        let (k, v) = (it.next().unwrap_or(""), it.next().unwrap_or("").trim());
+        match k {
+            "Uid" => {
+                let parts: Vec<&str> = v.split_whitespace().collect();
+                uid = parts
+                    .get(1)
+                    .or_else(|| parts.first())
+                    .and_then(|s| s.parse().ok());
+            }
+            "Gid" => {
+                let parts: Vec<&str> = v.split_whitespace().collect();
+                gid = parts
+                    .get(1)
+                    .or_else(|| parts.first())
+                    .and_then(|s| s.parse().ok());
+            }
+            "Groups" => {
+                groups = v
+                    .split_whitespace()
+                    .filter_map(|s| s.parse::<u32>().ok())
+                    .collect();
+            }
+            _ => {}
+        }
+    }
+    (uid, gid, groups)
+}
+
+/// Parses `/etc/group` lines into a GID -> group name map.
+pub fn parse_etc_group(content: &str) -> HashMap<u32, String> {
+    let mut map = HashMap::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let parts: Vec<&str> = line.split(':').collect();
+        if parts.len() >= 3 {
+            let name = parts[0].trim();
+            if let Ok(gid) = parts[2].trim().parse::<u32>() {
+                map.insert(gid, name.to_string());
+            }
+        }
+    }
+    map
+}
+
+/// Parses `/etc/passwd` lines into a UID -> user name map.
+pub fn parse_etc_passwd(content: &str) -> HashMap<u32, String> {
+    let mut map = HashMap::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let parts: Vec<&str> = line.split(':').collect();
+        if parts.len() >= 3 {
+            let name = parts[0].trim();
+            if let Ok(uid) = parts[2].trim().parse::<u32>() {
+                map.insert(uid, name.to_string());
+            }
+        }
+    }
+    map
 }
 
 pub fn probe_uidmap(fs: &PseudoFs, pid: u32) -> ProbeOutcome {
@@ -95,7 +169,101 @@ pub fn probe_uidmap(fs: &PseudoFs, pid: u32) -> ProbeOutcome {
             env_only: true,
         });
     }
-    o.with_fact(rf)
+    o = o.with_fact(rf);
+    let status_src = format!("{base}/status");
+    match fs.read(&status_src) {
+        Ok(status) => {
+            let (uid_opt, gid_opt, groups) = parse_status_ids(&status);
+            let group_map = fs
+                .read("/etc/group")
+                .ok()
+                .map(|s| parse_etc_group(&s))
+                .unwrap_or_default();
+            let user_map = fs
+                .read("/etc/passwd")
+                .ok()
+                .map(|s| parse_etc_passwd(&s))
+                .unwrap_or_default();
+
+            let uid = uid_opt.unwrap_or(0);
+            let gid = gid_opt.unwrap_or(0);
+
+            let user_name = user_map.get(&uid).cloned().unwrap_or_else(|| {
+                if uid == 0 {
+                    "root".to_string()
+                } else {
+                    "unknown".to_string()
+                }
+            });
+            let group_name = group_map.get(&gid).cloned().unwrap_or_else(|| {
+                if gid == 0 {
+                    "root".to_string()
+                } else {
+                    "unknown".to_string()
+                }
+            });
+
+            let groups_resolved: Vec<String> = groups
+                .iter()
+                .map(|g| {
+                    let gname = group_map.get(g).cloned().unwrap_or_else(|| {
+                        if *g == 0 {
+                            "root".to_string()
+                        } else {
+                            "unknown".to_string()
+                        }
+                    });
+                    format!("{g}({gname})")
+                })
+                .collect();
+
+            let groups_str = groups_resolved.join(",");
+
+            o = o.with_fact(Fact::ok(
+                "uidmap",
+                "uid",
+                serde_json::json!(uid),
+                status_src.clone(),
+            ));
+            o = o.with_fact(Fact::ok(
+                "uidmap",
+                "user",
+                serde_json::json!(user_name),
+                "/etc/passwd".into(),
+            ));
+            o = o.with_fact(Fact::ok(
+                "uidmap",
+                "gid",
+                serde_json::json!(gid),
+                status_src.clone(),
+            ));
+            o = o.with_fact(Fact::ok(
+                "uidmap",
+                "group",
+                serde_json::json!(group_name),
+                "/etc/group".into(),
+            ));
+            o = o.with_fact(Fact::ok(
+                "uidmap",
+                "groups",
+                serde_json::json!(groups_resolved),
+                status_src.clone(),
+            ));
+            o = o.with_fact(Fact::ok(
+                "uidmap",
+                "groupsFormatted",
+                serde_json::json!(groups_str),
+                status_src,
+            ));
+        }
+        Err(e) => {
+            let errno = errno_of(&e);
+            for key in ["uid", "user", "gid", "group", "groups", "groupsFormatted"] {
+                o = o.with_fact(Fact::unavailable("uidmap", key, status_src.clone(), errno));
+            }
+        }
+    }
+    o
 }
 
 pub struct Uidmap;
@@ -261,9 +429,20 @@ mod tests {
         // Structural shape only: never assert the host's actual mapping values.
         let o = probe_uidmap(&crate::sys::fs::PseudoFs::real(), std::process::id());
         assert_eq!(o.name, "uidmap");
-        assert_eq!(o.facts.len(), 4);
+        assert_eq!(o.facts.len(), 10);
         assert!(o.facts.iter().all(|f| f.probe == "uidmap"));
-        for key in ["uidMap", "gidMap", "setgroups", "rootless"] {
+        for key in [
+            "uidMap",
+            "gidMap",
+            "setgroups",
+            "rootless",
+            "uid",
+            "user",
+            "gid",
+            "group",
+            "groups",
+            "groupsFormatted",
+        ] {
             assert!(o.facts.iter().any(|f| f.key == key), "missing fact {key}");
         }
         let rootless = o.facts.iter().find(|f| f.key == "rootless").unwrap();
@@ -273,5 +452,43 @@ mod tests {
         {
             assert!(um.value.is_array());
         }
+    }
+
+    #[test]
+    fn status_and_groups_resolution() {
+        let status =
+            "Uid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\nGroups:\t0 10 998\n";
+        let group_file = "root:x:0:\nwheel:x:10:user\ndocker:x:998:user\n";
+        let passwd_file =
+            "root:x:0:0:root:/root:/bin/bash\nuser:x:1000:1000:user:/home/user:/bin/bash\n";
+        let d = fixture(&[
+            ("proc/42/status", status),
+            ("etc/group", group_file),
+            ("etc/passwd", passwd_file),
+        ]);
+        let fs = crate::sys::fs::PseudoFs::new(d.path().into());
+        let o = probe_uidmap(&fs, 42);
+        assert_eq!(o.facts.iter().find(|f| f.key == "uid").unwrap().value, 1000);
+        assert_eq!(
+            o.facts.iter().find(|f| f.key == "user").unwrap().value,
+            "user"
+        );
+        assert_eq!(o.facts.iter().find(|f| f.key == "gid").unwrap().value, 1000);
+        assert_eq!(
+            o.facts.iter().find(|f| f.key == "group").unwrap().value,
+            "unknown"
+        );
+        assert_eq!(
+            o.facts.iter().find(|f| f.key == "groups").unwrap().value,
+            serde_json::json!(["0(root)", "10(wheel)", "998(docker)"])
+        );
+        assert_eq!(
+            o.facts
+                .iter()
+                .find(|f| f.key == "groupsFormatted")
+                .unwrap()
+                .value,
+            "0(root),10(wheel),998(docker)"
+        );
     }
 }

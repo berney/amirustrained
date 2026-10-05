@@ -1,21 +1,12 @@
 ---
 source: tests/scenarios.rs
-expression: normalize_pids(&text)
+expression: normalize_host_meta(&normalize_pids(&text))
 ---
-probe namespaces: ok
-probe uidmap: ok
-probe capabilities: ok
-probe seccomp: ok
-probe lsm: ok
-probe ebpf: ok
-probe vmm: ok
-probe sockets: ok
-probe cgroup: ok
-probe k8s: ok
-probe kernel-config: ok
-probe kernel-surface: ok
-probe runtime: ok
-runtime docker (confidence high)
+Host:       Linux <kernel> (<arch>) | distro: unknown | runtime: docker (confidence high)
+Identity:   uid=0(root) gid=0(root) groups=0(root)
+Caps:       000001ffffffffff (all 41 caps) [eff=000001ffffffffff bnd=000001ffffffffff inh=0000000000000000]
+Sandboxing: no_new_privs=0 seccomp=0(disabled) lockdown=none
+Visibility: pid_ns=isolated (1 procs visible, pid 1="unknown", procfs hidepid=0)
 
 CRIT AMR-001 container-socket-exposed: Container runtime API socket is reachable and writable
   why: The Docker/Podman API is served by the runtime daemon as root: whoever can write to the socket can create a container that mounts the entire host filesystem with full privileges — one API call from contained user to host root (the docker.sock exposure class, cf. CVE-2019-5736-era runtime escapes).

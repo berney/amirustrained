@@ -1,10 +1,10 @@
 use super::Renderer;
 use super::style::{self, ColorSupport};
-use crate::model::{Counts, Finding, Severity, Verdict};
+use crate::model::{Finding, Report, Severity, Verdict};
 use crate::pipeline::Event;
 
 #[cfg(test)]
-use crate::model::{ProbeOutcome, Report, RuntimeKind, ScanMeta, test_finding}; // via `use super::*`
+use crate::model::{Counts, ProbeOutcome, RuntimeKind, ScanMeta, test_finding}; // via `use super::*`
 
 pub struct Text {
     pub verbose: bool,
@@ -46,42 +46,42 @@ impl Renderer for Text {
                 "{} {} scanning pid {} (uid {})",
                 tool.name, tool.version, scan.target_pid, scan.uid
             )?,
-            // Probe status lines are always on (the minimal-text contract);
-            // `verbose` adds the Meta header and every fact line, an opt-in
-            // adds just the opted probe's facts.
+            // Suppress probe <name>: ok unless verbose. Degraded/unavailable
+            // probes emit single-line notices to stderr.
             Event::Probe(o) => {
-                writeln!(
-                    w,
-                    "probe {}: {}",
-                    o.name,
-                    match &o.availability {
-                        crate::model::Availability::Ok => "ok".into(),
-                        crate::model::Availability::Degraded(d) => format!("degraded: {d}"),
-                        crate::model::Availability::Unavailable(d) => format!("unavailable: {d}"),
-                    }
-                )?;
-                if self.verbose || self.optins.contains(&o.name.as_str()) {
+                if self.verbose {
+                    writeln!(
+                        w,
+                        "probe {}: {}",
+                        o.name,
+                        match &o.availability {
+                            crate::model::Availability::Ok => "ok".into(),
+                            crate::model::Availability::Degraded(d) => format!("degraded: {d}"),
+                            crate::model::Availability::Unavailable(d) =>
+                                format!("unavailable: {d}"),
+                        }
+                    )?;
                     for f in &o.facts {
                         writeln!(w, "{}", fact_line(f, self.color))?;
                     }
+                } else {
+                    match &o.availability {
+                        crate::model::Availability::Degraded(d) => {
+                            eprintln!("probe {}: degraded: {d}", o.name);
+                        }
+                        crate::model::Availability::Unavailable(d) => {
+                            eprintln!("probe {}: unavailable: {d}", o.name);
+                        }
+                        crate::model::Availability::Ok => {}
+                    }
+                    if self.optins.contains(&o.name.as_str()) {
+                        for f in &o.facts {
+                            writeln!(w, "{}", fact_line(f, self.color))?;
+                        }
+                    }
                 }
             }
-            Event::Summary {
-                verdict,
-                findings,
-                counts,
-                complete,
-                report,
-            } => summary_block(
-                w,
-                verdict.as_ref(),
-                findings,
-                counts,
-                *complete,
-                // Spec §5: a non-complete scan only ever means timed-out probes.
-                report.probes.iter().filter(|p| p.timed_out).count(),
-                self.color,
-            )?,
+            Event::Summary { report, .. } => summary_block(w, report, self.color)?,
             _ => {}
         }
         Ok(())
@@ -122,7 +122,205 @@ fn slug_of(id: &str) -> &'static str {
         .map_or("-", |r| r.slug)
 }
 
-/// Spec §9 summary layout: verdict line, timeout-count INCOMPLETE banner
+/// Formats the 5-line Environment & Identity Header at the top of the report:
+///
+/// Host:       Linux <release> (<arch>) | distro: <distro> | runtime: <runtime> (confidence <conf>)
+/// Identity:   uid=<uid>(<user>) gid=<gid>(<group>) groups=<groups>
+/// Caps:       <eff_hex> (<count> caps) [eff=<eff_hex> bnd=<bnd_hex> inh=<inh_hex>]
+/// Sandboxing: no_new_privs=<0|1> seccomp=<mode> lockdown=<mode>
+/// Visibility: pid_ns=<isolated|host> (<N> procs visible, pid 1="<cmd>", procfs hidepid=<val>)
+fn format_identity_header(
+    w: &mut dyn std::io::Write,
+    report: &Report,
+    verdict: Option<&Verdict>,
+    color: ColorSupport,
+) -> std::io::Result<()> {
+    let pipe = color.fg(style::DIM_ALUMINUM, "|");
+
+    // Line 1: Host
+    let kernel = if report.scan.kernel.is_empty() {
+        "unknown"
+    } else {
+        &report.scan.kernel
+    };
+    let linux_str = if kernel.starts_with("Linux") {
+        kernel.to_string()
+    } else {
+        format!("Linux {kernel}")
+    };
+    let arch = if report.scan.arch.is_empty() {
+        "unknown"
+    } else {
+        &report.scan.arch
+    };
+    let host_os = format!("{linux_str} ({arch})");
+    let distro = report.scan.distro.as_deref().unwrap_or("unknown");
+    let (runtime_str, conf) = match verdict {
+        Some(v) => (
+            color.fg(style::verdict_fg(v.runtime), v.runtime.as_str()),
+            v.confidence.as_str(),
+        ),
+        None => ("unknown".to_string(), "none"),
+    };
+    writeln!(
+        w,
+        "{}{} {} distro: {} {} runtime: {} (confidence {})",
+        color.fg(style::ELECTRIC_BLUE, "Host:       "),
+        host_os,
+        pipe,
+        distro,
+        pipe,
+        runtime_str,
+        conf
+    )?;
+
+    // Line 2: Identity
+    let uid = report
+        .fact("uidmap", "uid")
+        .and_then(|f| f.value.as_u64())
+        .map_or(report.scan.uid, |u| u as u32);
+    let user = report
+        .fact("uidmap", "user")
+        .and_then(|f| f.value.as_str())
+        .unwrap_or(if uid == 0 { "root" } else { "unknown" });
+    let gid = report
+        .fact("uidmap", "gid")
+        .and_then(|f| f.value.as_u64())
+        .unwrap_or(0) as u32;
+    let group = report
+        .fact("uidmap", "group")
+        .and_then(|f| f.value.as_str())
+        .unwrap_or(if gid == 0 { "root" } else { "unknown" });
+    let groups_formatted = report
+        .fact("uidmap", "groupsFormatted")
+        .and_then(|f| f.value.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .or_else(|| {
+            report
+                .fact("uidmap", "groups")
+                .and_then(|f| f.value.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                })
+                .filter(|s| !s.is_empty())
+        })
+        .unwrap_or_else(|| {
+            if uid == 0 {
+                "0(root)".into()
+            } else {
+                "none".into()
+            }
+        });
+    writeln!(
+        w,
+        "{}uid={}({}) gid={}({}) groups={}",
+        color.fg(style::ELECTRIC_BLUE, "Identity:   "),
+        uid,
+        user,
+        gid,
+        group,
+        groups_formatted
+    )?;
+
+    // Line 3: Caps
+    let eff_hex = report
+        .fact("capabilities", "hex.effective")
+        .and_then(|f| f.value.as_str())
+        .unwrap_or("0000000000000000");
+    let bnd_hex = report
+        .fact("capabilities", "hex.bounding")
+        .and_then(|f| f.value.as_str())
+        .unwrap_or("0000000000000000");
+    let inh_hex = report
+        .fact("capabilities", "hex.inheritable")
+        .and_then(|f| f.value.as_str())
+        .unwrap_or("0000000000000000");
+    let count = report
+        .fact("capabilities", "effective")
+        .and_then(|f| f.value.as_array())
+        .map_or(0, |a| a.len());
+    let caps_count_str = if count == 41 {
+        "all 41 caps".to_string()
+    } else {
+        format!("{count} caps")
+    };
+    writeln!(
+        w,
+        "{}{} ({}) [eff={} bnd={} inh={}]",
+        color.fg(style::ELECTRIC_BLUE, "Caps:       "),
+        eff_hex,
+        caps_count_str,
+        eff_hex,
+        bnd_hex,
+        inh_hex
+    )?;
+
+    // Line 4: Sandboxing
+    let nnp = report
+        .fact("capabilities", "noNewPrivs")
+        .and_then(|f| f.value.as_u64())
+        .unwrap_or(0);
+    let seccomp_str = report
+        .fact("seccomp", "mode")
+        .and_then(|f| f.value.as_str())
+        .map(|m| match m {
+            "disabled" => "0(disabled)",
+            "strict" => "1(strict)",
+            "filter" => "2(filter)",
+            other => other,
+        })
+        .unwrap_or("unknown");
+    let lockdown = report
+        .fact("lsm", "lockdown")
+        .or_else(|| report.fact("kernel-surface", "lockdown"))
+        .and_then(|f| f.value.as_str())
+        .unwrap_or("none");
+    writeln!(
+        w,
+        "{}no_new_privs={} seccomp={} lockdown={}",
+        color.fg(style::ELECTRIC_BLUE, "Sandboxing: "),
+        nnp,
+        seccomp_str,
+        lockdown
+    )?;
+
+    // Line 5: Visibility
+    let pid_ns = report
+        .fact("namespaces", "isolated")
+        .and_then(|f| f.value.get("pid"))
+        .and_then(|v| v.as_bool())
+        .map(|b| if b { "isolated" } else { "host" })
+        .unwrap_or("unknown");
+    let procs = report
+        .fact("namespaces", "visibleProcs")
+        .and_then(|f| f.value.as_u64())
+        .unwrap_or(0);
+    let pid1 = report
+        .fact("namespaces", "pid1Cmdline")
+        .and_then(|f| f.value.as_str())
+        .unwrap_or("unknown");
+    let hidepid = report
+        .fact("namespaces", "hidepid")
+        .and_then(|f| f.value.as_str())
+        .unwrap_or("0");
+    writeln!(
+        w,
+        "{}pid_ns={} ({} procs visible, pid 1=\"{}\", procfs hidepid={})",
+        color.fg(style::ELECTRIC_BLUE, "Visibility: "),
+        pid_ns,
+        procs,
+        pid1,
+        hidepid
+    )?;
+
+    Ok(())
+}
+
+/// Spec §9 summary layout: identity header, timeout-count INCOMPLETE banner
 /// directly below it when the scan did not complete (spec §5: that only ever
 /// means timed-out probes), findings severity-descending (the sort is stable,
 /// so registry order survives within a group), each finding preceded by a
@@ -130,22 +328,12 @@ fn slug_of(id: &str) -> &'static str {
 /// completion line.
 fn summary_block(
     w: &mut dyn std::io::Write,
-    verdict: Option<&Verdict>,
-    findings: &[Finding],
-    counts: &Counts,
-    complete: bool,
-    timed_out: usize,
+    report: &Report,
     color: ColorSupport,
 ) -> std::io::Result<()> {
-    if let Some(v) = verdict {
-        writeln!(
-            w,
-            "runtime {} (confidence {})",
-            color.fg(style::verdict_fg(v.runtime), v.runtime.as_str()),
-            v.confidence
-        )?;
-    }
-    if !complete {
+    format_identity_header(w, report, report.verdict.as_ref(), color)?;
+    if !report.scan.complete {
+        let timed_out = report.probes.iter().filter(|p| p.timed_out).count();
         let prefix = format!("{}{}", style::fg(style::ALERT_RED), style::BOLD);
         writeln!(
             w,
@@ -156,7 +344,7 @@ fn summary_block(
             )
         )?;
     }
-    let mut order: Vec<&Finding> = findings.iter().collect();
+    let mut order: Vec<&Finding> = report.findings.iter().collect();
     // Stable sort keeps registry order inside each severity group.
     order.sort_by_key(|f| std::cmp::Reverse(f.severity));
     for f in &order {
@@ -186,14 +374,18 @@ fn summary_block(
     writeln!(
         w,
         "{} findings (c{} h{} m{} l{} i{})",
-        counts.critical + counts.high + counts.medium + counts.low + counts.info,
-        counts.critical,
-        counts.high,
-        counts.medium,
-        counts.low,
-        counts.info
+        report.counts.critical
+            + report.counts.high
+            + report.counts.medium
+            + report.counts.low
+            + report.counts.info,
+        report.counts.critical,
+        report.counts.high,
+        report.counts.medium,
+        report.counts.low,
+        report.counts.info
     )?;
-    if complete {
+    if report.scan.complete {
         writeln!(w, "scan complete")?;
     }
     Ok(())
@@ -203,7 +395,7 @@ fn summary_block(
 mod tests {
     use super::*;
     #[test]
-    fn minimal_text_emits_probe_lines_and_summary() {
+    fn minimal_text_suppresses_probe_ok_lines() {
         let mut buf = vec![];
         let mut r = Text {
             verbose: false,
@@ -224,7 +416,7 @@ mod tests {
         )
         .unwrap();
         let s = String::from_utf8(buf).unwrap();
-        assert!(s.contains("probe uidmap: ok"));
+        assert!(!s.contains("probe uidmap: ok"));
         assert!(s.contains("scan complete"));
     }
 
@@ -284,10 +476,292 @@ mod tests {
         String::from_utf8(buf).unwrap()
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn make_test_report(
+        kernel: &str,
+        arch: &str,
+        distro: Option<&str>,
+        verdict: Option<Verdict>,
+        uid: u32,
+        user: &str,
+        gid: u32,
+        group: &str,
+        groups: Vec<&str>,
+        eff_hex: &str,
+        bnd_hex: &str,
+        inh_hex: &str,
+        caps_count: usize,
+        no_new_privs: u64,
+        seccomp_mode: &str,
+        lockdown: &str,
+        pid_ns_isolated: bool,
+        visible_procs: usize,
+        pid1_cmd: &str,
+        hidepid: &str,
+    ) -> Report {
+        let mut r = Report::blank(
+            ScanMeta {
+                target_pid: 1,
+                uid,
+                timestamp: "123".into(),
+                kernel: kernel.into(),
+                arch: arch.into(),
+                distro: distro.map(String::from),
+                complete: true,
+                probe_timeout_s: None,
+            },
+            1,
+        );
+        r.verdict = verdict;
+
+        let mut uidmap = ProbeOutcome::empty("uidmap");
+        uidmap = uidmap.with_fact(crate::model::Fact::ok(
+            "uidmap",
+            "uid",
+            serde_json::json!(uid),
+            "/proc/1/status".into(),
+        ));
+        uidmap = uidmap.with_fact(crate::model::Fact::ok(
+            "uidmap",
+            "user",
+            serde_json::json!(user),
+            "/etc/passwd".into(),
+        ));
+        uidmap = uidmap.with_fact(crate::model::Fact::ok(
+            "uidmap",
+            "gid",
+            serde_json::json!(gid),
+            "/proc/1/status".into(),
+        ));
+        uidmap = uidmap.with_fact(crate::model::Fact::ok(
+            "uidmap",
+            "group",
+            serde_json::json!(group),
+            "/etc/group".into(),
+        ));
+        uidmap = uidmap.with_fact(crate::model::Fact::ok(
+            "uidmap",
+            "groups",
+            serde_json::json!(groups),
+            "/proc/1/status".into(),
+        ));
+        r.push_probe(uidmap);
+
+        let mut caps = ProbeOutcome::empty("capabilities");
+        caps = caps.with_fact(crate::model::Fact::ok(
+            "capabilities",
+            "hex.effective",
+            serde_json::json!(eff_hex),
+            "/proc/1/status".into(),
+        ));
+        caps = caps.with_fact(crate::model::Fact::ok(
+            "capabilities",
+            "hex.bounding",
+            serde_json::json!(bnd_hex),
+            "/proc/1/status".into(),
+        ));
+        caps = caps.with_fact(crate::model::Fact::ok(
+            "capabilities",
+            "hex.inheritable",
+            serde_json::json!(inh_hex),
+            "/proc/1/status".into(),
+        ));
+        let eff_vec: Vec<serde_json::Value> = (0..caps_count)
+            .map(|_| serde_json::json!("cap_test"))
+            .collect();
+        caps = caps.with_fact(crate::model::Fact::ok(
+            "capabilities",
+            "effective",
+            serde_json::json!(eff_vec),
+            "/proc/1/status".into(),
+        ));
+        caps = caps.with_fact(crate::model::Fact::ok(
+            "capabilities",
+            "noNewPrivs",
+            serde_json::json!(no_new_privs),
+            "/proc/1/status".into(),
+        ));
+        r.push_probe(caps);
+
+        let mut seccomp = ProbeOutcome::empty("seccomp");
+        seccomp = seccomp.with_fact(crate::model::Fact::ok(
+            "seccomp",
+            "mode",
+            serde_json::json!(seccomp_mode),
+            "/proc/1/status".into(),
+        ));
+        r.push_probe(seccomp);
+
+        let mut lsm = ProbeOutcome::empty("lsm");
+        lsm = lsm.with_fact(crate::model::Fact::ok(
+            "lsm",
+            "lockdown",
+            serde_json::json!(lockdown),
+            "/sys/kernel/security/lockdown".into(),
+        ));
+        r.push_probe(lsm);
+
+        let mut namespaces = ProbeOutcome::empty("namespaces");
+        namespaces = namespaces.with_fact(crate::model::Fact::ok(
+            "namespaces",
+            "isolated",
+            serde_json::json!({"pid": pid_ns_isolated}),
+            "/proc/1/ns".into(),
+        ));
+        namespaces = namespaces.with_fact(crate::model::Fact::ok(
+            "namespaces",
+            "visibleProcs",
+            serde_json::json!(visible_procs),
+            "/proc".into(),
+        ));
+        namespaces = namespaces.with_fact(crate::model::Fact::ok(
+            "namespaces",
+            "pid1Cmdline",
+            serde_json::json!(pid1_cmd),
+            "/proc/1/cmdline".into(),
+        ));
+        namespaces = namespaces.with_fact(crate::model::Fact::ok(
+            "namespaces",
+            "hidepid",
+            serde_json::json!(hidepid),
+            "/proc/mounts".into(),
+        ));
+        r.push_probe(namespaces);
+
+        r
+    }
+
+    #[test]
+    fn identity_header_root() {
+        let r = make_test_report(
+            "6.8.0-142-generic",
+            "x86_64",
+            Some("Ubuntu 22.04.4 LTS"),
+            Some(docker_verdict()),
+            0,
+            "root",
+            0,
+            "root",
+            vec!["0(root)", "10(wheel)", "998(docker)"],
+            "000001ffffffffff",
+            "000001ffffffffff",
+            "0000000000000000",
+            41,
+            0,
+            "disabled",
+            "none",
+            true,
+            59,
+            "/sbin/fireworks-init",
+            "0",
+        );
+        let s = render_text(&r, ColorSupport::Off);
+        let expected_header = "\
+Host:       Linux 6.8.0-142-generic (x86_64) | distro: Ubuntu 22.04.4 LTS | runtime: docker (confidence high)
+Identity:   uid=0(root) gid=0(root) groups=0(root),10(wheel),998(docker)
+Caps:       000001ffffffffff (all 41 caps) [eff=000001ffffffffff bnd=000001ffffffffff inh=0000000000000000]
+Sandboxing: no_new_privs=0 seccomp=0(disabled) lockdown=none
+Visibility: pid_ns=isolated (59 procs visible, pid 1=\"/sbin/fireworks-init\", procfs hidepid=0)";
+        assert!(
+            s.starts_with(expected_header),
+            "header missing or incorrect:\n{s}"
+        );
+    }
+
+    #[test]
+    fn identity_header_unprivileged() {
+        let r = make_test_report(
+            "6.8.0-142-generic",
+            "x86_64",
+            Some("Debian GNU/Linux 12 (bookworm)"),
+            Some(Verdict {
+                runtime: RuntimeKind::Host,
+                variant: None,
+                confidence: "high".into(),
+                alternatives: vec![],
+                evidence: vec![],
+            }),
+            1000,
+            "user",
+            1000,
+            "user",
+            vec!["1000(user)"],
+            "0000000000000000",
+            "000001ffffffffff",
+            "0000000000000000",
+            0,
+            1,
+            "filter",
+            "integrity",
+            false,
+            120,
+            "/usr/lib/systemd/systemd",
+            "2",
+        );
+        let s = render_text(&r, ColorSupport::Off);
+        let expected_header = "\
+Host:       Linux 6.8.0-142-generic (x86_64) | distro: Debian GNU/Linux 12 (bookworm) | runtime: host (confidence high)
+Identity:   uid=1000(user) gid=1000(user) groups=1000(user)
+Caps:       0000000000000000 (0 caps) [eff=0000000000000000 bnd=000001ffffffffff inh=0000000000000000]
+Sandboxing: no_new_privs=1 seccomp=2(filter) lockdown=integrity
+Visibility: pid_ns=host (120 procs visible, pid 1=\"/usr/lib/systemd/systemd\", procfs hidepid=2)";
+        assert!(
+            s.starts_with(expected_header),
+            "header missing or incorrect:\n{s}"
+        );
+    }
+
+    #[test]
+    fn identity_header_color_styling() {
+        let r = make_test_report(
+            "6.8.0-142-generic",
+            "x86_64",
+            Some("Ubuntu 22.04.4 LTS"),
+            Some(docker_verdict()),
+            0,
+            "root",
+            0,
+            "root",
+            vec!["0(root)"],
+            "000001ffffffffff",
+            "000001ffffffffff",
+            "0000000000000000",
+            41,
+            0,
+            "disabled",
+            "none",
+            true,
+            59,
+            "/sbin/init",
+            "0",
+        );
+        let s = render_text(&r, ColorSupport::TrueColor);
+        assert!(
+            s.contains(&style::ColorSupport::TrueColor.fg(style::ELECTRIC_BLUE, "Host:       "))
+        );
+        assert!(
+            s.contains(&style::ColorSupport::TrueColor.fg(style::ELECTRIC_BLUE, "Identity:   "))
+        );
+        assert!(
+            s.contains(&style::ColorSupport::TrueColor.fg(style::ELECTRIC_BLUE, "Caps:       "))
+        );
+        assert!(
+            s.contains(&style::ColorSupport::TrueColor.fg(style::ELECTRIC_BLUE, "Sandboxing: "))
+        );
+        assert!(
+            s.contains(&style::ColorSupport::TrueColor.fg(style::ELECTRIC_BLUE, "Visibility: "))
+        );
+        assert!(s.contains(&style::ColorSupport::TrueColor.fg(style::DIM_ALUMINUM, "|")));
+    }
+
     #[test]
     fn text_full_layout_snapshot() {
         insta::assert_snapshot!(render_text(&summary_report(true), ColorSupport::Off), @r#"
-        runtime docker (confidence high)
+        Host:       Linux K (A) | distro: unknown | runtime: docker (confidence high)
+        Identity:   uid=0(root) gid=0(root) groups=0(root)
+        Caps:       0000000000000000 (0 caps) [eff=0000000000000000 bnd=0000000000000000 inh=0000000000000000]
+        Sandboxing: no_new_privs=0 seccomp=unknown lockdown=none
+        Visibility: pid_ns=unknown (0 procs visible, pid 1="unknown", procfs hidepid=0)
 
         CRIT AMR-002 privileged-container: Privileged container: CAP_SYS_ADMIN, seccomp disabled, no MAC confinement
           why: This is the `--privileged` signature: CAP_SYS_ADMIN plus no seccomp filter plus nothing confining the task with mandatory access control — an explicit AppArmor `unconfined` profile, or no AppArmor while SELinux is permissive or absent from the active LSM stack. Mount filesystems, reach raw devices, drive cgroup release_agent — the container boundary is nominal and kernel-interface exploits run unopposed by every mitigation the runtime would provide.
@@ -312,7 +786,11 @@ mod tests {
     #[test]
     fn text_incomplete_variant_snapshot() {
         insta::assert_snapshot!(render_text(&summary_report(false), ColorSupport::Off), @r#"
-        runtime docker (confidence high)
+        Host:       Linux K (A) | distro: unknown | runtime: docker (confidence high)
+        Identity:   uid=0(root) gid=0(root) groups=0(root)
+        Caps:       0000000000000000 (0 caps) [eff=0000000000000000 bnd=0000000000000000 inh=0000000000000000]
+        Sandboxing: no_new_privs=0 seccomp=unknown lockdown=none
+        Visibility: pid_ns=unknown (0 procs visible, pid 1="unknown", procfs hidepid=0)
         !! INCOMPLETE SCAN — 1 probe(s) timed out !!
 
         CRIT AMR-002 privileged-container: Privileged container: CAP_SYS_ADMIN, seccomp disabled, no MAC confinement
@@ -398,16 +876,16 @@ mod tests {
             )
             .unwrap();
             let s = String::from_utf8(buf).unwrap();
-            assert!(s.contains("probe ebpf-btf: ok\n"), "{s}");
+            assert!(!s.contains("probe ebpf-btf: ok"));
             assert!(
                 s.contains("  ebpf.btf: {\"summary\":\"btfSyscall=ok\"}"),
                 "{s}"
             );
-            // A probe the user did not opt into stays a single status line.
+            // An un-opted probe's ok status is suppressed when not verbose.
             let mut buf = vec![];
             r.on_event(&mut buf, &outcome("ebpf", "ebpf", "knobs", json!({"x": 1})))
                 .unwrap();
-            assert_eq!(String::from_utf8(buf).unwrap(), "probe ebpf: ok\n");
+            assert_eq!(String::from_utf8(buf).unwrap(), "");
         }
 
         #[test]

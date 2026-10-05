@@ -77,6 +77,9 @@ pub struct StatusCaps {
     pub last_effective: Option<u64>,
     pub no_new_privs: Option<u64>,
     pub secure_bits: Option<String>,
+    pub raw_effective: u64,
+    pub raw_bounding: u64,
+    pub raw_inheritable: u64,
 }
 
 /// Parses the `Cap*` / `NoNewPrivs` / `SecureBits` lines. Unknown lines are ignored;
@@ -88,10 +91,19 @@ pub fn parse_status_caps(status: &str) -> StatusCaps {
         let (k, v) = (it.next().unwrap_or(""), it.next().unwrap_or("").trim());
         let bits = u64::from_str_radix(v, 16).unwrap_or(0);
         match k {
-            "CapEff" => out.effective = decode(bits),
+            "CapEff" => {
+                out.effective = decode(bits);
+                out.raw_effective = bits;
+            }
             "CapPrm" => out.permitted = decode(bits),
-            "CapInh" => out.inheritable = decode(bits),
-            "CapBnd" => out.bounding = decode(bits),
+            "CapInh" => {
+                out.inheritable = decode(bits);
+                out.raw_inheritable = bits;
+            }
+            "CapBnd" => {
+                out.bounding = decode(bits);
+                out.raw_bounding = bits;
+            }
             "CapAmb" => out.ambient = decode(bits),
             "CapLastEff" => out.last_effective = Some(bits),
             "NoNewPrivs" => out.no_new_privs = v.parse().ok(),
@@ -148,6 +160,24 @@ pub fn probe_capabilities(fs: &PseudoFs, pid: u32) -> ProbeOutcome {
                 c.no_new_privs.map(json),
             ));
             o = o.with_fact(opt_fact("secureBits", &status_src, c.secure_bits.map(json)));
+            o = o.with_fact(Fact::ok(
+                PROBE,
+                "hex.effective",
+                json(format!("{:016x}", c.raw_effective)),
+                status_src.clone(),
+            ));
+            o = o.with_fact(Fact::ok(
+                PROBE,
+                "hex.bounding",
+                json(format!("{:016x}", c.raw_bounding)),
+                status_src.clone(),
+            ));
+            o = o.with_fact(Fact::ok(
+                PROBE,
+                "hex.inheritable",
+                json(format!("{:016x}", c.raw_inheritable)),
+                status_src.clone(),
+            ));
         }
         Err(e) => {
             // Unreadable status (e.g. another user's pid with host-PID, EACCES): the
@@ -162,6 +192,9 @@ pub fn probe_capabilities(fs: &PseudoFs, pid: u32) -> ProbeOutcome {
                 "lastEffective",
                 "noNewPrivs",
                 "secureBits",
+                "hex.effective",
+                "hex.bounding",
+                "hex.inheritable",
             ] {
                 o = o.with_fact(Fact::unavailable(PROBE, key, status_src.clone(), errno));
             }
@@ -271,7 +304,7 @@ mod tests {
         let fs = crate::sys::fs::PseudoFs::new(d.path().into());
         let o = probe_capabilities(&fs, 7);
         assert_eq!(o.name, "capabilities");
-        assert_eq!(o.facts.len(), 9);
+        assert_eq!(o.facts.len(), 12);
 
         let eff = fact(&o, "effective");
         assert_eq!(eff.status, FactStatus::Ok);
@@ -285,6 +318,18 @@ mod tests {
         assert_eq!(fact(&o, "noNewPrivs").value, serde_json::json!(0));
         assert_eq!(fact(&o, "secureBits").value, serde_json::json!("00000000"));
 
+        assert_eq!(
+            fact(&o, "hex.effective").value,
+            serde_json::json!("00000000a80425fb")
+        );
+        assert_eq!(
+            fact(&o, "hex.bounding").value,
+            serde_json::json!("000001ffffffffff")
+        );
+        assert_eq!(
+            fact(&o, "hex.inheritable").value,
+            serde_json::json!("0000000000000000")
+        );
         let le = fact(&o, "lastEffective");
         assert_eq!(le.status, FactStatus::Ok);
         assert_eq!(le.value, eff.value);
@@ -299,7 +344,7 @@ mod tests {
     fn absent_status_marks_derived_facts_unavailable() {
         let d = fixture(&[]);
         let o = probe_capabilities(&crate::sys::fs::PseudoFs::new(d.path().into()), 9);
-        assert_eq!(o.facts.len(), 9);
+        assert_eq!(o.facts.len(), 12);
         for key in [
             "effective",
             "permitted",
@@ -309,6 +354,9 @@ mod tests {
             "lastEffective",
             "noNewPrivs",
             "secureBits",
+            "hex.effective",
+            "hex.bounding",
+            "hex.inheritable",
         ] {
             let f = fact(&o, key);
             assert_eq!(f.status, FactStatus::Unavailable, "{key} unavailable");
@@ -356,7 +404,7 @@ mod tests {
         // Structural shape only: never assert this host's actual capability values.
         let o = probe_capabilities(&crate::sys::fs::PseudoFs::real(), std::process::id());
         assert_eq!(o.name, "capabilities");
-        assert_eq!(o.facts.len(), 9);
+        assert_eq!(o.facts.len(), 12);
         assert!(o.facts.iter().all(|f| f.probe == "capabilities"));
         for key in [
             "effective",
@@ -368,6 +416,9 @@ mod tests {
             "noNewPrivs",
             "secureBits",
             "ptraceScope",
+            "hex.effective",
+            "hex.bounding",
+            "hex.inheritable",
         ] {
             assert!(o.facts.iter().any(|f| f.key == key), "missing {key}");
         }
