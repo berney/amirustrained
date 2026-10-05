@@ -121,6 +121,12 @@ impl PseudoFs {
     pub fn writable(&self, abs: &str) -> bool {
         let p = self.p(abs);
         if self.is_fixture() {
+            if p.is_dir() {
+                let Ok(c) = std::ffi::CString::new(p.as_os_str().as_bytes()) else {
+                    return false;
+                };
+                return unsafe { libc::access(c.as_ptr(), libc::W_OK) == 0 };
+            }
             std::fs::OpenOptions::new().write(true).open(p).is_ok()
         } else {
             let Ok(c) = std::ffi::CString::new(p.as_os_str().as_bytes()) else {
@@ -128,6 +134,23 @@ impl PseudoFs {
             };
             // SAFETY: `c` is a valid NUL-terminated C string; access only queries.
             unsafe { libc::access(c.as_ptr(), libc::W_OK) == 0 }
+        }
+    }
+    pub fn readable(&self, abs: &str) -> bool {
+        let p = self.p(abs);
+        if self.is_fixture() {
+            if p.is_dir() {
+                let Ok(c) = std::ffi::CString::new(p.as_os_str().as_bytes()) else {
+                    return false;
+                };
+                return unsafe { libc::access(c.as_ptr(), libc::R_OK) == 0 };
+            }
+            std::fs::File::open(p).is_ok()
+        } else {
+            let Ok(c) = std::ffi::CString::new(p.as_os_str().as_bytes()) else {
+                return false;
+            };
+            unsafe { libc::access(c.as_ptr(), libc::R_OK) == 0 }
         }
     }
     #[allow(dead_code)] // Still unused until later probe tasks.
@@ -244,6 +267,21 @@ mod tests {
         if unsafe { libc::geteuid() } != 0 {
             // root bypasses DAC: the 0444 split only means something unprivileged.
             assert!(!fs.writable("/readonly")); // present-but-denied is its own state
+        }
+    }
+    #[test]
+    fn fixture_writable_and_readable_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let acpi = dir.path().join("sys/kernel/config/acpi/table");
+        std::fs::create_dir_all(&acpi).unwrap();
+        let fs = PseudoFs::new(dir.path().into());
+        assert!(fs.writable("/sys/kernel/config/acpi/table"));
+        assert!(fs.readable("/sys/kernel/config/acpi/table"));
+        std::fs::set_permissions(&acpi, std::fs::Permissions::from_mode(0o555)).unwrap();
+        if unsafe { libc::geteuid() } != 0 {
+            assert!(!fs.writable("/sys/kernel/config/acpi/table"));
+            assert!(fs.readable("/sys/kernel/config/acpi/table"));
         }
     }
     #[test]

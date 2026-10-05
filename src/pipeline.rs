@@ -166,6 +166,11 @@ pub fn scan_with_probes(
             prior
                 .facts
                 .insert(format!("{}.{}", o.name, f.key), f.value.clone());
+            if f.probe != o.name {
+                prior
+                    .facts
+                    .insert(format!("{}.{}", f.probe, f.key), f.value.clone());
+            }
         }
         if o.name == "runtime"
             && let Some(f) = o
@@ -495,6 +500,7 @@ mod tests {
                 "cgroup",
                 "k8s",
                 "kernel-config",
+                "kernel-surface",
                 "runtime",
             ]
         );
@@ -532,6 +538,7 @@ mod tests {
                 "cgroup",
                 "k8s",
                 "kernel-config",
+                "kernel-surface",
                 "runtime",
             ]
         );
