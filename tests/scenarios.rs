@@ -1,4 +1,4 @@
-//! Task 26 — the nine-environment fixture corpus.
+//! Task 26 / Task 10 — the twelve-environment fixture corpus.
 //!
 //! Each `tests/fixtures/<scenario>/` tree is a complete pseudo-filesystem for
 //! one deployment shape. Every fact the pipeline reads arrives through the two
@@ -73,6 +73,8 @@ struct Scenario {
     hypervisor: bool,
     /// Environment variables visible to the scanned process.
     env: &'static [(&'static str, &'static str)],
+    /// Whether `--probe-kernel-execution` is active for this scenario.
+    probe_kernel_execution: bool,
 }
 
 /// The corpus. Each entry's expectations were derived from the predicates as
@@ -96,6 +98,7 @@ const SCENARIOS: &[Scenario] = &[
         landlock: None,
         hypervisor: false,
         env: &[],
+        probe_kernel_execution: false,
     },
     Scenario {
         // `/docker/<64 hex>` (0.8) + `/.dockerenv` (0.6) = 1.4 → high.
@@ -116,6 +119,7 @@ const SCENARIOS: &[Scenario] = &[
         landlock: Some(1),
         hypervisor: false,
         env: &[],
+        probe_kernel_execution: false,
     },
     Scenario {
         // Same tree, `--privileged`: seccomp mode 0 + `unconfined` + full caps
@@ -135,6 +139,7 @@ const SCENARIOS: &[Scenario] = &[
         landlock: Some(1),
         hypervisor: false,
         env: &[],
+        probe_kernel_execution: false,
     },
     Scenario {
         // `libpod-` scope (0.7) scores alone — no `container=podman` marker in
@@ -156,6 +161,7 @@ const SCENARIOS: &[Scenario] = &[
         landlock: Some(1),
         hypervisor: false,
         env: &[],
+        probe_kernel_execution: false,
     },
     Scenario {
         // kubepods path (0.7) → medium, no underlying containerd/docker signal
@@ -176,6 +182,7 @@ const SCENARIOS: &[Scenario] = &[
         landlock: Some(1),
         hypervisor: false,
         env: &[("KUBERNETES_SERVICE_HOST", "10.96.0.1")],
+        probe_kernel_execution: false,
     },
     Scenario {
         // Firecracker guest: hypervisor + empty DMI + /dev/vsock + kvm-clock
@@ -204,6 +211,7 @@ const SCENARIOS: &[Scenario] = &[
         landlock: None,
         hypervisor: true,
         env: &[],
+        probe_kernel_execution: false,
     },
     Scenario {
         // gVisor: `/proc/version` carrying the Sentry banner (0.9) → high. No
@@ -223,6 +231,7 @@ const SCENARIOS: &[Scenario] = &[
         landlock: None,
         hypervisor: false,
         env: &[],
+        probe_kernel_execution: false,
     },
     Scenario {
         // `/lxc/<name>` (0.7) → medium. A privileged LXC hands its payload the
@@ -248,6 +257,7 @@ const SCENARIOS: &[Scenario] = &[
         landlock: None,
         hypervisor: false,
         env: &[],
+        probe_kernel_execution: false,
     },
     Scenario {
         // Hardened physical host: seccomp filter, AppArmor enforce, lockdown
@@ -266,6 +276,53 @@ const SCENARIOS: &[Scenario] = &[
         landlock: Some(1),
         hypervisor: false,
         env: &[],
+        probe_kernel_execution: false,
+    },
+    Scenario {
+        // Monolithic physical host: CONFIG_MODULES=n, CONFIG_KEXEC=y.
+        // Direct module loading is closed, but kexec kernel replacement
+        // is permitted under CAP_SYS_BOOT → AMR-024 fires, AMR-028 fires,
+        // AMR-023 is silent.
+        name: "monolithic-kernel",
+        runtime: RuntimeKind::Host,
+        confidence: "high",
+        ids: &["AMR-024", "AMR-028"],
+        root: false,
+        landlock: None,
+        hypervisor: false,
+        env: &[],
+        probe_kernel_execution: false,
+    },
+    Scenario {
+        // Locked-down physical host: lockdown [integrity], CONFIG_KEXEC_SIG_FORCE=y,
+        // CONFIG_MODULE_SIG_FORCE=y, root user with full capabilities.
+        // Kernel lockdown blocks unsigned kexec and raw memory → AMR-024 and
+        // AMR-025 do NOT fire; full root CapEff triggers AMR-020.
+        name: "locked-down-kernel",
+        runtime: RuntimeKind::Host,
+        confidence: "high",
+        ids: &["AMR-020"],
+        root: true,
+        landlock: None,
+        hypervisor: false,
+        env: &[],
+        probe_kernel_execution: false,
+    },
+    Scenario {
+        // Hardened microVM guest: modules_disabled=1, kexec_load_disabled=1,
+        // unprivileged user with 0 caps. Under active execution probing
+        // (--probe-kernel-execution), all Ring 0 pathways are confirmed
+        // denied or unsupported → AMR-029 fires alongside microVM virtualization
+        // notes AMR-013 and AMR-014.
+        name: "hardened-microvm",
+        runtime: RuntimeKind::Firecracker,
+        confidence: "medium",
+        ids: &["AMR-013", "AMR-014", "AMR-029"],
+        root: false,
+        landlock: None,
+        hypervisor: true,
+        env: &[],
+        probe_kernel_execution: true,
     },
 ];
 
@@ -369,10 +426,15 @@ impl OsApi for FixtureOs {
 
 /// Runs the scenario through the shipped pipeline and registry.
 fn scan(s: &Scenario) -> Report {
+    scan_with_kernel_exec(s, s.probe_kernel_execution)
+}
+
+/// Runs the scenario through the shipped pipeline with explicit kernel-execution probing control.
+fn scan_with_kernel_exec(s: &Scenario, probe_kernel_execution: bool) -> Report {
     let opts = Opts {
         pid: None,
         probe_syscalls: false,
-        probe_kernel_execution: false,
+        probe_kernel_execution,
         compact: false,
         probe_ebpf: Vec::new(),
         probe_timeout: None,
@@ -473,7 +535,47 @@ fn hardened_host_reports_nothing() {
     assert_scenario(scenario("hardened-host"));
 }
 
-/// The corpus and the table are one contract: each of the nine trees is
+#[test]
+fn monolithic_kernel_permits_kexec_without_modules() {
+    let s = scenario("monolithic-kernel");
+    assert_scenario(s);
+    let r = scan(s);
+    let ids: Vec<&str> = r.findings.iter().map(|f| f.rule).collect();
+    assert!(ids.contains(&"AMR-028"), "AMR-028 must fire: {ids:?}");
+    assert!(!ids.contains(&"AMR-023"), "AMR-023 must not fire: {ids:?}");
+}
+
+#[test]
+fn locked_down_kernel_blocks_kexec_and_raw_memory() {
+    let s = scenario("locked-down-kernel");
+    assert_scenario(s);
+    let r = scan(s);
+    let ids: Vec<&str> = r.findings.iter().map(|f| f.rule).collect();
+    assert!(!ids.contains(&"AMR-024"), "AMR-024 must not fire: {ids:?}");
+    assert!(!ids.contains(&"AMR-025"), "AMR-025 must not fire: {ids:?}");
+}
+
+#[test]
+fn hardened_microvm_confirms_closed_pathways_under_probe() {
+    let s = scenario("hardened-microvm");
+    assert_scenario(s);
+    let r_active = scan(s);
+    let active_ids: Vec<&str> = r_active.findings.iter().map(|f| f.rule).collect();
+    assert!(
+        active_ids.contains(&"AMR-029"),
+        "AMR-029 must fire under --probe-kernel-execution: {active_ids:?}"
+    );
+
+    // Verify AMR-029 does NOT fire without --probe-kernel-execution
+    let r_passive = scan_with_kernel_exec(s, false);
+    let passive_ids: Vec<&str> = r_passive.findings.iter().map(|f| f.rule).collect();
+    assert!(
+        !passive_ids.contains(&"AMR-029"),
+        "AMR-029 must not fire without --probe-kernel-execution: {passive_ids:?}"
+    );
+}
+
+/// The corpus and the table are one contract: each of the twelve trees is
 /// claimed by exactly one scenario and each scenario names a tree that exists.
 /// A mistyped name would otherwise scan an empty root — which reads as an
 /// ordinary bare host rather than an error — and an unclaimed tree would drift
