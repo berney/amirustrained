@@ -600,6 +600,7 @@ fn docker_privileged_text_output_snapshot() {
         false,
         render::style::ColorSupport::Off,
         vec![],
+        false,
     );
     let mut buf: Vec<u8> = Vec::new();
     let s = scenario("docker-privileged");
@@ -658,6 +659,7 @@ fn docker_default_yaml_output_snapshot() {
         false,
         render::style::ColorSupport::Off,
         vec![],
+        false,
     );
     let mut buf: Vec<u8> = Vec::new();
     let s = scenario("docker-default");

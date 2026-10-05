@@ -72,7 +72,6 @@ pub struct Opts {
     pub probe_syscalls: bool,
     #[allow(dead_code)]
     pub probe_kernel_execution: bool,
-    #[allow(dead_code)]
     pub compact: bool,
     /// Selected active eBPF probes; empty = none (default). Duplicates from
     /// repeated/comma-mixed flag uses are collapsed at parse time.

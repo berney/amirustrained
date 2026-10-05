@@ -503,3 +503,79 @@ fn help_lists_kernel_execution_and_compact_with_aliases() {
         "help must list terse alias:\n{stdout}"
     );
 }
+
+#[test]
+fn compact_output() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("run")).unwrap();
+    fs::write(dir.path().join("run/docker.sock"), "").unwrap();
+
+    for flag in ["--compact", "--terse"] {
+        let (code, stdout) = in_fixture(dir.path(), &[flag]);
+        assert_eq!(code, 0, "must exit 0 with {flag}");
+
+        // Retains 5-line Identity Header
+        assert!(
+            stdout.contains("Host:       Linux "),
+            "must retain Host header in {flag}: {stdout}"
+        );
+        assert!(
+            stdout.contains("Identity:   uid="),
+            "must retain Identity header in {flag}: {stdout}"
+        );
+        assert!(
+            stdout.contains("Caps:       "),
+            "must retain Caps header in {flag}: {stdout}"
+        );
+        assert!(
+            stdout.contains("Sandboxing: no_new_privs="),
+            "must retain Sandboxing header in {flag}: {stdout}"
+        );
+        assert!(
+            stdout.contains("Visibility: pid_ns="),
+            "must retain Visibility header in {flag}: {stdout}"
+        );
+
+        // Single-line finding format: CRIT AMR-001 container-socket-exposed: ...
+        assert!(
+            stdout.contains("CRIT AMR-001 container-socket-exposed:"),
+            "must render single-line finding with {flag}: {stdout}"
+        );
+
+        // Omit why:, fix:, and evidence list
+        assert!(
+            !stdout.contains("  why:"),
+            "must omit why block with {flag}: {stdout}"
+        );
+        assert!(
+            !stdout.contains("  fix:"),
+            "must omit fix block with {flag}: {stdout}"
+        );
+        assert!(
+            !stdout.contains("    - "),
+            "must omit evidence lines with {flag}: {stdout}"
+        );
+
+        // End with the summary count line: N findings (c0 h1 m0 l0 i1)
+        assert!(
+            stdout.trim_end().ends_with(')'),
+            "must end with count line in {flag}: {stdout}"
+        );
+        assert!(
+            stdout.contains("findings (c"),
+            "must include findings count line with {flag}: {stdout}"
+        );
+        assert!(
+            !stdout.contains("scan complete"),
+            "must omit scan complete line with {flag}: {stdout}"
+        );
+    }
+
+    // Standard mode without --compact preserves why:, fix:, evidence, and scan complete
+    let (code, stdout) = in_fixture(dir.path(), &[]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("  why:"));
+    assert!(stdout.contains("  fix:"));
+    assert!(stdout.contains("    - "));
+    assert!(stdout.contains("scan complete"));
+}

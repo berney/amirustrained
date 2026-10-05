@@ -69,7 +69,7 @@ fn main() -> ExitCode {
         optins.push("syscall-probe");
     }
     optins.extend(opts.probe_ebpf.iter().map(|t| t.probe_name()));
-    let mut renderer = render::make(fmt, cli.verbose, color, optins);
+    let mut renderer = render::make(fmt, cli.verbose, color, optins, opts.compact);
     let mut out: Box<dyn std::io::Write> = match &cli.output {
         Some(p) => match std::fs::File::create(p) {
             Ok(f) => Box::new(f),

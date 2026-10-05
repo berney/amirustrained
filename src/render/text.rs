@@ -16,6 +16,8 @@ pub struct Text {
     /// clipped to a report-sized summary (the full value lives in the
     /// machine formats).
     pub optins: Vec<&'static str>,
+    /// Single-line diffable finding mode (`--compact` / `--terse`).
+    pub compact: bool,
 }
 
 /// One fact as a clipped compact-JSON tail: `probe.key: {…}`. The JSON body
@@ -81,7 +83,7 @@ impl Renderer for Text {
                     }
                 }
             }
-            Event::Summary { report, .. } => summary_block(w, report, self.color)?,
+            Event::Summary { report, .. } => summary_block(w, report, self.color, self.compact)?,
             _ => {}
         }
         Ok(())
@@ -330,6 +332,7 @@ fn summary_block(
     w: &mut dyn std::io::Write,
     report: &Report,
     color: ColorSupport,
+    compact: bool,
 ) -> std::io::Result<()> {
     format_identity_header(w, report, report.verdict.as_ref(), color)?;
     if !report.scan.complete {
@@ -347,6 +350,37 @@ fn summary_block(
     let mut order: Vec<&Finding> = report.findings.iter().collect();
     // Stable sort keeps registry order inside each severity group.
     order.sort_by_key(|f| std::cmp::Reverse(f.severity));
+    if compact {
+        if !order.is_empty() {
+            writeln!(w)?;
+            for f in &order {
+                writeln!(
+                    w,
+                    "{} {} {}: {}",
+                    gutter(f.severity, color),
+                    f.rule,
+                    slug_of(f.rule),
+                    f.summary
+                )?;
+            }
+            writeln!(w)?;
+        }
+        writeln!(
+            w,
+            "{} findings (c{} h{} m{} l{} i{})",
+            report.counts.critical
+                + report.counts.high
+                + report.counts.medium
+                + report.counts.low
+                + report.counts.info,
+            report.counts.critical,
+            report.counts.high,
+            report.counts.medium,
+            report.counts.low,
+            report.counts.info
+        )?;
+        return Ok(());
+    }
     for f in &order {
         writeln!(w)?;
         writeln!(
@@ -401,6 +435,7 @@ mod tests {
             verbose: false,
             color: ColorSupport::Off,
             optins: vec![],
+            compact: false,
         };
         r.on_event(&mut buf, &Event::Probe(ProbeOutcome::empty("uidmap")))
             .unwrap();
@@ -470,6 +505,20 @@ mod tests {
             verbose: false,
             color,
             optins: vec![],
+            compact: false,
+        }
+        .on_event(&mut buf, &summary_event(r))
+        .unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    fn render_text_compact(r: &Report, color: ColorSupport) -> String {
+        let mut buf = vec![];
+        Text {
+            verbose: false,
+            color,
+            optins: vec![],
+            compact: true,
         }
         .on_event(&mut buf, &summary_event(r))
         .unwrap();
@@ -813,6 +862,57 @@ Visibility: pid_ns=host (120 procs visible, pid 1=\"/usr/lib/systemd/systemd\", 
     }
 
     #[test]
+    fn text_compact_layout_snapshot() {
+        insta::assert_snapshot!(render_text_compact(&summary_report(true), ColorSupport::Off), @r#"
+        Host:       Linux K (A) | distro: unknown | runtime: docker (confidence high)
+        Identity:   uid=0(root) gid=0(root) groups=0(root)
+        Caps:       0000000000000000 (0 caps) [eff=0000000000000000 bnd=0000000000000000 inh=0000000000000000]
+        Sandboxing: no_new_privs=0 seccomp=unknown lockdown=none
+        Visibility: pid_ns=unknown (0 procs visible, pid 1="unknown", procfs hidepid=0)
+
+        CRIT AMR-002 privileged-container: Privileged container: CAP_SYS_ADMIN, seccomp disabled, no MAC confinement
+        INFO AMR-022 rootless-socket-exposed: Rootless container runtime API socket is reachable and writable
+        INFO AMR-007 selinux-permissive-in-container: SELinux context present while the policy runs permissive
+
+        3 findings (c1 h0 m0 l0 i2)
+        "#);
+    }
+
+    #[test]
+    fn text_compact_color_wraps_gutters() {
+        let s = render_text_compact(&summary_report(true), ColorSupport::TrueColor);
+        assert!(
+            s.contains(&format!(
+                "{}{}CRIT{}",
+                style::fg(style::ALERT_RED),
+                style::BOLD,
+                style::RESET
+            )),
+            "critical gutter: bold alertRed: {s}"
+        );
+        assert!(
+            s.contains(&format!(
+                "{}INFO{}",
+                style::fg(style::DIM_ALUMINUM),
+                style::RESET
+            )),
+            "info gutter: dimAluminum: {s}"
+        );
+        assert!(
+            !s.contains("  why:"),
+            "compact mode must omit why block: {s}"
+        );
+        assert!(
+            !s.contains("  fix:"),
+            "compact mode must omit fix block: {s}"
+        );
+        assert!(
+            !s.contains("scan complete"),
+            "compact mode must omit scan complete: {s}"
+        );
+    }
+
+    #[test]
     fn text_color_wraps_gutters_and_verdict_only_when_on() {
         let s = render_text(&summary_report(true), ColorSupport::TrueColor);
         assert!(
@@ -863,6 +963,7 @@ Visibility: pid_ns=host (120 procs visible, pid 1=\"/usr/lib/systemd/systemd\", 
                 verbose: false,
                 color: ColorSupport::Off,
                 optins: vec!["ebpf-btf"],
+                compact: false,
             };
             let mut buf = vec![];
             r.on_event(
@@ -894,6 +995,7 @@ Visibility: pid_ns=host (120 procs visible, pid 1=\"/usr/lib/systemd/systemd\", 
                 verbose: true,
                 color: ColorSupport::Off,
                 optins: vec![],
+                compact: false,
             };
             let mut buf = vec![];
             r.on_event(
@@ -928,6 +1030,7 @@ Visibility: pid_ns=host (120 procs visible, pid 1=\"/usr/lib/systemd/systemd\", 
                 verbose: false,
                 color: ColorSupport::TrueColor,
                 optins: vec!["ebpf-btf"],
+                compact: false,
             };
             let mut buf = vec![];
             r.on_event(
@@ -966,6 +1069,7 @@ Visibility: pid_ns=host (120 procs visible, pid 1=\"/usr/lib/systemd/systemd\", 
                 verbose: false,
                 color: ColorSupport::Off,
                 optins: vec!["ebpf-btf"],
+                compact: false,
             };
             let mut buf = vec![];
             r.on_event(
@@ -984,6 +1088,7 @@ Visibility: pid_ns=host (120 procs visible, pid 1=\"/usr/lib/systemd/systemd\", 
                 verbose: true,
                 color: ColorSupport::TrueColor,
                 optins: vec![],
+                compact: false,
             };
             let mut buf = vec![];
             r.on_event(

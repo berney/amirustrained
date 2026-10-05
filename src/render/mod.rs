@@ -32,12 +32,14 @@ pub fn make(
     verbose: bool,
     color: style::ColorSupport,
     optins: Vec<&'static str>,
+    compact: bool,
 ) -> Box<dyn Renderer> {
     match fmt {
         Format::Text => Box::new(text::Text {
             verbose,
             color,
             optins,
+            compact,
         }),
         Format::Jsonl => Box::new(jsonl::Jsonl),
         Format::Json => Box::new(json::Json { color }),
