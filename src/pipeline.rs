@@ -594,4 +594,41 @@ mod tests {
         assert_eq!(&subset[at..at + 2], ["ebpf", "ebpf-types"]);
         assert!(!subset.contains(&"ebpf-load") && !subset.contains(&"ebpf-btf"));
     }
+
+    #[test]
+    fn registry_gates_kernel_exec_probe_on_probe_kernel_execution() {
+        let opts = Opts {
+            pid: None,
+            probe_syscalls: false,
+            probe_kernel_execution: true,
+            compact: false,
+            probe_ebpf: Vec::new(),
+            dump_filters: false,
+            probe_timeout: None,
+            fail_on: None,
+        };
+        let names: Vec<&str> = crate::probes::registry(&opts)
+            .iter()
+            .map(|p| p.name())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "namespaces",
+                "uidmap",
+                "capabilities",
+                "seccomp",
+                "lsm",
+                "ebpf",
+                "vmm",
+                "sockets",
+                "cgroup",
+                "k8s",
+                "kernel-config",
+                "kernel-surface",
+                "kernel-exec",
+                "runtime",
+            ]
+        );
+    }
 }
