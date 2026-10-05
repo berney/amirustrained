@@ -32,9 +32,12 @@ This specification introduces comprehensive auditing for **Linux mount topology,
    - Enables low-priority informational findings to remain hidden in standard human terminal output, appearing only when `--verbose` is provided.
    - Standard output indicates hidden notices: `N findings (c0 h1 m1 l0 i0) [K verbose notices hidden — run with -v]`.
    - Machine formats (`json`, `yaml`, `sarif`) always export 100% of findings, strictly adhering to Tenet 2.
-5. **Backlog Expansion:**
+5. **Centralized Mount Parsing (`src/sys/fs.rs`):**
+   - Core `/proc/self/mountinfo` and `/proc/mounts` parsing logic is centralized in `src/sys/fs.rs` as `parse_mountinfo(content: &str) -> Vec<MountEntry>`.
+   - `src/probes/mounts.rs` calls it for complete security auditing.
+   - `src/probes/namespaces.rs` reuses it to reliably extract `hidepid` on `/proc`, eliminating duplicate ad-hoc string parsing.
+6. **Backlog Expansion:**
    - Records the opt-in recursive crawler (`--hunt-staging [PATH]` with `-xdev`) in `docs/BACKLOG.md`.
-
 ---
 
 ## 2. Architecture & Data Flow
@@ -62,11 +65,21 @@ graph TD
 
 ## 3. Data Model & Component Specifications
 
-### 3.1 Mounts Probe (`src/probes/mounts.rs`)
+### 3.1 Centralized Parser & Data Model (`src/sys/fs.rs`)
 
-- **Probe Registration:** `name: "mounts"`, `FACT_PROBE: "mounts"`. Registered in default pipeline in `src/pipeline.rs`.
+- **Parser Function:** `pub fn parse_mountinfo(content: &str) -> Vec<MountEntry>` in `src/sys/fs.rs`.
+- **Parsing Strategy:**
+  - Parses lines from `/proc/self/mountinfo` (10-11 fields with optional propagation tags before the separator `-`).
+  - Correctly unescapes octal sequences (e.g. `\040` $\to$ space, `\011` $\to$ tab).
+  - Fallback parser for standard 6-field `/proc/mounts` lines if `mountinfo` is absent.
+- **Shared Consumer (`src/probes/namespaces.rs`):**
+  - `namespaces::parse_hidepid` delegates to `parse_mountinfo`, searching for the `/proc` mount entry and reading `hidepid=<val>` from its options, maintaining backward-compatible `namespaces.hidepid` facts without duplicate code.
+
+### 3.2 Mounts Probe (`src/probes/mounts.rs`)
+
+- **Probe Registration:** `name: "mounts"`, `FACT_PROBE: "mounts"`. Registered in default pipeline in `src/probes/mod.rs`.
 - **Primary Source:** `/proc/self/mountinfo`.
-- **Fallback Source:** `/proc/mounts` (populates standard fields; `optional_fields` left empty).
+- **Fallback Source:** `/proc/mounts`.
 - **Data Structures:**
 
 ```rust
@@ -83,7 +96,7 @@ pub struct MountEntry {
     pub mount_source: String,
     pub super_options: Vec<String>,
 }
-
+```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StagingMount {
     pub mount_point: String,
