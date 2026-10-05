@@ -300,6 +300,8 @@ mod tests {
         let opts = crate::opts::Opts {
             pid: None,
             probe_syscalls: false,
+            probe_kernel_execution: false,
+            compact: false,
             probe_ebpf: Vec::new(),
             dump_filters: false,
             probe_timeout: None,
@@ -338,6 +340,8 @@ mod tests {
         let opts = crate::opts::Opts {
             pid: None,
             probe_syscalls: false,
+            probe_kernel_execution: false,
+            compact: false,
             probe_ebpf: Vec::new(),
             dump_filters: false,
             probe_timeout: None,

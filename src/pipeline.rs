@@ -231,6 +231,8 @@ mod tests {
         let opts = Opts {
             pid: None,
             probe_syscalls: false,
+            probe_kernel_execution: false,
+            compact: false,
             probe_ebpf: Vec::new(),
             dump_filters: false,
             probe_timeout: Some(std::time::Duration::from_millis(50)),
@@ -262,6 +264,8 @@ mod tests {
         let opts = Opts {
             pid: None,
             probe_syscalls: false,
+            probe_kernel_execution: false,
+            compact: false,
             probe_ebpf: Vec::new(),
             dump_filters: false,
             probe_timeout: None,
@@ -334,6 +338,8 @@ mod tests {
         let opts = Opts {
             pid: Some(std::process::id()),
             probe_syscalls: false,
+            probe_kernel_execution: false,
+            compact: false,
             probe_ebpf: Vec::new(),
             dump_filters: false,
             probe_timeout: None,
@@ -379,6 +385,8 @@ mod tests {
         let opts = Opts {
             pid: None,
             probe_syscalls: false,
+            probe_kernel_execution: false,
+            compact: false,
             probe_ebpf: Vec::new(),
             dump_filters: false,
             probe_timeout: None,
@@ -406,6 +414,8 @@ mod tests {
         let opts = Opts {
             pid: None,
             probe_syscalls: false,
+            probe_kernel_execution: false,
+            compact: false,
             probe_ebpf: Vec::new(),
             dump_filters: false,
             probe_timeout: Some(std::time::Duration::from_secs(5)),
@@ -460,6 +470,8 @@ mod tests {
         let opts = Opts {
             pid: None,
             probe_syscalls: false,
+            probe_kernel_execution: false,
+            compact: false,
             probe_ebpf: Vec::new(),
             dump_filters: false,
             probe_timeout: Some(std::time::Duration::from_secs(5)),
@@ -477,6 +489,8 @@ mod tests {
         let opts = Opts {
             pid: None,
             probe_syscalls: false,
+            probe_kernel_execution: false,
+            compact: false,
             probe_ebpf: Vec::new(),
             dump_filters: false,
             probe_timeout: None,
@@ -514,6 +528,8 @@ mod tests {
         let opts = Opts {
             pid: None,
             probe_syscalls: true,
+            probe_kernel_execution: false,
+            compact: false,
             probe_ebpf: Vec::new(),
             dump_filters: false,
             probe_timeout: None,
@@ -553,6 +569,8 @@ mod tests {
             let opts = Opts {
                 pid: None,
                 probe_syscalls: false,
+                probe_kernel_execution: false,
+                compact: false,
                 probe_ebpf: targets,
                 dump_filters: false,
                 probe_timeout: None,

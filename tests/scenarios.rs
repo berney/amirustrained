@@ -372,6 +372,8 @@ fn scan(s: &Scenario) -> Report {
     let opts = Opts {
         pid: None,
         probe_syscalls: false,
+        probe_kernel_execution: false,
+        compact: false,
         probe_ebpf: Vec::new(),
         probe_timeout: None,
         fail_on: None,
@@ -587,6 +589,8 @@ fn docker_privileged_text_output_snapshot() {
     let opts = Opts {
         pid: None,
         probe_syscalls: false,
+        probe_kernel_execution: false,
+        compact: false,
         probe_ebpf: Vec::new(),
         probe_timeout: None,
         fail_on: None,
@@ -643,6 +647,8 @@ fn docker_default_yaml_output_snapshot() {
     let opts = Opts {
         pid: None,
         probe_syscalls: false,
+        probe_kernel_execution: false,
+        compact: false,
         probe_ebpf: Vec::new(),
         probe_timeout: None,
         fail_on: None,

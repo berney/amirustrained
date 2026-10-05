@@ -424,6 +424,8 @@ mod tests {
         crate::opts::Opts {
             pid: None,
             probe_syscalls: false,
+            probe_kernel_execution: false,
+            compact: false,
             probe_ebpf: if ebpf {
                 vec![crate::opts::EbpfTarget::Load]
             } else {

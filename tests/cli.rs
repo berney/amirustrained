@@ -438,3 +438,43 @@ fn clean_fixture_stays_under_the_fail_on_thresholds() {
         assert_eq!(code, 0, "the clean fixture must not trip --fail-on {level}");
     }
 }
+
+#[test]
+fn flag_probe_kernel_execution_and_alias() {
+    let (code, _) = run(&["--probe-kernel-execution"]);
+    assert_eq!(code, 0, "--probe-kernel-execution should be accepted");
+
+    let (code, _) = run(&["--probe-kernel"]);
+    assert_eq!(code, 0, "--probe-kernel alias should be accepted");
+}
+
+#[test]
+fn flag_compact_and_terse_alias() {
+    let (code, _) = run(&["--compact"]);
+    assert_eq!(code, 0, "--compact should be accepted");
+
+    let (code, _) = run(&["--terse"]);
+    assert_eq!(code, 0, "--terse alias should be accepted");
+}
+
+#[test]
+fn help_lists_kernel_execution_and_compact_with_aliases() {
+    let (code, stdout) = run(&["--help"]);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("--probe-kernel-execution"),
+        "help must list --probe-kernel-execution:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("probe-kernel"),
+        "help must list probe-kernel alias:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("--compact"),
+        "help must list --compact:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("terse"),
+        "help must list terse alias:\n{stdout}"
+    );
+}

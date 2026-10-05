@@ -18,6 +18,17 @@ pub struct Cli {
     pub output: Option<std::path::PathBuf>,
     #[arg(long)]
     pub probe_syscalls: bool,
+    /// Probe kernel-mode execution boundaries (finit_module, kexec, raw memory/IO).
+    #[arg(
+        long = "probe-kernel-execution",
+        alias = "probe-kernel",
+        visible_alias = "probe-kernel"
+    )]
+    pub probe_kernel_execution: bool,
+
+    /// Render concise single-line findings (ideal for diffing privilege states).
+    #[arg(long = "compact", alias = "terse", visible_alias = "terse")]
+    pub compact: bool,
     /// Opt-in ACTIVE eBPF probes; a bare flag runs all three, an optional
     /// comma list picks a subset: `load` (aya, embedded object: one
     /// verdict-bearing BPF_PROG_LOAD), `btf` (BPF_BTF_LOAD of a minimal
@@ -55,10 +66,14 @@ pub struct Cli {
 
 /// Internal derived view of `Cli`; [`Opts::from_cli`] is the only place clap
 /// meets the pipeline, so nothing downstream depends on clap.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Opts {
     pub pid: Option<u32>,
     pub probe_syscalls: bool,
+    #[allow(dead_code)]
+    pub probe_kernel_execution: bool,
+    #[allow(dead_code)]
+    pub compact: bool,
     /// Selected active eBPF probes; empty = none (default). Duplicates from
     /// repeated/comma-mixed flag uses are collapsed at parse time.
     pub probe_ebpf: Vec<EbpfTarget>,
@@ -178,6 +193,8 @@ impl Opts {
             Opts {
                 pid: c.pid,
                 probe_syscalls: c.probe_syscalls,
+                probe_kernel_execution: c.probe_kernel_execution,
+                compact: c.compact,
                 probe_ebpf: c.probe_ebpf.clone().map(|t| t.0).unwrap_or_default(),
                 probe_timeout: match (c.probe_syscalls, c.probe_timeout) {
                     // An explicit value stays authoritative; the sweep
@@ -226,6 +243,8 @@ mod tests {
             format: format.to_owned(),
             output: None,
             probe_syscalls: false,
+            probe_kernel_execution: false,
+            compact: false,
             probe_ebpf: None,
             probe_timeout,
             pid: Some(7),
@@ -369,5 +388,41 @@ mod tests {
         assert_eq!(err.kind(), ErrorKind::ValueValidation);
         assert_eq!(err.exit_code(), 2);
         assert!(Cli::try_parse_from(["amirustrained", "--probe-timeout", "1"]).is_ok());
+    }
+
+    #[test]
+    fn probe_kernel_execution_flag_and_alias() {
+        let parsed = Cli::try_parse_from(["amirustrained", "--probe-kernel-execution"]).unwrap();
+        assert!(parsed.probe_kernel_execution);
+        let (_, opts) = Opts::from_cli(&parsed).unwrap();
+        assert!(opts.probe_kernel_execution);
+
+        let parsed = Cli::try_parse_from(["amirustrained", "--probe-kernel"]).unwrap();
+        assert!(parsed.probe_kernel_execution);
+        let (_, opts) = Opts::from_cli(&parsed).unwrap();
+        assert!(opts.probe_kernel_execution);
+
+        let parsed = Cli::try_parse_from(["amirustrained"]).unwrap();
+        assert!(!parsed.probe_kernel_execution);
+        let (_, opts) = Opts::from_cli(&parsed).unwrap();
+        assert!(!opts.probe_kernel_execution);
+    }
+
+    #[test]
+    fn compact_flag_and_alias() {
+        let parsed = Cli::try_parse_from(["amirustrained", "--compact"]).unwrap();
+        assert!(parsed.compact);
+        let (_, opts) = Opts::from_cli(&parsed).unwrap();
+        assert!(opts.compact);
+
+        let parsed = Cli::try_parse_from(["amirustrained", "--terse"]).unwrap();
+        assert!(parsed.compact);
+        let (_, opts) = Opts::from_cli(&parsed).unwrap();
+        assert!(opts.compact);
+
+        let parsed = Cli::try_parse_from(["amirustrained"]).unwrap();
+        assert!(!parsed.compact);
+        let (_, opts) = Opts::from_cli(&parsed).unwrap();
+        assert!(!opts.compact);
     }
 }
