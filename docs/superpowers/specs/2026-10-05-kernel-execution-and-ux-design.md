@@ -159,7 +159,7 @@ Runs **only** when `--probe-kernel-execution` (or `--probe-kernel`) is provided.
 ### 5.1 Environment & Identity Header
 Every human scan begins with a concise, high-density context header before findings:
 ```text
-Host:       Linux 6.8.0-142-generic (x86_64) | runtime: host (confidence high)
+Host:       Linux 6.8.0-142-generic (x86_64) | distro: Ubuntu 22.04.4 LTS | runtime: host (confidence high)
 Identity:   uid=0(root) gid=0(root) groups=0(root),10(wheel),998(docker)
 Caps:       000001ffffffffff (all 41 caps) [eff=000001ffffffffff bnd=000001ffffffffff inh=0000000000000000]
 Sandboxing: no_new_privs=0 seccomp=0(disabled) lockdown=none
@@ -167,7 +167,11 @@ Visibility: pid_ns=isolated (59 procs visible, pid 1="/sbin/fireworks-init", pro
 ```
 
 - **Supplemental Groups:** Cross-references `/etc/group` when readable; highlights privileged memberships (`root`, `wheel`, `sudo`, `docker`, `lxd`, `disk`).
-- **Kernel & CPU Arch:** Captures `rustix::system::uname().machine()` (e.g. `x86_64`, `aarch64`, `riscv64`) into `ReportMeta.arch` alongside `ReportMeta.kernel` (`uname.release()`), surfaced prominently in the `Host:` line and in all machine output.
+- **Kernel, CPU Arch & Distro:**
+  - Captures `rustix::system::uname().machine()` (e.g. `x86_64`, `aarch64`, `riscv64`) into `ReportMeta.arch`.
+  - Captures `rustix::system::uname().release()` into `ReportMeta.kernel`.
+  - Parses `/etc/os-release` (fallback `/usr/lib/os-release`) for `PRETTY_NAME` (fallback `NAME + " " + VERSION_ID`) into `ReportMeta.distro: Option<String>`.
+  - Displayed prominently in the `Host:` header and exported to all machine formats (`scan.kernel`, `scan.arch`, `scan.distro`).
 - **Caps Hex:** Raw 64-bit hexadecimal mask displayed alongside capability count for instant diffing.
 - **Process Visibility:** Displays total visible PID count, PID 1 command-line, and `/proc` `hidepid` mount status.
 ### 5.2 Silence Probe Progress Noise
