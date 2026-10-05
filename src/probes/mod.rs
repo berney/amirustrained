@@ -23,6 +23,7 @@ pub mod ebpf_load;
 pub mod ebpf_raw;
 pub mod ebpf_types;
 pub mod k8s;
+pub mod kernel_config;
 pub mod lsm;
 pub mod namespaces;
 pub mod runtime;
@@ -67,6 +68,7 @@ pub fn registry(opts: &Opts) -> Vec<Arc<dyn Probe>> {
         Arc::new(sockets::Sockets),
         Arc::new(cgroup::Cgroup),
         Arc::new(k8s::K8s),
+        Arc::new(kernel_config::KernelConfig),
         // Last: it only fuses what the probes above accumulated.
         Arc::new(runtime::Runtime),
     ];

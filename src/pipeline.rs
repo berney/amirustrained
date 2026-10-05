@@ -494,6 +494,7 @@ mod tests {
                 "sockets",
                 "cgroup",
                 "k8s",
+                "kernel-config",
                 "runtime",
             ]
         );
@@ -530,6 +531,7 @@ mod tests {
                 "sockets",
                 "cgroup",
                 "k8s",
+                "kernel-config",
                 "runtime",
             ]
         );

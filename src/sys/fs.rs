@@ -97,6 +97,12 @@ impl PseudoFs {
             .trim_end_matches('\n')
             .to_string())
     }
+    pub fn read_bytes(&self, abs: &str) -> Result<Vec<u8>, ProbeIo> {
+        Ok(std::fs::read(self.p(abs))?)
+    }
+    pub fn read_to_end(&self, abs: &str) -> Result<Vec<u8>, ProbeIo> {
+        self.read_bytes(abs)
+    }
     pub fn read_link(&self, abs: &str) -> Result<String, ProbeIo> {
         let path = self.p(abs);
         if self.is_fixture() && path.is_file() {
