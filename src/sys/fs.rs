@@ -205,10 +205,12 @@ pub fn unescape_octal(s: &str) -> String {
                 && (b'0'..=b'7').contains(&b2)
                 && (b'0'..=b'7').contains(&b3)
             {
-                let val = (b1 - b'0') * 64 + (b2 - b'0') * 8 + (b3 - b'0');
-                out.push(val);
-                i += 4;
-                continue;
+                let val = (b1 - b'0') as u16 * 64 + (b2 - b'0') as u16 * 8 + (b3 - b'0') as u16;
+                if val <= 255 {
+                    out.push(val as u8);
+                    i += 4;
+                    continue;
+                }
             }
         }
         out.push(bytes[i]);
@@ -482,6 +484,8 @@ mod tests {
             assert_eq!(unescape_octal(r"foo\04"), r"foo\04");
             assert_eq!(unescape_octal(r"foo\"), r"foo\");
             assert_eq!(unescape_octal(r"foo\899"), r"foo\899");
+            assert_eq!(unescape_octal(r"foo\400bar"), r"foo\400bar");
+            assert_eq!(unescape_octal(r"\777"), r"\777");
         }
 
         #[test]
