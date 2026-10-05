@@ -67,15 +67,18 @@ pub fn pid1_cmdline(fs: &PseudoFs) -> String {
     "unknown".to_string()
 }
 
-/// Parses `/proc/mounts` or mount options looking for `hidepid=<val>`.
+/// Parses `/proc/mounts` or `/proc/self/mountinfo` looking for `hidepid=<val>`.
 pub fn parse_hidepid(mounts_content: &str) -> String {
-    for line in mounts_content.lines() {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 4 && (parts[1] == "/proc" || parts[2] == "proc") {
-            for opt in parts[3].split(',') {
-                if let Some(val) = opt.strip_prefix("hidepid=") {
-                    return val.to_string();
-                }
+    let entries = crate::sys::fs::parse_mountinfo(mounts_content);
+    let proc_entry = entries
+        .iter()
+        .find(|e| e.mount_point == "/proc")
+        .or_else(|| entries.iter().find(|e| e.fstype == "proc"));
+
+    if let Some(entry) = proc_entry {
+        for opt in entry.mount_options.iter().chain(entry.super_options.iter()) {
+            if let Some(val) = opt.strip_prefix("hidepid=") {
+                return val.to_string();
             }
         }
     }
@@ -447,6 +450,36 @@ mod tests {
             parse_hidepid("proc /proc proc rw,relatime,hidepid=invisible 0 0\n"),
             "invisible"
         );
+
+        // Mountinfo format tests (10-field and 11-field)
+        assert_eq!(
+            parse_hidepid(
+                "26 21 0:23 / /proc rw,nosuid,nodev,noexec,relatime shared:5 - proc proc rw,hidepid=2\n"
+            ),
+            "2"
+        );
+        assert_eq!(
+            parse_hidepid(
+                "26 21 0:23 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw,hidepid=2\n"
+            ),
+            "2"
+        );
+        assert_eq!(
+            parse_hidepid("26 21 0:23 / /proc rw,hidepid=2 shared:5 - proc proc rw\n"),
+            "2"
+        );
+        assert_eq!(
+            parse_hidepid(
+                "26 21 0:23 / /proc rw,nosuid,nodev,noexec,relatime shared:5 - proc proc rw\n"
+            ),
+            "0"
+        );
+        assert_eq!(
+            parse_hidepid("26 21 0:23 / /custom rw shared:5 - proc proc rw,hidepid=invisible\n"),
+            "invisible"
+        );
+        assert_eq!(parse_hidepid(""), "0");
+        assert_eq!(parse_hidepid("invalid content\n"), "0");
 
         let d = fixture(&[
             ("proc/1/cmdline", "/sbin/init\0--foo\0"),
