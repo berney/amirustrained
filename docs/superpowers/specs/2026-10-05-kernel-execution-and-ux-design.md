@@ -159,24 +159,24 @@ Runs **only** when `--probe-kernel-execution` (or `--probe-kernel`) is provided.
 ### 5.1 Environment & Identity Header
 Every human scan begins with a concise, high-density context header before findings:
 ```text
+Host:       Linux 6.8.0-142-generic (x86_64) | runtime: host (confidence high)
 Identity:   uid=0(root) gid=0(root) groups=0(root),10(wheel),998(docker)
 Caps:       000001ffffffffff (all 41 caps) [eff=000001ffffffffff bnd=000001ffffffffff inh=0000000000000000]
 Sandboxing: no_new_privs=0 seccomp=0(disabled) lockdown=none
 Visibility: pid_ns=isolated (59 procs visible, pid 1="/sbin/fireworks-init", procfs hidepid=0)
-Runtime:    host (confidence high)
 ```
 
 - **Supplemental Groups:** Cross-references `/etc/group` when readable; highlights privileged memberships (`root`, `wheel`, `sudo`, `docker`, `lxd`, `disk`).
+- **Kernel & CPU Arch:** Captures `rustix::system::uname().machine()` (e.g. `x86_64`, `aarch64`, `riscv64`) into `ReportMeta.arch` alongside `ReportMeta.kernel` (`uname.release()`), surfaced prominently in the `Host:` line and in all machine output.
 - **Caps Hex:** Raw 64-bit hexadecimal mask displayed alongside capability count for instant diffing.
 - **Process Visibility:** Displays total visible PID count, PID 1 command-line, and `/proc` `hidepid` mount status.
-
 ### 5.2 Silence Probe Progress Noise
 - In standard human output, all `probe <name>: ok` lines are **suppressed**.
 - Degraded states (e.g. `probe namespaces: degraded: pid 1 namespaces unreadable`) emit a single-line muted notice to stderr.
 - `--verbose` restores full `probe <name>: ok` progress lines and dumps complete kernel config hashes and option tables.
 
-### 5.3 Diffable Single-Line Mode (`--compact`)
-CLI flag `--compact` switches the finding presentation to one line per finding:
+### 5.3 Diffable Single-Line Mode (`--compact`, alias `--terse`)
+CLI flag `--compact` (with alias `--terse`) switches the finding presentation to one line per finding:
 ```text
 HIGH     AMR-022 kernel-module-loading-permitted: finit_module permitted (CAP_SYS_MODULE, modules_disabled=0)
 CRITICAL AMR-024 raw-memory-access-permitted: /dev/mem writable (lockdown=none)
