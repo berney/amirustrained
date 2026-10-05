@@ -5,7 +5,7 @@ expression: text
 schemaVersion: 1
 tool:
   name: amirustrained
-  version: 0.1.0
+  version: <toolVersion>
 scan:
   targetPid: <targetPid>
   uid: <uid>

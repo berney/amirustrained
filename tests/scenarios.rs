@@ -748,6 +748,12 @@ fn normalize_scan_meta(text: &str) -> String {
             out.replace_range(v..e, &format!("<{key}>"));
         }
     }
+    let tool_pat = "\n  version: ";
+    if let Some(s) = out.find(tool_pat) {
+        let v = s + tool_pat.len();
+        let e = out[v..].find('\n').map_or(out.len(), |n| v + n);
+        out.replace_range(v..e, "<toolVersion>");
+    }
     out
 }
 
