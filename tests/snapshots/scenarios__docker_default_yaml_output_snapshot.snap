@@ -9,6 +9,8 @@ tool:
 scan:
   targetPid: <targetPid>
   uid: <uid>
+  gid: <gid>
+  groups: <groups>
   timestamp: <timestamp>
   kernel: <kernel>
   arch: <arch>

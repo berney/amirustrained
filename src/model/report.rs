@@ -14,6 +14,8 @@ pub struct Tool {
 pub struct ScanMeta {
     pub target_pid: u32,
     pub uid: u32,
+    pub gid: u32,
+    pub groups: Vec<u32>,
     pub timestamp: String,
     pub kernel: String,
     pub arch: String,
@@ -53,6 +55,8 @@ impl ScanMeta {
         ScanMeta {
             target_pid: 0,
             uid: 0,
+            gid: 0,
+            groups: vec![0],
             timestamp: "T".into(),
             kernel: "K".into(),
             arch: "A".into(),
@@ -120,6 +124,8 @@ mod tests {
         let meta = ScanMeta {
             target_pid: 1234,
             uid: 1000,
+            gid: 1000,
+            groups: vec![1000, 10],
             timestamp: "1234567890".into(),
             kernel: "6.8.0".into(),
             arch: "x86_64".into(),

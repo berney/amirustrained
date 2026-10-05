@@ -128,12 +128,41 @@ pub fn scan_with_probes(
 ) -> Report {
     let target_pid = opts.pid.unwrap_or_else(std::process::id);
     let uname = rustix::system::uname();
+    let (uid, gid, groups) = fs
+        .read(&format!("/proc/{target_pid}/status"))
+        .or_else(|_| fs.read("/proc/self/status"))
+        .map(|s| {
+            let (u, g, grps) = crate::probes::uidmap::parse_status_ids(&s);
+            (
+                u.unwrap_or_else(|| unsafe { libc::geteuid() }),
+                g.unwrap_or_else(|| rustix::process::getegid().as_raw()),
+                if grps.is_empty() {
+                    rustix::process::getgroups()
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|g| g.as_raw())
+                        .collect()
+                } else {
+                    grps
+                },
+            )
+        })
+        .unwrap_or_else(|_| {
+            (
+                unsafe { libc::geteuid() },
+                rustix::process::getegid().as_raw(),
+                rustix::process::getgroups()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|g| g.as_raw())
+                    .collect(),
+            )
+        });
     let meta = ScanMeta {
         target_pid,
-        uid: unsafe {
-            // SAFETY: geteuid(2) takes no arguments and cannot fail.
-            libc::geteuid()
-        },
+        uid,
+        gid,
+        groups,
         timestamp: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs().to_string())

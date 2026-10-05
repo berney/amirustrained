@@ -552,6 +552,8 @@ mod tests {
             ScanMeta {
                 target_pid: 1,
                 uid,
+                gid: 0,
+                groups: vec![0],
                 timestamp: "123".into(),
                 kernel: kernel.into(),
                 arch: arch.into(),

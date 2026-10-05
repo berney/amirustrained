@@ -740,13 +740,19 @@ fn docker_privileged_text_output_snapshot() {
 /// four directly under `scan:`.
 fn normalize_scan_meta(text: &str) -> String {
     let mut out = text.to_string();
-    for key in ["timestamp", "kernel", "arch", "uid", "targetPid"] {
+    for key in ["timestamp", "kernel", "arch", "uid", "gid", "targetPid"] {
         let pat = format!("\n  {key}: ");
         if let Some(s) = out.find(&pat) {
             let v = s + pat.len();
             let e = out[v..].find('\n').map_or(out.len(), |n| v + n);
             out.replace_range(v..e, &format!("<{key}>"));
         }
+    }
+    if let Some(s) = out.find("\n  groups:") {
+        let next = out[s + 1..]
+            .find("\n  timestamp:")
+            .map_or(out.len(), |n| s + 1 + n);
+        out.replace_range(s..next, "\n  groups: <groups>");
     }
     let tool_pat = "\n  version: ";
     if let Some(s) = out.find(tool_pat) {
