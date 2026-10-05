@@ -794,6 +794,111 @@ pub static RULES: &[Rule] = &[
                 .map(|f| vec![f])
         },
     },
+    Rule {
+        id: "AMR-023",
+        slug: "kernel-module-loading-permitted",
+        severity: Severity::High,
+        summary: "Kernel module loading is permitted: ring 0 execution accessible via finit_module/init_module or unconstrained modules",
+        why: "Inserting a kernel module loads arbitrary code directly into ring 0 on the host kernel, bypassing all user-mode isolation, namespaces, seccomp, and LSM protections. Holding CAP_SYS_MODULE with modules enabled allows full host takeover.",
+        remediation: "Disable kernel module loading via sysctl (kernel.modules_disabled = 1), drop CAP_SYS_MODULE from effective and bounding capability sets, or enforce kernel module signature verification (module.sig_enforce = 1).",
+        references: &[
+            "https://docs.kernel.org/admin-guide/module-signing.html",
+            "https://man7.org/linux/man-pages/man2/finit_module.2.html",
+        ],
+        requires_root: false,
+        container_only: false,
+        check: check_amr023,
+    },
+    Rule {
+        id: "AMR-024",
+        slug: "kexec-kernel-replacement-permitted",
+        severity: Severity::High,
+        summary: "Kexec kernel replacement is permitted: new kernel image can be loaded and booted directly into ring 0",
+        why: "Kexec allows rebooting into a new arbitrary kernel without going through BIOS/firmware/bootloader verification. Holding CAP_SYS_BOOT with kexec enabled and kernel lockdown disabled allows replacing the running kernel and gaining arbitrary ring 0 execution.",
+        remediation: "Disable kexec via sysctl (kernel.kexec_load_disabled = 1), enable kernel lockdown (lockdown=integrity or lockdown=confidentiality), or drop CAP_SYS_BOOT.",
+        references: &[
+            "https://man7.org/linux/man-pages/man2/kexec_load.2.html",
+            "https://docs.kernel.org/admin-guide/kernel-parameters.html",
+        ],
+        requires_root: false,
+        container_only: false,
+        check: check_amr024,
+    },
+    Rule {
+        id: "AMR-025",
+        slug: "raw-memory-access-permitted",
+        severity: Severity::Critical,
+        summary: "Raw physical memory or port I/O access is permitted via /dev/mem, /dev/kmem, or iopl",
+        why: "Direct access to physical memory (/dev/mem, /dev/kmem) or hardware I/O ports (iopl) allows reading and writing kernel memory, page tables, and hardware registers directly, completely subverting kernel protections and privilege separation.",
+        remediation: "Ensure /dev/mem and /dev/kmem device nodes are not present or accessible in the filesystem, enable kernel lockdown (lockdown=integrity or lockdown=confidentiality), and drop CAP_SYS_RAWIO.",
+        references: &[
+            "https://man7.org/linux/man-pages/man4/mem.4.html",
+            "https://man7.org/linux/man-pages/man2/iopl.2.html",
+        ],
+        requires_root: false,
+        container_only: false,
+        check: check_amr025,
+    },
+    Rule {
+        id: "AMR-026",
+        slug: "user-mode-helper-writable",
+        severity: Severity::High,
+        summary: "Kernel user-mode helper path (core_pattern or modprobe) is writable",
+        why: "Kernel user-mode helper paths (/proc/sys/kernel/core_pattern and /proc/sys/kernel/modprobe) are executed directly by the host kernel in the root namespace as root. Writing an arbitrary command or executable path achieves instant unconfined host code execution.",
+        remediation: "Mount /proc/sys read-only, mask /proc/sys/kernel/core_pattern and /proc/sys/kernel/modprobe, or use filesystem protections to prevent write access.",
+        references: &[
+            "https://man7.org/linux/man-pages/man5/core.5.html",
+            "https://docs.kernel.org/admin-guide/sysctl/kernel.html",
+        ],
+        requires_root: false,
+        container_only: false,
+        check: check_amr026,
+    },
+    Rule {
+        id: "AMR-027",
+        slug: "acpi-table-injection-writable",
+        severity: Severity::High,
+        summary: "ACPI table customization interface (/sys/kernel/config/acpi/table) is writable",
+        why: "A writable ACPI table customization interface allows dynamically injecting custom ACPI DSDT/SSDT tables (CONFIG_ACPI_CUSTOM_METHOD). Custom AML byte-code executed by the kernel's ACPI interpreter can access arbitrary physical memory and I/O ports.",
+        remediation: "Ensure configfs is not mounted or writable inside unprivileged environments, and disable CONFIG_ACPI_CUSTOM_METHOD in the kernel configuration.",
+        references: &[
+            "https://docs.kernel.org/admin-guide/acpi/initrd_table_override.html",
+            "https://www.kernel.org/doc/Documentation/acpi/method-customizing.txt",
+        ],
+        requires_root: false,
+        container_only: false,
+        check: check_amr027,
+    },
+    Rule {
+        id: "AMR-028",
+        slug: "kexec-module-lockdown-bypass",
+        severity: Severity::High,
+        summary: "Kexec kernel replacement is permitted while kernel module loading is blocked (lockdown bypass)",
+        why: "Direct kernel module loading is blocked, but kexec replacement remains permitted. An attacker can bypass the restriction on loading unsigned code or modules into the running kernel by replacing the entire kernel image with an unconstrained one via kexec.",
+        remediation: "Disable kexec via sysctl (kernel.kexec_load_disabled = 1), enable kernel lockdown (lockdown=integrity or lockdown=confidentiality), or drop CAP_SYS_BOOT.",
+        references: &[
+            "https://man7.org/linux/man-pages/man2/kexec_load.2.html",
+            "https://docs.kernel.org/admin-guide/module-signing.html",
+        ],
+        requires_root: false,
+        container_only: false,
+        check: check_amr028,
+    },
+    Rule {
+        id: "AMR-029",
+        slug: "kernel-execution-probe-report",
+        severity: Severity::Info,
+        summary: "Active kernel execution probe confirmed all tested ring 0 pathways are closed or restricted",
+        why: "An active kernel execution probe (--probe-kernel-execution) ran non-destructive boundary syscall tests and confirmed that kernel module loading (finit_module, init_module), kexec replacement (kexec_load, kexec_file_load), and port I/O (iopl) are denied or restricted.",
+        remediation: "No action required: kernel execution attack surface is actively verified closed.",
+        references: &[
+            "https://man7.org/linux/man-pages/man2/finit_module.2.html",
+            "https://man7.org/linux/man-pages/man2/kexec_load.2.html",
+        ],
+        requires_root: false,
+        container_only: false,
+        check: check_amr029,
+    },
 ];
 
 pub fn evaluate_all(report: &Report, privileged: bool) -> Vec<Finding> {
@@ -850,6 +955,250 @@ fn mac_unconfining_fact(a: &Assess) -> Option<Fact> {
 /// very fact, so it is present whenever the verdict is.
 fn verdict_fact(a: &Assess) -> Option<Vec<Fact>> {
     a.fact("runtime", "verdict").cloned().map(|f| vec![f])
+}
+
+fn check_amr023(a: &Assess) -> Option<Vec<Fact>> {
+    let has_cap_eff = a.arr_has("capabilities", "effective", "cap_sys_module");
+    let has_cap_bnd = a.arr_has("capabilities", "bounding", "cap_sys_module");
+    if !has_cap_eff && !has_cap_bnd {
+        return None;
+    }
+
+    if a.fact("kernel.surface", "modules_disabled")
+        .and_then(|f| f.value.as_bool())
+        == Some(true)
+    {
+        return None;
+    }
+
+    let exec_finit = a.fact("kernel.exec", "finit_module");
+    let exec_init = a.fact("kernel.exec", "init_module");
+    let finit_permitted = exec_finit
+        .and_then(|f| f.value.get("status"))
+        .and_then(|s| s.as_str())
+        == Some("permitted");
+    let init_permitted = exec_init
+        .and_then(|f| f.value.get("status"))
+        .and_then(|s| s.as_str())
+        == Some("permitted");
+
+    let has_exec = exec_finit.is_some() || exec_init.is_some();
+    let config_opts = a.fact("kernel.config", "options");
+    let config_permitted = config_opts
+        .and_then(|f| f.value.get("CONFIG_MODULES"))
+        .and_then(|v| v.as_str())
+        == Some("y");
+
+    let permitted = if has_exec {
+        finit_permitted || init_permitted
+    } else {
+        config_permitted
+    };
+
+    if !permitted {
+        return None;
+    }
+
+    let mut ev = Vec::new();
+    if has_cap_eff {
+        ev.extend(a.fact("capabilities", "effective").cloned());
+    } else if has_cap_bnd {
+        ev.extend(a.fact("capabilities", "bounding").cloned());
+    }
+    ev.extend(a.fact("kernel.surface", "modules_disabled").cloned());
+    if finit_permitted {
+        ev.extend(exec_finit.cloned());
+    }
+    if init_permitted {
+        ev.extend(exec_init.cloned());
+    }
+    if !has_exec && config_permitted {
+        ev.extend(config_opts.cloned());
+    }
+    Some(ev)
+}
+
+fn check_amr024(a: &Assess) -> Option<Vec<Fact>> {
+    if !a.arr_has("capabilities", "effective", "cap_sys_boot") {
+        return None;
+    }
+
+    if a.fact("kernel.surface", "kexec_load_disabled")
+        .and_then(|f| f.value.as_bool())
+        == Some(true)
+    {
+        return None;
+    }
+
+    if matches!(
+        a.fact("kernel.surface", "lockdown")
+            .and_then(|f| f.value.as_str()),
+        Some("integrity" | "confidentiality")
+    ) {
+        return None;
+    }
+
+    let exec_load = a.fact("kernel.exec", "kexec_load");
+    let exec_file = a.fact("kernel.exec", "kexec_file_load");
+    let load_permitted = exec_load
+        .and_then(|f| f.value.get("status"))
+        .and_then(|s| s.as_str())
+        == Some("permitted");
+    let file_permitted = exec_file
+        .and_then(|f| f.value.get("status"))
+        .and_then(|s| s.as_str())
+        == Some("permitted");
+
+    let has_exec = exec_load.is_some() || exec_file.is_some();
+    let config_opts = a.fact("kernel.config", "options");
+    let config_kexec = config_opts
+        .and_then(|f| f.value.get("CONFIG_KEXEC"))
+        .and_then(|v| v.as_str())
+        == Some("y");
+    let config_kexec_file = config_opts
+        .and_then(|f| f.value.get("CONFIG_KEXEC_FILE"))
+        .and_then(|v| v.as_str())
+        == Some("y");
+
+    let permitted = if has_exec {
+        load_permitted || file_permitted
+    } else {
+        config_kexec || config_kexec_file
+    };
+
+    if !permitted {
+        return None;
+    }
+
+    let mut ev = Vec::new();
+    ev.extend(a.fact("capabilities", "effective").cloned());
+    ev.extend(a.fact("kernel.surface", "kexec_load_disabled").cloned());
+    ev.extend(a.fact("kernel.surface", "lockdown").cloned());
+    if load_permitted {
+        ev.extend(exec_load.cloned());
+    }
+    if file_permitted {
+        ev.extend(exec_file.cloned());
+    }
+    if !has_exec && (config_kexec || config_kexec_file) {
+        ev.extend(config_opts.cloned());
+    }
+    Some(ev)
+}
+
+fn check_amr025(a: &Assess) -> Option<Vec<Fact>> {
+    if matches!(
+        a.fact("kernel.surface", "lockdown")
+            .and_then(|f| f.value.as_str()),
+        Some("integrity" | "confidentiality")
+    ) {
+        return None;
+    }
+
+    let dev_mem_acc = a.is("kernel.surface", "dev_mem", "accessible");
+    let dev_kmem_acc = a.is("kernel.surface", "dev_kmem", "accessible");
+    let iopl_fact = a.fact("kernel.exec", "iopl");
+    let iopl_permitted = iopl_fact
+        .and_then(|f| f.value.get("status"))
+        .and_then(|s| s.as_str())
+        == Some("permitted");
+
+    if !dev_mem_acc && !dev_kmem_acc && !iopl_permitted {
+        return None;
+    }
+
+    let mut ev = Vec::new();
+    if dev_mem_acc {
+        ev.extend(a.fact("kernel.surface", "dev_mem").cloned());
+    }
+    if dev_kmem_acc {
+        ev.extend(a.fact("kernel.surface", "dev_kmem").cloned());
+    }
+    if iopl_permitted {
+        ev.extend(iopl_fact.cloned());
+    }
+    ev.extend(a.fact("kernel.surface", "lockdown").cloned());
+    Some(ev)
+}
+
+fn check_amr026(a: &Assess) -> Option<Vec<Fact>> {
+    let core_writable = a
+        .fact("kernel.surface", "core_pattern")
+        .and_then(|f| f.value.get("writable"))
+        .and_then(|w| w.as_bool())
+        == Some(true);
+    let modprobe_writable = a
+        .fact("kernel.surface", "modprobe")
+        .and_then(|f| f.value.get("writable"))
+        .and_then(|w| w.as_bool())
+        == Some(true);
+
+    if !core_writable && !modprobe_writable {
+        return None;
+    }
+
+    let mut ev = Vec::new();
+    if core_writable {
+        ev.extend(a.fact("kernel.surface", "core_pattern").cloned());
+    }
+    if modprobe_writable {
+        ev.extend(a.fact("kernel.surface", "modprobe").cloned());
+    }
+    Some(ev)
+}
+
+fn check_amr027(a: &Assess) -> Option<Vec<Fact>> {
+    let acpi_fact = a.fact("kernel.surface", "acpi_table_writable")?;
+    if acpi_fact.value.as_bool() != Some(true) {
+        return None;
+    }
+    Some(vec![acpi_fact.clone()])
+}
+
+fn check_amr028(a: &Assess) -> Option<Vec<Fact>> {
+    if check_amr023(a).is_some() {
+        return None;
+    }
+    let kexec_ev = check_amr024(a)?;
+
+    let mut ev = kexec_ev;
+    if let Some(f) = a.fact("kernel.surface", "modules_disabled")
+        && !ev.iter().any(|e| e.probe == f.probe && e.key == f.key)
+    {
+        ev.push(f.clone());
+    }
+    Some(ev)
+}
+
+fn check_amr029(a: &Assess) -> Option<Vec<Fact>> {
+    let keys = [
+        "finit_module",
+        "init_module",
+        "kexec_load",
+        "kexec_file_load",
+        "iopl",
+    ];
+    let mut ev = Vec::new();
+    for key in keys {
+        if let Some(f) = a.fact("kernel.exec", key) {
+            ev.push(f.clone());
+        }
+    }
+    if ev.is_empty() {
+        return None;
+    }
+
+    if check_amr023(a).is_some()
+        || check_amr024(a).is_some()
+        || check_amr025(a).is_some()
+        || check_amr026(a).is_some()
+        || check_amr027(a).is_some()
+        || check_amr028(a).is_some()
+    {
+        return None;
+    }
+
+    Some(ev)
 }
 
 #[cfg(test)]
@@ -2027,14 +2376,16 @@ mod tests {
         let ids: Vec<&str> = RULES.iter().map(|r| r.id).collect();
         // Registry order is append-stable, not numeric: AMR-022 was an
         // id-space append (ReviewT19 F2) and keeps its slot; Task 21 appended
-        // 014–018 after AMR-013, Task 28 appended 019–020, Task 29 021.
+        // 014–018 after AMR-013, Task 28 appended 019–020, Task 29 021,
+        // Task 6 appended 023–029.
         assert_eq!(
             ids,
             [
                 "AMR-001", "AMR-002", "AMR-003", "AMR-004", "AMR-005", "AMR-006", "AMR-022",
                 "AMR-007", "AMR-008", "AMR-009", "AMR-010", "AMR-011", "AMR-012", "AMR-013",
                 "AMR-014", "AMR-015", "AMR-016", "AMR-017", "AMR-018", "AMR-019", "AMR-020",
-                "AMR-021",
+                "AMR-021", "AMR-023", "AMR-024", "AMR-025", "AMR-026", "AMR-027", "AMR-028",
+                "AMR-029",
             ]
         );
     }
@@ -2404,5 +2755,438 @@ mod tests {
                 "AMR-021 must stay silent under a {runtime:?} verdict"
             );
         }
+    }
+
+    // ── Task 6: AMR-023..029 Kernel Execution & Attack Surface ───────────
+
+    #[test]
+    fn kernel_execution_rules_amr023_module_loading() {
+        // 1. AMR-023 fires when finit_module is permitted (with cap_sys_module in effective)
+        let r = report_with(&[
+            ("capabilities", "effective", json!(["cap_sys_module"])),
+            (
+                "kernel.exec",
+                "finit_module",
+                json!({"status": "permitted"}),
+            ),
+        ]);
+        let f = rule("AMR-023")
+            .evaluate(&r, false)
+            .expect("AMR-023 must fire when finit_module is permitted");
+        assert_eq!(f.severity, Severity::High);
+
+        // Also fires when cap_sys_module is only in bounding
+        let r_bnd = report_with(&[
+            ("capabilities", "bounding", json!(["cap_sys_module"])),
+            ("kernel.exec", "init_module", json!({"status": "permitted"})),
+        ]);
+        assert!(rule("AMR-023").evaluate(&r_bnd, false).is_some());
+
+        // Also fires when passive CONFIG_MODULES == "y"
+        let r_cfg = report_with(&[
+            ("capabilities", "effective", json!(["cap_sys_module"])),
+            ("kernel.config", "options", json!({"CONFIG_MODULES": "y"})),
+        ]);
+        assert!(rule("AMR-023").evaluate(&r_cfg, false).is_some());
+
+        // Silent when modules_disabled == true
+        let r_dis = report_with(&[
+            ("capabilities", "effective", json!(["cap_sys_module"])),
+            ("kernel.surface", "modules_disabled", json!(true)),
+            (
+                "kernel.exec",
+                "finit_module",
+                json!({"status": "permitted"}),
+            ),
+        ]);
+        assert!(rule("AMR-023").evaluate(&r_dis, false).is_none());
+
+        // Silent without cap_sys_module
+        let r_nocap = report_with(&[
+            ("capabilities", "effective", json!(["cap_sys_admin"])),
+            (
+                "kernel.exec",
+                "finit_module",
+                json!({"status": "permitted"}),
+            ),
+        ]);
+        assert!(rule("AMR-023").evaluate(&r_nocap, false).is_none());
+    }
+
+    #[test]
+    fn kernel_execution_rules_amr024_kexec() {
+        // Fires when cap_sys_boot held, kexec_load permitted, lockdown not integrity/confidentiality
+        let r = report_with(&[
+            ("capabilities", "effective", json!(["cap_sys_boot"])),
+            ("kernel.exec", "kexec_load", json!({"status": "permitted"})),
+            ("kernel.surface", "lockdown", json!("none")),
+        ]);
+        let f = rule("AMR-024")
+            .evaluate(&r, false)
+            .expect("AMR-024 must fire when kexec permitted");
+        assert_eq!(f.severity, Severity::High);
+
+        // Fires when kexec_file_load permitted
+        let r_file = report_with(&[
+            ("capabilities", "effective", json!(["cap_sys_boot"])),
+            (
+                "kernel.exec",
+                "kexec_file_load",
+                json!({"status": "permitted"}),
+            ),
+        ]);
+        assert!(rule("AMR-024").evaluate(&r_file, false).is_some());
+
+        // Fires when passive CONFIG_KEXEC == "y" or CONFIG_KEXEC_FILE == "y"
+        let r_cfg = report_with(&[
+            ("capabilities", "effective", json!(["cap_sys_boot"])),
+            ("kernel.config", "options", json!({"CONFIG_KEXEC": "y"})),
+        ]);
+        assert!(rule("AMR-024").evaluate(&r_cfg, false).is_some());
+
+        // Silent when lockdown is integrity
+        let r_lock = report_with(&[
+            ("capabilities", "effective", json!(["cap_sys_boot"])),
+            ("kernel.exec", "kexec_load", json!({"status": "permitted"})),
+            ("kernel.surface", "lockdown", json!("integrity")),
+        ]);
+        assert!(rule("AMR-024").evaluate(&r_lock, false).is_none());
+
+        // Silent when lockdown is confidentiality
+        let r_conf = report_with(&[
+            ("capabilities", "effective", json!(["cap_sys_boot"])),
+            ("kernel.exec", "kexec_load", json!({"status": "permitted"})),
+            ("kernel.surface", "lockdown", json!("confidentiality")),
+        ]);
+        assert!(rule("AMR-024").evaluate(&r_conf, false).is_none());
+
+        // Silent when kexec_load_disabled == true
+        let r_dis = report_with(&[
+            ("capabilities", "effective", json!(["cap_sys_boot"])),
+            ("kernel.surface", "kexec_load_disabled", json!(true)),
+            ("kernel.exec", "kexec_load", json!({"status": "permitted"})),
+        ]);
+        assert!(rule("AMR-024").evaluate(&r_dis, false).is_none());
+
+        // Silent without cap_sys_boot
+        let r_nocap = report_with(&[
+            ("capabilities", "effective", json!(["cap_sys_admin"])),
+            ("kernel.exec", "kexec_load", json!({"status": "permitted"})),
+        ]);
+        assert!(rule("AMR-024").evaluate(&r_nocap, false).is_none());
+    }
+
+    #[test]
+    fn kernel_execution_rules_amr025_raw_memory() {
+        // dev_mem accessible -> Critical
+        let r_mem = report_with(&[
+            ("kernel.surface", "dev_mem", json!("accessible")),
+            ("kernel.surface", "lockdown", json!("none")),
+        ]);
+        let f = rule("AMR-025")
+            .evaluate(&r_mem, false)
+            .expect("AMR-025 must fire on dev_mem accessible");
+        assert_eq!(f.severity, Severity::Critical);
+
+        // dev_kmem accessible -> Critical
+        let r_kmem = report_with(&[("kernel.surface", "dev_kmem", json!("accessible"))]);
+        assert!(rule("AMR-025").evaluate(&r_kmem, false).is_some());
+
+        // iopl permitted -> Critical
+        let r_iopl = report_with(&[("kernel.exec", "iopl", json!({"status": "permitted"}))]);
+        assert!(rule("AMR-025").evaluate(&r_iopl, false).is_some());
+
+        // Silent when lockdown is integrity or confidentiality
+        let r_lock = report_with(&[
+            ("kernel.surface", "dev_mem", json!("accessible")),
+            ("kernel.surface", "lockdown", json!("integrity")),
+        ]);
+        assert!(rule("AMR-025").evaluate(&r_lock, false).is_none());
+
+        // Silent when restricted or absent
+        let r_abs = report_with(&[
+            ("kernel.surface", "dev_mem", json!("absent")),
+            ("kernel.surface", "dev_kmem", json!("restricted")),
+            ("kernel.exec", "iopl", json!({"status": "denied"})),
+        ]);
+        assert!(rule("AMR-025").evaluate(&r_abs, false).is_none());
+    }
+
+    #[test]
+    fn kernel_execution_rules_amr026_usmh_writable() {
+        // core_pattern writable -> High
+        let r_core = report_with(&[(
+            "kernel.surface",
+            "core_pattern",
+            json!({"pattern": "|/bin/helper", "writable": true}),
+        )]);
+        let f = rule("AMR-026")
+            .evaluate(&r_core, false)
+            .expect("AMR-026 must fire when core_pattern is writable");
+        assert_eq!(f.severity, Severity::High);
+
+        // modprobe writable -> High
+        let r_mod = report_with(&[(
+            "kernel.surface",
+            "modprobe",
+            json!({"path": "/sbin/modprobe", "writable": true}),
+        )]);
+        assert!(rule("AMR-026").evaluate(&r_mod, false).is_some());
+
+        // Silent when neither writable
+        let r_ro = report_with(&[
+            (
+                "kernel.surface",
+                "core_pattern",
+                json!({"pattern": "|/bin/helper", "writable": false}),
+            ),
+            (
+                "kernel.surface",
+                "modprobe",
+                json!({"path": "/sbin/modprobe", "writable": false}),
+            ),
+        ]);
+        assert!(rule("AMR-026").evaluate(&r_ro, false).is_none());
+    }
+
+    #[test]
+    fn kernel_execution_rules_amr027_acpi_table_writable() {
+        let r_acpi = report_with(&[("kernel.surface", "acpi_table_writable", json!(true))]);
+        let f = rule("AMR-027")
+            .evaluate(&r_acpi, false)
+            .expect("AMR-027 must fire when acpi_table_writable is true");
+        assert_eq!(f.severity, Severity::High);
+
+        let r_ro = report_with(&[("kernel.surface", "acpi_table_writable", json!(false))]);
+        assert!(rule("AMR-027").evaluate(&r_ro, false).is_none());
+    }
+
+    #[test]
+    fn kernel_execution_rules_amr028_chained_kexec_bypass_and_suppression() {
+        // AMR-028 fires when kexec is open AND modules are blocked
+        let r_bypass = report_with(&[
+            ("capabilities", "effective", json!(["cap_sys_boot"])),
+            ("kernel.exec", "kexec_load", json!({"status": "permitted"})),
+            ("kernel.surface", "modules_disabled", json!(true)),
+        ]);
+        let f = rule("AMR-028")
+            .evaluate(&r_bypass, false)
+            .expect("AMR-028 must fire when kexec open and modules blocked");
+        assert_eq!(f.severity, Severity::High);
+        // AMR-024 also fires
+        assert!(rule("AMR-024").evaluate(&r_bypass, false).is_some());
+        // AMR-023 does not fire
+        assert!(rule("AMR-023").evaluate(&r_bypass, false).is_none());
+
+        // AMR-028 is SUPPRESSED when direct module loading is open (AMR-023 fires)
+        let r_suppressed = report_with(&[
+            (
+                "capabilities",
+                "effective",
+                json!(["cap_sys_boot", "cap_sys_module"]),
+            ),
+            ("kernel.exec", "kexec_load", json!({"status": "permitted"})),
+            (
+                "kernel.exec",
+                "finit_module",
+                json!({"status": "permitted"}),
+            ),
+        ]);
+        assert!(
+            rule("AMR-023").evaluate(&r_suppressed, false).is_some(),
+            "AMR-023 must fire"
+        );
+        assert!(
+            rule("AMR-024").evaluate(&r_suppressed, false).is_some(),
+            "AMR-024 must fire"
+        );
+        assert!(
+            rule("AMR-028").evaluate(&r_suppressed, false).is_none(),
+            "AMR-028 must be suppressed when AMR-023 fires"
+        );
+
+        // AMR-028 is silent when kexec is NOT permitted (AMR-024 does not fire)
+        let r_nokexec = report_with(&[
+            ("capabilities", "effective", json!(["cap_sys_admin"])),
+            ("kernel.surface", "modules_disabled", json!(true)),
+        ]);
+        assert!(rule("AMR-028").evaluate(&r_nokexec, false).is_none());
+
+        // AMR-028 fires when module loading is blocked by active probe denial even if CONFIG_MODULES=y
+        let r_active_blocked = report_with(&[
+            (
+                "capabilities",
+                "effective",
+                json!(["cap_sys_boot", "cap_sys_module"]),
+            ),
+            ("kernel.exec", "kexec_load", json!({"status": "permitted"})),
+            (
+                "kernel.exec",
+                "finit_module",
+                json!({"status": "denied", "errno": 1, "error_name": "EPERM"}),
+            ),
+            (
+                "kernel.exec",
+                "init_module",
+                json!({"status": "denied", "errno": 1, "error_name": "EPERM"}),
+            ),
+            ("kernel.config", "options", json!({"CONFIG_MODULES": "y"})),
+        ]);
+        assert!(
+            rule("AMR-023").evaluate(&r_active_blocked, false).is_none(),
+            "AMR-023 must not fire when active probe denied"
+        );
+        assert!(
+            rule("AMR-024").evaluate(&r_active_blocked, false).is_some(),
+            "AMR-024 must fire"
+        );
+        assert!(
+            rule("AMR-028").evaluate(&r_active_blocked, false).is_some(),
+            "AMR-028 must fire when active probe confirmed modules blocked"
+        );
+    }
+
+    #[test]
+    fn kernel_execution_rules_amr029_opt_in_probe_report() {
+        // AMR-029 fires when active probe ran (kernel.exec facts present) AND none of AMR-023..028 fired
+        let r_safe = report_with(&[
+            (
+                "kernel.exec",
+                "finit_module",
+                json!({"status": "denied", "errno": 1, "error_name": "EPERM"}),
+            ),
+            (
+                "kernel.exec",
+                "init_module",
+                json!({"status": "denied", "errno": 1, "error_name": "EPERM"}),
+            ),
+            (
+                "kernel.exec",
+                "kexec_load",
+                json!({"status": "denied", "errno": 1, "error_name": "EPERM"}),
+            ),
+            (
+                "kernel.exec",
+                "kexec_file_load",
+                json!({"status": "denied", "errno": 1, "error_name": "EPERM"}),
+            ),
+            (
+                "kernel.exec",
+                "iopl",
+                json!({"status": "denied", "errno": 1, "error_name": "EPERM"}),
+            ),
+            ("kernel.surface", "dev_mem", json!("absent")),
+            ("kernel.surface", "dev_kmem", json!("absent")),
+            (
+                "kernel.surface",
+                "core_pattern",
+                json!({"pattern": "|/bin/helper", "writable": false}),
+            ),
+            (
+                "kernel.surface",
+                "modprobe",
+                json!({"path": "/sbin/modprobe", "writable": false}),
+            ),
+            ("kernel.surface", "acpi_table_writable", json!(false)),
+        ]);
+        let f = rule("AMR-029")
+            .evaluate(&r_safe, false)
+            .expect("AMR-029 must fire when active probe confirmed all closed");
+        assert_eq!(f.severity, Severity::Info);
+
+        // Also fires when non-x86 iopl status is "unsupported_arch" and others denied
+        let r_unsupported_arch = report_with(&[
+            (
+                "kernel.exec",
+                "finit_module",
+                json!({"status": "denied", "errno": 1, "error_name": "EPERM"}),
+            ),
+            (
+                "kernel.exec",
+                "init_module",
+                json!({"status": "denied", "errno": 1, "error_name": "EPERM"}),
+            ),
+            (
+                "kernel.exec",
+                "kexec_load",
+                json!({"status": "denied", "errno": 1, "error_name": "EPERM"}),
+            ),
+            (
+                "kernel.exec",
+                "kexec_file_load",
+                json!({"status": "denied", "errno": 1, "error_name": "EPERM"}),
+            ),
+            (
+                "kernel.exec",
+                "iopl",
+                json!({"status": "unsupported_arch", "errno": 38, "error_name": "ENOSYS"}),
+            ),
+            ("kernel.surface", "dev_mem", json!("absent")),
+            ("kernel.surface", "dev_kmem", json!("absent")),
+            (
+                "kernel.surface",
+                "core_pattern",
+                json!({"pattern": "|/bin/helper", "writable": false}),
+            ),
+            (
+                "kernel.surface",
+                "modprobe",
+                json!({"path": "/sbin/modprobe", "writable": false}),
+            ),
+            ("kernel.surface", "acpi_table_writable", json!(false)),
+        ]);
+        assert!(
+            rule("AMR-029")
+                .evaluate(&r_unsupported_arch, false)
+                .is_some()
+        );
+
+        // AMR-029 does NOT fire when active probe did not run (no kernel.exec facts)
+        let r_noprobe = report_with(&[("kernel.surface", "dev_mem", json!("absent"))]);
+        assert!(rule("AMR-029").evaluate(&r_noprobe, false).is_none());
+
+        // AMR-029 does NOT fire when any of AMR-023..028 fired (e.g. dev_mem accessible)
+        let r_unsafe = report_with(&[
+            (
+                "kernel.exec",
+                "finit_module",
+                json!({"status": "denied", "errno": 1, "error_name": "EPERM"}),
+            ),
+            (
+                "kernel.exec",
+                "init_module",
+                json!({"status": "denied", "errno": 1, "error_name": "EPERM"}),
+            ),
+            (
+                "kernel.exec",
+                "kexec_load",
+                json!({"status": "denied", "errno": 1, "error_name": "EPERM"}),
+            ),
+            (
+                "kernel.exec",
+                "kexec_file_load",
+                json!({"status": "denied", "errno": 1, "error_name": "EPERM"}),
+            ),
+            (
+                "kernel.exec",
+                "iopl",
+                json!({"status": "denied", "errno": 1, "error_name": "EPERM"}),
+            ),
+            ("kernel.surface", "dev_mem", json!("accessible")),
+            ("kernel.surface", "dev_kmem", json!("absent")),
+            (
+                "kernel.surface",
+                "core_pattern",
+                json!({"pattern": "|/bin/helper", "writable": false}),
+            ),
+            (
+                "kernel.surface",
+                "modprobe",
+                json!({"path": "/sbin/modprobe", "writable": false}),
+            ),
+            ("kernel.surface", "acpi_table_writable", json!(false)),
+        ]);
+        assert!(rule("AMR-025").evaluate(&r_unsafe, false).is_some());
+        assert!(rule("AMR-029").evaluate(&r_unsafe, false).is_none());
     }
 }
