@@ -94,6 +94,10 @@ pub struct Rule {
     /// host verdict too, applicability never false), and the ungated specs
     /// AMR-007/012/013/014/015/020 are false.
     pub container_only: bool,
+    /// true → finding is hidden in human text output unless `--verbose` is passed
+    /// (spec §4). Typically used for informational notes on bare hosts to eliminate
+    /// terminal alert fatigue while preserving complete machine reporting.
+    pub verbose_only: bool,
     /// `Some(evidence)` fires the rule; `None` stays silent.
     pub check: fn(&Assess) -> Option<Vec<Fact>>,
 }
@@ -128,14 +132,51 @@ impl Rule {
                 evidence: evidence.unwrap_or_default(),
             });
         }
+        let evidence = evidence?;
+        let severity = if self.id == "AMR-030" {
+            evaluate_amr030_severity(&a, &evidence)
+        } else {
+            self.severity
+        };
         Some(Finding {
             rule: self.id,
-            severity: self.severity,
+            severity,
             summary: self.summary.into(),
             why: self.why,
             remediation: self.remediation,
             references: self.references,
-            evidence: evidence?,
+            evidence,
         })
+    }
+}
+
+/// Computes dynamic severity for AMR-030 (`staging-mount-unhardened`):
+/// - Bare host: Info
+/// - Shared-kernel container: Medium, elevating to High if any staging mount is
+///   missing `nodev` and the caller holds `cap_mknod`.
+fn evaluate_amr030_severity(a: &Assess, evidence: &[Fact]) -> Severity {
+    if !a.shared_kernel_containment() {
+        return Severity::Info;
+    }
+    let has_cap_mknod = a.arr_has("capabilities", "effective", "cap_mknod");
+    let missing_nodev = evidence.iter().any(|fact| {
+        fact.value.as_array().is_some_and(|arr| {
+            arr.iter().any(|entry| {
+                let in_missing = entry
+                    .get("missing_flags")
+                    .and_then(|f| f.as_array())
+                    .is_some_and(|flags| flags.iter().any(|flag| flag == "nodev"));
+                let not_in_options = entry
+                    .get("options")
+                    .and_then(|opts| opts.as_array())
+                    .is_some_and(|opts| !opts.iter().any(|o| o == "nodev"));
+                in_missing || not_in_options
+            })
+        })
+    });
+    if has_cap_mknod && missing_nodev {
+        Severity::High
+    } else {
+        Severity::Medium
     }
 }

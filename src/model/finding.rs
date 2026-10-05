@@ -45,6 +45,7 @@ mod tests {
         references: &["https://example.test/doc"],
         requires_root: false,
         container_only: false,
+        verbose_only: false,
         check: |_| Some(vec![]),
     };
 

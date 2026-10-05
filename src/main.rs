@@ -123,6 +123,7 @@ mod tests {
         references: &[],
         requires_root: false,
         container_only: false,
+        verbose_only: false,
         check: |_a| Some(vec![]),
     };
 

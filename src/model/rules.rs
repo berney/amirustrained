@@ -24,6 +24,7 @@ pub static RULES: &[Rule] = &[
         // Socket exposure is reachable-from-host, not containment-gated: the
         // rule fires on a Host verdict by design, applicability never false.
         container_only: false,
+        verbose_only: false,
         check: |a| {
             let f = a.fact("sockets", "found")?;
             let hits: Vec<&serde_json::Value> = f
@@ -69,6 +70,7 @@ pub static RULES: &[Rule] = &[
         // Membership in the §6 container-gated set (Rule::container_only
         // mirrors the shared_kernel_containment() conjunct in check).
         container_only: true,
+        verbose_only: false,
         check: |a| {
             if !a.shared_kernel_containment() {
                 return None;
@@ -105,6 +107,7 @@ pub static RULES: &[Rule] = &[
         ],
         requires_root: false,
         container_only: true,
+        verbose_only: false,
         check: |a| {
             if !a.shared_kernel_containment() {
                 return None;
@@ -132,6 +135,7 @@ pub static RULES: &[Rule] = &[
         ],
         requires_root: true,
         container_only: true,
+        verbose_only: false,
         check: |a| {
             // Host PID ns is tautological on a bare host: the finding is about a
             // contained process that shares it.
@@ -175,6 +179,7 @@ pub static RULES: &[Rule] = &[
         references: &["https://docs.docker.com/engine/security/seccomp/"],
         requires_root: false,
         container_only: true,
+        verbose_only: false,
         check: |a| {
             if !a.shared_kernel_containment() {
                 return None;
@@ -201,6 +206,7 @@ pub static RULES: &[Rule] = &[
         ],
         requires_root: false,
         container_only: true,
+        verbose_only: false,
         check: |a| {
             if !a.shared_kernel_containment() {
                 return None;
@@ -246,6 +252,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         // Ungated like AMR-001 (see its note): fires on a Host verdict too.
         container_only: false,
+        verbose_only: false,
         check: |a| {
             let f = a.fact("sockets", "found")?;
             let hits: Vec<&serde_json::Value> = f
@@ -286,6 +293,7 @@ pub static RULES: &[Rule] = &[
         references: &["https://www.kernel.org/doc/html/latest/security/selinux/index.html"],
         requires_root: false,
         container_only: false,
+        verbose_only: false,
         check: |a| {
             // No containment gate (spec condition verbatim): permissive MAC on a
             // bare host is a real hardening gap, not a tautology like AMR-003/004.
@@ -313,6 +321,7 @@ pub static RULES: &[Rule] = &[
         ],
         requires_root: false,
         container_only: true,
+        verbose_only: false,
         check: |a| {
             if !a.shared_kernel_containment() {
                 return None;
@@ -343,6 +352,7 @@ pub static RULES: &[Rule] = &[
         ],
         requires_root: false,
         container_only: true,
+        verbose_only: false,
         check: |a| {
             if !a.shared_kernel_containment() {
                 return None;
@@ -370,6 +380,7 @@ pub static RULES: &[Rule] = &[
         ],
         requires_root: false,
         container_only: true,
+        verbose_only: false,
         check: |a| {
             if !a.shared_kernel_containment() {
                 return None;
@@ -407,6 +418,7 @@ pub static RULES: &[Rule] = &[
         ],
         requires_root: false,
         container_only: true,
+        verbose_only: false,
         check: |a| {
             // Containment gate (spec §6 erratum, live host scan 2026-10-01):
             // init-ns gid_map is trivially `0 0 4294967295` with setgroups
@@ -447,6 +459,7 @@ pub static RULES: &[Rule] = &[
         ],
         requires_root: false,
         container_only: false,
+        verbose_only: false,
         check: |a| {
             a.fact("lsm", "landlockAbi")
                 .filter(|f| f.value.as_i64().is_some_and(|v| v >= 1))
@@ -469,6 +482,7 @@ pub static RULES: &[Rule] = &[
         references: &["https://www.kernel.org/doc/html/latest/virt/kvm/index.html"],
         requires_root: false,
         container_only: false,
+        verbose_only: false,
         check: |a| {
             a.fact("vmm", "hypervisor")
                 .filter(|f| f.value.get("present") == Some(&serde_json::Value::Bool(true)))
@@ -495,6 +509,7 @@ pub static RULES: &[Rule] = &[
         ],
         requires_root: false,
         container_only: false,
+        verbose_only: false,
         check: |a| {
             // Typed RuntimeKind match on the fusion verdict (not a string):
             // spec row 210 names the three strong-isolation variants.
@@ -523,6 +538,7 @@ pub static RULES: &[Rule] = &[
         references: &[],
         requires_root: false,
         container_only: false,
+        verbose_only: false,
         check: |a| {
             // Plan amendment: Verdict::confidence is the string ladder
             // high|medium|low — match "low" exactly, never a numeric < 0.5.
@@ -550,6 +566,7 @@ pub static RULES: &[Rule] = &[
         ],
         requires_root: false,
         container_only: true,
+        verbose_only: false,
         check: |a| {
             if !a.shared_kernel_containment() {
                 return None;
@@ -617,6 +634,7 @@ pub static RULES: &[Rule] = &[
         ],
         requires_root: false,
         container_only: true,
+        verbose_only: false,
         check: |a| {
             if !a.shared_kernel_containment() {
                 return None;
@@ -649,6 +667,7 @@ pub static RULES: &[Rule] = &[
         ],
         requires_root: false,
         container_only: true,
+        verbose_only: false,
         check: |a| {
             if !a.shared_kernel_containment() {
                 return None;
@@ -691,6 +710,7 @@ pub static RULES: &[Rule] = &[
         ],
         requires_root: false,
         container_only: true,
+        verbose_only: false,
         check: |a| {
             if !a.shared_kernel_containment() {
                 return None;
@@ -736,6 +756,7 @@ pub static RULES: &[Rule] = &[
         ],
         requires_root: false,
         container_only: false,
+        verbose_only: false,
         check: |a| {
             if !a.arr_has("capabilities", "effective", "cap_bpf")
                 && !a.arr_has("capabilities", "effective", "cap_perfmon")
@@ -784,6 +805,7 @@ pub static RULES: &[Rule] = &[
         ],
         requires_root: false,
         container_only: true,
+        verbose_only: false,
         check: |a| {
             if !a.shared_kernel_containment() {
                 return None;
@@ -807,6 +829,7 @@ pub static RULES: &[Rule] = &[
         ],
         requires_root: false,
         container_only: false,
+        verbose_only: false,
         check: check_amr023,
     },
     Rule {
@@ -822,6 +845,7 @@ pub static RULES: &[Rule] = &[
         ],
         requires_root: false,
         container_only: false,
+        verbose_only: false,
         check: check_amr024,
     },
     Rule {
@@ -837,6 +861,7 @@ pub static RULES: &[Rule] = &[
         ],
         requires_root: false,
         container_only: false,
+        verbose_only: false,
         check: check_amr025,
     },
     Rule {
@@ -852,6 +877,7 @@ pub static RULES: &[Rule] = &[
         ],
         requires_root: false,
         container_only: false,
+        verbose_only: false,
         check: check_amr026,
     },
     Rule {
@@ -867,6 +893,7 @@ pub static RULES: &[Rule] = &[
         ],
         requires_root: false,
         container_only: false,
+        verbose_only: false,
         check: check_amr027,
     },
     Rule {
@@ -882,6 +909,7 @@ pub static RULES: &[Rule] = &[
         ],
         requires_root: false,
         container_only: false,
+        verbose_only: false,
         check: check_amr028,
     },
     Rule {
@@ -897,7 +925,72 @@ pub static RULES: &[Rule] = &[
         ],
         requires_root: false,
         container_only: false,
+        verbose_only: false,
         check: check_amr029,
+    },
+    Rule {
+        id: "AMR-030",
+        slug: "staging-mount-unhardened",
+        severity: Severity::Medium,
+        summary: "Writable mount allows code execution and device creation",
+        why: "A mount point is mounted read-write without noexec, allowing arbitrary binary execution. If nodev is also missing and the process holds CAP_MKNOD, device nodes can be created to bypass device isolation.",
+        remediation: "Mount temporary and staging directories with noexec, nosuid, and nodev options.",
+        references: &[
+            "https://docs.kernel.org/filesystems/sharedsubtree.html",
+            "https://man7.org/linux/man-pages/man2/mount.2.html",
+        ],
+        requires_root: false,
+        container_only: false,
+        verbose_only: true,
+        check: check_amr030,
+    },
+    Rule {
+        id: "AMR-031",
+        slug: "sensitive-proc-sys-unmasked",
+        severity: Severity::High,
+        summary: "Sensitive /proc or /sys pseudo-filesystem paths are unmasked or writable inside container",
+        why: "Container isolation requires masking sensitive /proc and /sys interfaces (e.g. /proc/sys, /proc/kcore, /proc/sysrq-trigger, /sys/firmware). Writable sysctl knobs or unmasked raw memory interfaces allow kernel modification or host compromise.",
+        remediation: "Ensure the container runtime masks /proc/kcore, /proc/sysrq-trigger, and /sys/firmware, and mounts /proc/sys read-only.",
+        references: &[
+            "https://docs.docker.com/engine/security/#masked-paths-in-default-runtime",
+            "https://man7.org/linux/man-pages/man5/proc.5.html",
+        ],
+        requires_root: false,
+        container_only: true,
+        verbose_only: false,
+        check: check_amr031,
+    },
+    Rule {
+        id: "AMR-032",
+        slug: "shared-mount-propagation",
+        severity: Severity::Medium,
+        summary: "Container mount carries shared or master mount propagation flags",
+        why: "Mounts with shared or master propagation can leak mount and unmount events across namespace boundaries, potentially affecting host filesystems or allowing denial-of-service.",
+        remediation: "Configure container mounts with private or slave propagation flags (e.g., rprivate).",
+        references: &[
+            "https://docs.kernel.org/filesystems/sharedsubtree.html",
+            "https://man7.org/linux/man-pages/man7/mount_namespaces.7.html",
+        ],
+        requires_root: false,
+        container_only: true,
+        verbose_only: false,
+        check: check_amr032,
+    },
+    Rule {
+        id: "AMR-033",
+        slug: "host-filesystem-exposed",
+        severity: Severity::Critical,
+        summary: "Host root filesystem or system control directories are mounted directly inside container",
+        why: "Mounting the host root (/) or host directories directly inside a container completely breaks filesystem isolation, allowing container processes to access or modify host system binaries, configurations, and sensitive credentials.",
+        remediation: "Do not bind-mount host root (/) or host system directories into containers. Use scoped volume mounts.",
+        references: &[
+            "https://docs.docker.com/engine/security/#general-guidelines-for-container-security",
+            "https://man7.org/linux/man-pages/man7/mount_namespaces.7.html",
+        ],
+        requires_root: false,
+        container_only: true,
+        verbose_only: false,
+        check: check_amr033,
     },
 ];
 
@@ -1236,6 +1329,51 @@ fn check_amr029(a: &Assess) -> Option<Vec<Fact>> {
     }
 
     Some(ev)
+}
+
+fn check_amr030(a: &Assess) -> Option<Vec<Fact>> {
+    let f = a.fact("mounts", "staging")?;
+    let arr = f.value.as_array()?;
+    if arr.is_empty() {
+        return None;
+    }
+    Some(vec![f.clone()])
+}
+
+fn check_amr031(a: &Assess) -> Option<Vec<Fact>> {
+    if !a.shared_kernel_containment() {
+        return None;
+    }
+    let f = a.fact("mounts", "sensitive_unmasked")?;
+    let arr = f.value.as_array()?;
+    if arr.is_empty() {
+        return None;
+    }
+    Some(vec![f.clone()])
+}
+
+fn check_amr032(a: &Assess) -> Option<Vec<Fact>> {
+    if !a.shared_kernel_containment() {
+        return None;
+    }
+    let f = a.fact("mounts", "shared_propagation")?;
+    let arr = f.value.as_array()?;
+    if arr.is_empty() {
+        return None;
+    }
+    Some(vec![f.clone()])
+}
+
+fn check_amr033(a: &Assess) -> Option<Vec<Fact>> {
+    if !a.shared_kernel_containment() {
+        return None;
+    }
+    let f = a.fact("mounts", "host_leaks")?;
+    let arr = f.value.as_array()?;
+    if arr.is_empty() {
+        return None;
+    }
+    Some(vec![f.clone()])
 }
 
 #[cfg(test)]
@@ -2414,7 +2552,7 @@ mod tests {
         // Registry order is append-stable, not numeric: AMR-022 was an
         // id-space append (ReviewT19 F2) and keeps its slot; Task 21 appended
         // 014–018 after AMR-013, Task 28 appended 019–020, Task 29 021,
-        // Task 6 appended 023–029.
+        // Task 6 appended 023–029, Task 4 appended 030–033.
         assert_eq!(
             ids,
             [
@@ -2422,7 +2560,7 @@ mod tests {
                 "AMR-007", "AMR-008", "AMR-009", "AMR-010", "AMR-011", "AMR-012", "AMR-013",
                 "AMR-014", "AMR-015", "AMR-016", "AMR-017", "AMR-018", "AMR-019", "AMR-020",
                 "AMR-021", "AMR-023", "AMR-024", "AMR-025", "AMR-026", "AMR-027", "AMR-028",
-                "AMR-029",
+                "AMR-029", "AMR-030", "AMR-031", "AMR-032", "AMR-033",
             ]
         );
     }
@@ -3410,5 +3548,155 @@ mod tests {
             rule("AMR-029").evaluate(&r_unsupported, false).is_some(),
             "AMR-029 must fire when all pathways are verified denied, unsupported, or unsupported_arch"
         );
+    }
+
+    // ---------------------------------------------------------------- AMR-030..033 (Mounts)
+
+    #[test]
+    fn mount_rules_amr030_staging_mount_unhardened() {
+        let staging_mount_with_nodev = json!([{
+            "mount_point": "/tmp",
+            "fstype": "tmpfs",
+            "writable_by_caller": true,
+            "missing_flags": ["noexec", "nosuid"],
+            "options": ["rw", "nodev"]
+        }]);
+
+        let staging_mount_missing_nodev = json!([{
+            "mount_point": "/tmp",
+            "fstype": "tmpfs",
+            "writable_by_caller": true,
+            "missing_flags": ["noexec", "nosuid", "nodev"],
+            "options": ["rw"]
+        }]);
+
+        // Container with staging mount and nodev -> Medium
+        let mut r_med = report_with(&[("mounts", "staging", staging_mount_with_nodev.clone())]);
+        r_med.verdict = Some(verdict(RuntimeKind::Docker));
+        let f_med = rule("AMR-030")
+            .evaluate(&r_med, false)
+            .expect("AMR-030 must fire in container");
+        assert_eq!(f_med.severity, Severity::Medium);
+        assert_eq!(f_med.evidence.len(), 1);
+        assert_eq!(f_med.evidence[0].probe, "mounts");
+        assert_eq!(f_med.evidence[0].key, "staging");
+
+        // Container with missing nodev AND cap_mknod -> High
+        let mut r_high = report_with(&[
+            ("mounts", "staging", staging_mount_missing_nodev.clone()),
+            ("capabilities", "effective", json!(["cap_mknod"])),
+        ]);
+        r_high.verdict = Some(verdict(RuntimeKind::Docker));
+        let f_high = rule("AMR-030")
+            .evaluate(&r_high, false)
+            .expect("AMR-030 must fire as High with cap_mknod");
+        assert_eq!(f_high.severity, Severity::High);
+
+        // Container with missing nodev but WITHOUT cap_mknod -> remains Medium
+        let mut r_no_mknod = report_with(&[
+            ("mounts", "staging", staging_mount_missing_nodev.clone()),
+            ("capabilities", "effective", json!(["cap_chown"])),
+        ]);
+        r_no_mknod.verdict = Some(verdict(RuntimeKind::Docker));
+        let f_no_mknod = rule("AMR-030")
+            .evaluate(&r_no_mknod, false)
+            .expect("AMR-030 fires Medium without cap_mknod");
+        assert_eq!(f_no_mknod.severity, Severity::Medium);
+
+        // Bare host with staging mount -> Info and rule has verbose_only = true
+        let mut r_host = report_with(&[("mounts", "staging", staging_mount_missing_nodev)]);
+        r_host.verdict = Some(verdict(RuntimeKind::Host));
+        let rule_030 = rule("AMR-030");
+        assert!(
+            rule_030.verbose_only,
+            "AMR-030 rule must have verbose_only = true"
+        );
+        let f_host = rule_030
+            .evaluate(&r_host, false)
+            .expect("AMR-030 fires as Info on bare host");
+        assert_eq!(f_host.severity, Severity::Info);
+
+        // Empty staging mounts -> does NOT fire
+        let mut r_empty = report_with(&[("mounts", "staging", json!([]))]);
+        r_empty.verdict = Some(verdict(RuntimeKind::Docker));
+        assert!(rule("AMR-030").evaluate(&r_empty, false).is_none());
+    }
+
+    #[test]
+    fn mount_rules_amr031_sensitive_proc_sys_unmasked() {
+        let unmasked = json!(["/proc/sys", "/proc/kcore"]);
+
+        // In container -> High
+        let mut r_cont = report_with(&[("mounts", "sensitive_unmasked", unmasked.clone())]);
+        r_cont.verdict = Some(verdict(RuntimeKind::Docker));
+        let f = rule("AMR-031")
+            .evaluate(&r_cont, false)
+            .expect("AMR-031 must fire in container");
+        assert_eq!(f.severity, Severity::High);
+        assert_eq!(f.evidence.len(), 1);
+        assert_eq!(f.evidence[0].probe, "mounts");
+        assert_eq!(f.evidence[0].key, "sensitive_unmasked");
+
+        // On bare host -> silenced
+        let mut r_host = report_with(&[("mounts", "sensitive_unmasked", unmasked)]);
+        r_host.verdict = Some(verdict(RuntimeKind::Host));
+        assert!(rule("AMR-031").evaluate(&r_host, false).is_none());
+
+        // Empty -> does NOT fire
+        let mut r_empty = report_with(&[("mounts", "sensitive_unmasked", json!([]))]);
+        r_empty.verdict = Some(verdict(RuntimeKind::Docker));
+        assert!(rule("AMR-031").evaluate(&r_empty, false).is_none());
+    }
+
+    #[test]
+    fn mount_rules_amr032_shared_mount_propagation() {
+        let shared = json!(["/var/lib/docker", "/mnt/share"]);
+
+        // In container -> Medium
+        let mut r_cont = report_with(&[("mounts", "shared_propagation", shared.clone())]);
+        r_cont.verdict = Some(verdict(RuntimeKind::Docker));
+        let f = rule("AMR-032")
+            .evaluate(&r_cont, false)
+            .expect("AMR-032 must fire in container");
+        assert_eq!(f.severity, Severity::Medium);
+        assert_eq!(f.evidence.len(), 1);
+        assert_eq!(f.evidence[0].probe, "mounts");
+        assert_eq!(f.evidence[0].key, "shared_propagation");
+
+        // On bare host -> silenced
+        let mut r_host = report_with(&[("mounts", "shared_propagation", shared)]);
+        r_host.verdict = Some(verdict(RuntimeKind::Host));
+        assert!(rule("AMR-032").evaluate(&r_host, false).is_none());
+
+        // Empty -> does NOT fire
+        let mut r_empty = report_with(&[("mounts", "shared_propagation", json!([]))]);
+        r_empty.verdict = Some(verdict(RuntimeKind::Docker));
+        assert!(rule("AMR-032").evaluate(&r_empty, false).is_none());
+    }
+
+    #[test]
+    fn mount_rules_amr033_host_filesystem_exposed() {
+        let leaks = json!(["/host", "/"]);
+
+        // In container -> Critical
+        let mut r_cont = report_with(&[("mounts", "host_leaks", leaks.clone())]);
+        r_cont.verdict = Some(verdict(RuntimeKind::Docker));
+        let f = rule("AMR-033")
+            .evaluate(&r_cont, false)
+            .expect("AMR-033 must fire in container");
+        assert_eq!(f.severity, Severity::Critical);
+        assert_eq!(f.evidence.len(), 1);
+        assert_eq!(f.evidence[0].probe, "mounts");
+        assert_eq!(f.evidence[0].key, "host_leaks");
+
+        // On bare host -> silenced
+        let mut r_host = report_with(&[("mounts", "host_leaks", leaks)]);
+        r_host.verdict = Some(verdict(RuntimeKind::Host));
+        assert!(rule("AMR-033").evaluate(&r_host, false).is_none());
+
+        // Empty -> does NOT fire
+        let mut r_empty = report_with(&[("mounts", "host_leaks", json!([]))]);
+        r_empty.verdict = Some(verdict(RuntimeKind::Docker));
+        assert!(rule("AMR-033").evaluate(&r_empty, false).is_none());
     }
 }
