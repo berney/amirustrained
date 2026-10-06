@@ -306,6 +306,32 @@ plus `--probe-syscalls`, and asserts the JSON contract (`schemaVersion 1`,
 SARIF 2.1.0). Its `--fail-on high ⇒ 1 / critical ⇒ 0` exit-code asserts are
 **this-host** posture claims, so it is a local smoke, not portable CI.
 
+### Live runtime matrix
+
+Run the latest working-tree binary inside a real isolation runtime. Each
+`scripts/live/<env>.sh` leaf rebuilds (unless `BIN` is set), then forwards its
+arguments to amirustrained, passing stdout, stderr and the exit code straight through:
+
+```sh
+scripts/live/gvisor.sh --compact                # one env, any amirustrained args
+scripts/live/firecracker.sh --format json | jq .verdict
+scripts/live/firecracker.sh check               # "available" (0) | "unavailable: <why>" (3)
+scripts/live/firecracker.sh setup               # fetch assets into ~/.cache/amirustrained/live-matrix
+scripts/live-matrix.sh list                     # every env + availability (TSV)
+scripts/live-matrix.sh run all                  # full 7-view sweep -> target/live-matrix/<env>/
+scripts/live-matrix.sh summary                  # markdown comparison tables
+cargo test --test live_matrix -- --ignored      # verdict + container-gating asserts per env
+```
+
+Envs: `host`, `docker-default`, `docker-privileged`, `bubblewrap`, `unshare`,
+`gvisor` (engine `--runtime=runsc`), `gvisor-rootless`, `gvisor-sudo`, `firecracker`.
+`docker-*` use `docker` or podman (`CONTAINER_ENGINE` overrides). Firecracker runs
+rootless with a writable `/dev/kvm`: the rootfs is attached read-only and the binary
+and result travel over raw scratch drives. Unavailable envs exit 3 and are skipped by
+`run all` and the cargo tests (`AMR_LIVE_REQUIRE=1` makes them fail).
+`.github/workflows/live-matrix.yml` runs the same scripts after `setup --system`
+(sudo host prep: apt, sysctl, `runsc install`, `/dev/kvm` perms).
+
 ## Security notes
 
 The binary is read-only with respect to the system: it never writes files (except

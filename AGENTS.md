@@ -80,3 +80,11 @@ The scan pipeline executes probes sequentially in deterministic order:
 - **Static Musl Binaries:** Targets `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, and `riscv64gc-unknown-linux-musl`.
 - **Zero Dynamic C Dependencies:** Decompression is pure Rust (`flate2` with `miniz_oxide`/`rust_backend`). Hashing is pure Rust (`sha2`). System calls use `rustix` and `libc`.
 - **Per-Architecture Syscall ABIs:** Syscall numbers are treated as arch ABIs, strictly maintaining per-architecture committed tables without dynamic assumptions.
+
+---
+
+## Live Runtime Verification
+
+- **Leaf per runtime:** `scripts/live/<env>.sh [ARGS...]` builds the working tree (unless `BIN` is set) and runs it inside that runtime with stdio and exit code passed through. `<env>.sh check` exits `3` when the runtime is unavailable on this machine; treat that as "not testable here", not as a pass.
+- **Matrix and CI share the leaves:** `scripts/live-matrix.sh` (`list`, `run`, `summary`, `setup`) and `.github/workflows/live-matrix.yml` only call the leaves. A new runtime is one new leaf, one `ENVS` entry in `scripts/live-matrix.sh`, and one `live!` row in `tests/live_matrix.rs`.
+- **Verification:** for detection or rule-gating changes, run `cargo test --test live_matrix -- --ignored` (add a name filter for a single env) and quote the observed verdicts.
