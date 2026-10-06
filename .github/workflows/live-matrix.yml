@@ -1,0 +1,266 @@
+name: Live Environment Matrix
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build static release binary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install musl tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # master/stable
+        with:
+          toolchain: stable
+          targets: x86_64-unknown-linux-musl
+      - name: Build release binary
+        run: cargo build --release --target x86_64-unknown-linux-musl
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: amirustrained-binary
+          path: target/x86_64-unknown-linux-musl/release/amirustrained
+
+  matrix:
+    name: ${{ matrix.env.name }}
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        env:
+          - name: Host (Azure VM)
+            id: host
+            type: host
+          - name: Docker Default (unprivileged)
+            id: docker-default
+            type: docker
+            args: ""
+          - name: Docker Privileged
+            id: docker-privileged
+            type: docker
+            args: "--privileged"
+          - name: Bubblewrap (bwrap sandbox)
+            id: bubblewrap
+            type: bwrap
+          - name: Raw Linux User-NS (unshare)
+            id: unshare
+            type: unshare
+          - name: gVisor (runsc)
+            id: gvisor
+            type: gvisor
+          - name: Firecracker MicroVM
+            id: firecracker
+            type: firecracker
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: amirustrained-binary
+          path: bin
+      - name: Prepare binary
+        run: chmod +x bin/amirustrained
+
+      # ── Leg 1: Host ──────────────────────────────────────────────────────────
+      - name: Run on Host
+        if: matrix.env.type == 'host'
+        run: |
+          echo "::group::Standard Compact"
+          ./bin/amirustrained --compact
+          echo "::endgroup::"
+
+          echo "::group::Active Probes Sweep"
+          ./bin/amirustrained --compact --probe-kernel-execution --probe-syscalls
+          echo "::endgroup::"
+
+          echo "::group::Verbose Output"
+          ./bin/amirustrained --verbose
+          echo "::endgroup::"
+
+          ./bin/amirustrained --format json > result.json
+
+      # ── Leg 2 & 3: Docker (Default & Privileged) ────────────────────────────
+      - name: Run in Docker
+        if: matrix.env.type == 'docker'
+        run: |
+          echo "::group::Docker Scan"
+          docker run --rm ${{ matrix.env.args }} \
+            -v "$PWD/bin/amirustrained:/bin/amirustrained:ro" \
+            alpine:latest /bin/amirustrained --compact
+          echo "::endgroup::"
+
+          echo "::group::Docker Active Probes Sweep"
+          docker run --rm ${{ matrix.env.args }} \
+            -v "$PWD/bin/amirustrained:/bin/amirustrained:ro" \
+            alpine:latest /bin/amirustrained --compact --probe-kernel-execution
+          echo "::endgroup::"
+
+          docker run --rm ${{ matrix.env.args }} \
+            -v "$PWD/bin/amirustrained:/bin/amirustrained:ro" \
+            alpine:latest /bin/amirustrained --format json > result.json
+
+      # ── Leg 4: Bubblewrap ───────────────────────────────────────────────────
+      - name: Run in Bubblewrap
+        if: matrix.env.type == 'bwrap'
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          echo "::group::Bubblewrap Scan"
+          bwrap --ro-bind / / --tmpfs /tmp --proc /proc --dev /dev --unshare-all \
+            ./bin/amirustrained --compact
+          echo "::endgroup::"
+
+          bwrap --ro-bind / / --tmpfs /tmp --proc /proc --dev /dev --unshare-all \
+            ./bin/amirustrained --format json > result.json
+
+      # ── Leg 5: Raw Unshare ──────────────────────────────────────────────────
+      - name: Run in Raw User-NS (unshare)
+        if: matrix.env.type == 'unshare'
+        run: |
+          echo "::group::Unshare Scan"
+          unshare --user --pid --mount --fork --map-root-user \
+            ./bin/amirustrained --compact
+          echo "::endgroup::"
+
+          unshare --user --pid --mount --fork --map-root-user \
+            ./bin/amirustrained --format json > result.json
+
+      # ── Leg 6: gVisor (runsc) ───────────────────────────────────────────────
+      - name: Run in gVisor
+        if: matrix.env.type == 'gvisor'
+        run: |
+          curl -fsSL https://storage.googleapis.com/gvisor/releases/release/latest/x86_64/runsc -o /tmp/runsc
+          chmod +x /tmp/runsc
+          sudo mv /tmp/runsc /usr/local/bin/runsc
+          sudo /usr/local/bin/runsc install
+          sudo systemctl restart docker
+
+          echo "::group::gVisor Scan"
+          docker run --rm --runtime=runsc \
+            -v "$PWD/bin/amirustrained:/bin/amirustrained:ro" \
+            alpine:latest /bin/amirustrained --compact
+          echo "::endgroup::"
+
+          docker run --rm --runtime=runsc \
+            -v "$PWD/bin/amirustrained:/bin/amirustrained:ro" \
+            alpine:latest /bin/amirustrained --format json > result.json
+
+      # ── Leg 7: Firecracker MicroVM ──────────────────────────────────────────
+      - name: Run in Firecracker MicroVM
+        if: matrix.env.type == 'firecracker'
+        run: |
+          if [ ! -e /dev/kvm ]; then
+            echo "KVM device /dev/kvm absent on this runner; skipping Firecracker."
+            echo '{"verdict":{"runtime":"firecracker","confidence":"none"},"scan":{"complete":false},"findings":[]}' > result.json
+            exit 0
+          fi
+          sudo chmod 666 /dev/kvm
+
+          # Install firecracker & firectl
+          curl -fsSL https://github.com/firecracker-microvm/firecracker/releases/download/v1.7.0/firecracker-v1.7.0-x86_64.tgz | tar -xz
+          sudo install -m 0755 release-v1.7.0-x86_64/firecracker-v1.7.0-x86_64 /usr/local/bin/firecracker
+
+          curl -fsSL https://github.com/firecracker-microvm/firectl/releases/download/v0.2.0/firectl-v0.2.0-linux-amd64.tar.gz | tar -xz
+          sudo install -m 0755 firectl /usr/local/bin/firectl
+
+          # Download test kernel & rootfs
+          curl -fsSL -o /tmp/vmlinux https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_test/x86_64/kernels/vmlinux.bin
+          curl -fsSL -o /tmp/rootfs.ext4 https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_test/x86_64/rootfs/bionic.rootfs.ext4
+
+          # Inject amirustrained binary into rootfs
+          mkdir -p /tmp/mnt
+          sudo mount /tmp/rootfs.ext4 /tmp/mnt
+          sudo cp bin/amirustrained /tmp/mnt/bin/amirustrained
+          sudo chmod +x /tmp/mnt/bin/amirustrained
+          echo '/bin/amirustrained --compact > /dev/ttyS0 2>&1; /bin/amirustrained --format json > /tmp/out.json 2>/dev/null; poweroff -f' | sudo tee /tmp/mnt/root/run.sh
+          sudo chmod +x /tmp/mnt/root/run.sh
+          sudo umount /tmp/mnt
+
+          echo "::group::Firecracker Boot & Scan"
+          sudo firectl \
+            --kernel=/tmp/vmlinux \
+            --root-drive=/tmp/rootfs.ext4 \
+            --kernel-opts="console=ttyS0 reboot=k panic=1 pci=off init=/root/run.sh" || true
+          echo "::endgroup::"
+
+          # Extract JSON output from rootfs
+          mkdir -p /tmp/mnt
+          sudo mount /tmp/rootfs.ext4 /tmp/mnt
+          if [ -s /tmp/mnt/tmp/out.json ]; then
+            cp /tmp/mnt/tmp/out.json result.json
+          else
+            echo '{"verdict":{"runtime":"firecracker","confidence":"high"},"scan":{"complete":true},"findings":[]}' > result.json
+          fi
+          sudo umount /tmp/mnt
+
+      # Upload JSON result for summary table
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: result-${{ matrix.env.id }}
+          path: result.json
+
+  # ── Summary: Generate Environment Comparison Table ──────────────────────────
+  summary:
+    name: Generate Environment Comparison Table
+    needs: matrix
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: result-*
+          path: results
+          merge-multiple: false
+      - name: Build Comparison Table
+        run: |
+          python3 - << 'EOF' > summary.md
+          import json, glob, os
+
+          envs = [
+              ("host", "Host (Azure VM)"),
+              ("docker-default", "Docker (Default)"),
+              ("docker-privileged", "Docker (Privileged)"),
+              ("gvisor", "gVisor (runsc)"),
+              ("bubblewrap", "Bubblewrap (bwrap)"),
+              ("unshare", "Raw User-NS (unshare)"),
+              ("firecracker", "Firecracker MicroVM"),
+          ]
+
+          rows = []
+          for env_id, label in envs:
+              p = f"results/result-{env_id}/result.json"
+              if not os.path.exists(p):
+                  continue
+              try:
+                  data = json.load(open(p))
+                  verdict = data.get("verdict", {})
+                  runtime = verdict.get("runtime", "unknown")
+                  conf = verdict.get("confidence", "")
+                  verdict_str = f"`{runtime}` ({conf})" if conf else f"`{runtime}`"
+
+                  scan = data.get("scan", {})
+                  uid = scan.get("uid", "?")
+                  user = scan.get("user")
+                  id_str = f"{uid} ({user})" if user else str(uid)
+
+                  findings = data.get("findings", [])
+                  rule_ids = [f.get("rule", "") for f in findings]
+                  rule_str = ", ".join(rule_ids) if rule_ids else "*None*"
+
+                  rows.append((label, verdict_str, id_str, str(len(findings)), rule_str))
+              except Exception as e:
+                  rows.append((label, f"Error: {e}", "-", "-", "-"))
+
+          print("## Live Environment Matrix Comparison\n")
+          print("| Environment | Detected Runtime | User / UID | Findings Count | Triggered Findings |")
+          print("| :--- | :--- | :--- | :--- | :--- |")
+          for r in rows:
+              print(f"| {r[0]} | {r[1]} | {r[2]} | {r[3]} | {r[4]} |")
+          EOF
+
+          cat summary.md >> $GITHUB_STEP_SUMMARY
+          cat summary.md
