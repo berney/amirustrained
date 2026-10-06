@@ -4,7 +4,7 @@
 # For a single environment call the leaf directly, e.g.
 #   scripts/live/gvisor.sh --compact
 #
-#   scripts/live-matrix.sh list                          # env, status, label, reason (TSV)
+#   scripts/live-matrix.sh list                          # env, status, label, reason (aligned; TSV when piped)
 #   scripts/live-matrix.sh run [--skip-unavailable] <env>...|all
 #                                                        # full sweep -> $OUT/<env>/
 #   scripts/live-matrix.sh summary [DIR]                 # markdown comparison tables
@@ -51,14 +51,30 @@ expand_envs() {
 group_start() { if [[ "${GITHUB_ACTIONS:-}" == true ]]; then echo "::group::$1"; else echo "── $1 ──"; fi; }
 group_end() { if [[ "${GITHUB_ACTIONS:-}" == true ]]; then echo "::endgroup::"; else echo; fi; }
 
+# Aligned columns on a terminal; TSV when piped (stable for scripts/agents).
 cmd_list() {
-  local e st
-  printf 'ENV\tSTATUS\tLABEL\tREASON\n'
+  local e st i
+  local -a ids=(ENV) status=(STATUS) label=(LABEL) reason=(REASON)
   for e in "${ENVS[@]}"; do
     st="$("$LIVE/$e.sh" check || true)"
-    if [[ "$st" == available ]]; then printf '%s\tavailable\t%s\t\n' "$e" "$("$LIVE/$e.sh" label)"
-    else printf '%s\tunavailable\t%s\t%s\n' "$e" "$("$LIVE/$e.sh" label)" "${st#unavailable: }"; fi
+    ids+=("$e"); label+=("$("$LIVE/$e.sh" label)")
+    if [[ "$st" == available ]]; then status+=(available); reason+=("")
+    else status+=(unavailable); reason+=("${st#unavailable: }"); fi
   done
+  if [[ -t 1 ]]; then
+    local we=0 ws=0 wl=0
+    for i in "${!ids[@]}"; do
+      (( ${#ids[i]} > we )) && we=${#ids[i]}
+      (( ${#status[i]} > ws )) && ws=${#status[i]}
+      (( ${#label[i]} > wl )) && wl=${#label[i]}
+    done
+    for i in "${!ids[@]}"; do
+      printf '%-*s  %-*s  %-*s%s\n' "$we" "${ids[i]}" "$ws" "${status[i]}" "$wl" "${label[i]}" \
+        "${reason[i]:+  ${reason[i]}}"
+    done
+  else
+    for i in "${!ids[@]}"; do printf '%s\t%s\t%s\t%s\n' "${ids[i]}" "${status[i]}" "${label[i]}" "${reason[i]}"; done
+  fi
 }
 
 run_one() {
