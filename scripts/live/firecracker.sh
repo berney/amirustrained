@@ -53,10 +53,12 @@ env_setup() {
 shq() { local s=${1//\'/\'\\\'\'}; printf "'%s'" "$s"; }
 
 env_launch() {
-  local work vmm_rc=0 size arg
+  local work vmm_rc=0 size arg interactive=0 quiet=""
   work="$(mktemp -d "${TMPDIR:-/tmp}/amr-fc.XXXXXX")"
   # shellcheck disable=SC2064 # expand now: $work is local
   trap "rm -rf '$work'" EXIT
+  (( SHELL_MODE && $# == 0 )) && { interactive=1; quiet=" quiet"; }
+  inner_cmd /run/amr/amirustrained "$@"
 
   size=$(stat -c %s "$BIN")
   cp "$BIN" "$work/bin.img"
@@ -66,10 +68,17 @@ env_launch() {
     echo 'mount -t proc proc /proc; mount -t sysfs sys /sys'
     echo 'mount -t tmpfs tmpfs /run; mount -t tmpfs tmpfs /tmp; mkdir -p /run/amr'
     echo "head -c $size /dev/vdc > /run/amr/amirustrained; chmod +x /run/amr/amirustrained"
-    printf '/run/amr/amirustrained'
-    for arg in "$@"; do printf ' %s' "$(shq "$arg")"; done
-    echo ' > /run/amr/stdout 2> /run/amr/stderr; echo $? > /run/amr/rc'
-    echo 'tar -cf /dev/vdd -C /run/amr stdout stderr rc; sync'
+    if (( interactive )); then
+      # Shell on the serial console, which firecracker wires to our terminal;
+      # setsid -c makes ttyS0 its controlling tty so job control and ^C work.
+      printf 'setsid -c'
+      for arg in "${CMD[@]}"; do printf ' %s' "$(shq "$arg")"; done
+      echo ' < /dev/ttyS0 > /dev/ttyS0 2>&1'
+    else
+      for arg in "${CMD[@]}"; do printf '%s ' "$(shq "$arg")"; done
+      echo '> /run/amr/stdout 2> /run/amr/stderr; echo $? > /run/amr/rc'
+      echo 'tar -cf /dev/vdd -C /run/amr stdout stderr rc; sync'
+    fi
     echo 'echo b > /proc/sysrq-trigger'
     echo 'exit 0'
   } > "$work/init.sh"
@@ -80,7 +89,7 @@ env_launch() {
 {
   "boot-source": {
     "kernel_image_path": "$KERNEL",
-    "boot_args": "console=ttyS0 reboot=k panic=1 pci=off ro init=/bin/sh -- /dev/vdb"
+    "boot_args": "console=ttyS0 reboot=k panic=1 pci=off ro$quiet init=/bin/sh -- /dev/vdb"
   },
   "drives": [
     {"drive_id": "rootfs", "path_on_host": "$ROOTFS", "is_root_device": true, "is_read_only": true},
@@ -91,6 +100,10 @@ env_launch() {
   "machine-config": {"vcpu_count": 2, "mem_size_mib": 512}
 }
 EOF
+  if (( interactive )); then
+    "$(fc_bin)" --no-api --config-file "$work/vm.json" --api-sock "$work/fc.sock"
+    exit
+  fi
   timeout "$FC_TIMEOUT" "$(fc_bin)" --no-api --config-file "$work/vm.json" --api-sock "$work/fc.sock" \
     > "$work/console.log" 2>&1 < /dev/null || vmm_rc=$?
   mkdir "$work/res"

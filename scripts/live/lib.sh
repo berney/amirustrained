@@ -3,7 +3,8 @@
 #   LABEL         human name
 #   env_check     print a reason (and nothing else) when the env cannot run here
 #   env_setup     fetch user-level assets (optional); $SYSTEM=1 also allows sudo host prep
-#   env_launch    run "$BIN" "$@" inside the env, passing stdio + exit code through
+#   env_launch    run inner_cmd's CMD inside the env (normally "$BIN" "$@"),
+#                 passing stdio + exit code through
 # then calls `leaf_main "$@"`.
 #
 # Leaf CLI (amirustrained takes no positional args, so these words are free):
@@ -11,6 +12,9 @@
 #   <leaf> check                     "available" (exit 0) | "unavailable: <why>" (exit 3)
 #   <leaf> setup [--system]          fetch assets; --system: sudo host prep (CI runners)
 #   <leaf> label                     print LABEL
+#   <leaf> shell [-- CMD...]         same staging, but an interactive shell (or CMD)
+#                                    instead of amirustrained; $AMR = in-env binary path,
+#                                    also first on PATH
 #
 # Environment: BIN, PROFILE (debug|release, default debug), TARGET,
 # AMR_LIVE_CACHE, CONTAINER_ENGINE (docker|podman), IMAGE (default alpine:latest).
@@ -23,6 +27,7 @@ PROFILE="${PROFILE:-debug}"
 CACHE="${AMR_LIVE_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/amirustrained/live-matrix}"
 IMAGE="${IMAGE:-alpine:latest}"
 SYSTEM=0
+SHELL_MODE=0
 ENV_ID="$(basename "$0" .sh)"
 
 GVISOR_URL="https://storage.googleapis.com/gvisor/releases/release/latest/x86_64/gvisor.tar.zstd"
@@ -62,15 +67,35 @@ check_engine() {
   "$eng" info >/dev/null 2>&1 || echo "$eng unreachable ($eng info failed)"
 }
 
-# $1: extra engine flags (word-split); rest: amirustrained args. The binary is
-# staged into a private dir mounted `:z` so SELinux hosts relabel the copy, not
-# the build output, and the container keeps its normal confinement.
+# Sets CMD, what env_launch runs inside the env, given the binary's in-env
+# path $1 and the leaf's remaining args: amirustrained itself, or under `shell`
+# the user's command / an interactive shell with $AMR set and on PATH. The
+# shell skips rc files (the host's ~/.bashrc is visible inside bwrap/unshare/
+# runsc-do and misbehaves there) and its prompt names the env.
+inner_cmd() {
+  local p="$1"; shift
+  if (( ! SHELL_MODE )); then CMD=("$p" "$@"); return; fi
+  CMD=(env "AMR=$p" "PATH=${p%/*}:$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+  if (( $# )); then CMD+=("$@"); return; fi
+  # PS1 travels as AMR_PS1: bash-as-sh (the -c wrapper) drops an inherited PS1.
+  CMD+=("AMR_PS1=[live/$ENV_ID] \\w \\\$ " "ENV=")
+  # shellcheck disable=SC2016 # expanded by the in-env shell
+  CMD+=(sh -c 'echo "live: amirustrained at $AMR (on PATH as amirustrained); exit to leave" >&2
+    export PS1="$AMR_PS1"
+    if command -v bash >/dev/null; then exec bash --norc --noprofile -i; else exec sh -i; fi')
+}
+
+# $1: extra engine flags (word-split); rest: leaf args. The binary is staged
+# into a private dir mounted `:z` so SELinux hosts relabel the copy, not the
+# build output, and the container keeps its normal confinement.
 container_run() {
   local -a extra; read -r -a extra <<<"$1"; shift
+  if (( SHELL_MODE )); then extra+=(-i); [[ -t 0 ]] && extra+=(-t); fi
+  inner_cmd /opt/amr/amirustrained "$@"
   local stage rc=0
   stage="$(mktemp -d "${TMPDIR:-/tmp}/amr-ctr.XXXXXX")"
   cp "$BIN" "$stage/amirustrained"
-  "$(engine)" run --rm "${extra[@]}" -v "$stage:/opt/amr:ro,z" "$IMAGE" /opt/amr/amirustrained "$@" || rc=$?
+  "$(engine)" run --rm "${extra[@]}" -v "$stage:/opt/amr:ro,z" "$IMAGE" "${CMD[@]}" || rc=$?
   rm -rf "$stage"
   return "$rc"
 }
@@ -109,6 +134,10 @@ leaf_main() {
       if [[ -z "$why" ]]; then note "ready"; else note "still unavailable: $why"; exit 3; fi ;;
     label) echo "$LABEL" ;;
     *)
+      if [[ "${1:-}" == shell ]]; then
+        SHELL_MODE=1; shift
+        [[ "${1:-}" == -- ]] && shift
+      fi
       why="$(env_check)"
       [[ -z "$why" ]] || { note "unavailable: $why (try: $0 setup)"; exit 3; }
       resolve_bin

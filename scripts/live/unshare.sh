@@ -8,6 +8,6 @@ LABEL="Raw User-NS"
 
 env_check() { unshare --user --map-root-user true 2>/dev/null || echo "unprivileged user namespaces denied"; }
 env_setup() { (( SYSTEM )) && sysctl_userns; return 0; }
-env_launch() { unshare --user --pid --mount --fork --map-root-user "$BIN" "$@"; }
+env_launch() { inner_cmd "$BIN" "$@"; unshare --user --pid --mount --fork --map-root-user "${CMD[@]}"; }
 
 leaf_main "$@"

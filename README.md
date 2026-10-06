@@ -344,6 +344,8 @@ scripts/live/gvisor.sh --compact                # one env, any amirustrained arg
 scripts/live/firecracker.sh --format json | jq .verdict
 scripts/live/firecracker.sh check               # "available" (0) | "unavailable: <why>" (3)
 scripts/live/firecracker.sh setup               # fetch assets into ~/.cache/amirustrained/live-matrix
+scripts/live/gvisor.sh shell                    # poke around: interactive shell, $AMR / `amirustrained` on PATH
+scripts/live/gvisor.sh shell -- cat /proc/self/status   # or one command, exit code passed through
 scripts/live-matrix.sh list                     # every env + availability (aligned; TSV when piped)
 scripts/live-matrix.sh run all                  # full 7-view sweep -> target/live-matrix/<env>/
 scripts/live-matrix.sh summary                  # markdown comparison tables

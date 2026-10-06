@@ -7,6 +7,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 LABEL="Host"
 
 env_check() { :; }
-env_launch() { "$BIN" "$@"; }
+env_launch() { inner_cmd "$BIN" "$@"; "${CMD[@]}"; }
 
 leaf_main "$@"

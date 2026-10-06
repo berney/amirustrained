@@ -15,6 +15,6 @@ env_setup() {
   command -v bwrap >/dev/null || { sudo apt-get update && sudo apt-get install -y bubblewrap; }
   sysctl_userns
 }
-env_launch() { bwrap --ro-bind / / --tmpfs /tmp --proc /proc --dev /dev --unshare-all "$BIN" "$@"; }
+env_launch() { inner_cmd "$BIN" "$@"; bwrap --ro-bind / / --tmpfs /tmp --proc /proc --dev /dev --unshare-all "${CMD[@]}"; }
 
 leaf_main "$@"

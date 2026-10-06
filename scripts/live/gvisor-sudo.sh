@@ -11,6 +11,6 @@ env_check() {
   sudo -n true 2>/dev/null || echo "passwordless sudo unavailable"
 }
 env_setup() { setup_runsc; }
-env_launch() { sudo -n "$(runsc_bin)" --network=none "do" "$BIN" "$@"; }
+env_launch() { inner_cmd "$BIN" "$@"; sudo -n "$(runsc_bin)" --network=none "do" "${CMD[@]}"; }
 
 leaf_main "$@"

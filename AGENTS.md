@@ -95,8 +95,11 @@ scripts/live/<env>.sh [AMIRUSTRAINED ARGS...]   # e.g. scripts/live/gvisor.sh --
 scripts/live/<env>.sh check                     # "available" (exit 0) | "unavailable: <why>" (exit 3)
 scripts/live/<env>.sh setup [--system]          # fetch assets to ~/.cache/amirustrained/live-matrix; --system = sudo host prep (CI)
 scripts/live/<env>.sh label                     # human label
+scripts/live/<env>.sh shell                     # interactive shell in the env, binary staged as usual
+scripts/live/<env>.sh shell -- CMD [ARGS...]    # run CMD in the env instead (non-interactive; agents use this)
 ```
 - Args pass straight to amirustrained; stdout, stderr and exit code are amirustrained's own (e.g. `scripts/live/firecracker.sh --format json | jq .verdict`). Exit `3` = runtime unavailable here: "not testable", never a pass.
+- `shell` uses the same staging, then runs a shell or `CMD` instead of amirustrained. `$AMR` is the in-env binary path and its directory is first on `PATH`, so `amirustrained --compact` works inside. Exit codes pass through (e.g. `scripts/live/gvisor.sh shell -- sh -c 'uname -r; amirustrained --format json'`). The interactive shell skips rc files and prompts `[live/<env>]`. In Firecracker it runs on the guest serial console and the VM reboots when you exit.
 - `BIN` unset: the leaf runs `cargo build` first (sub-second no-op), so it always tests the working tree. `BIN=path` tests a given binary. `PROFILE=release` switches the build. Other knobs: `CONTAINER_ENGINE` (docker|podman), `IMAGE` (default `alpine:latest`), `AMR_LIVE_CACHE`, `FC_TIMEOUT` (default 120s), `AMR_FC_CONSOLE=1` (dump the guest console to stderr).
 
 | env | runs the binary via | expected verdict |
