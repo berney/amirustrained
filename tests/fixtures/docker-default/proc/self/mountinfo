@@ -1,0 +1,14 @@
+661 642 0:45 / / rw,noexec,relatime - overlay overlay rw,lowerdir=/var/lib/docker/overlay2/l/ABC,upperdir=/var/lib/docker/overlay2/XYZ/diff,workdir=/var/lib/docker/overlay2/XYZ/work
+662 661 0:46 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw
+663 661 0:47 / /dev rw,nosuid,noexec - tmpfs tmpfs rw,size=65536k,mode=755
+664 663 0:48 / /dev/pts rw,nosuid,noexec,relatime - devpts devpts rw,gid=5,mode=620,ptmxmode=666
+665 661 0:49 / /sys ro,nosuid,nodev,noexec,relatime - sysfs sysfs ro
+666 663 0:50 / /dev/shm rw,nosuid,nodev,noexec,relatime - tmpfs shm rw,size=65536k
+667 663 0:51 / /dev/mqueue rw,nosuid,nodev,noexec,relatime - mqueue mqueue rw
+668 662 0:52 / /proc/asound ro,nosuid,nodev,noexec,relatime - tmpfs tmpfs ro
+669 662 0:53 / /proc/bus ro,nosuid,nodev,noexec,relatime - tmpfs tmpfs ro
+670 662 0:54 / /proc/fs ro,nosuid,nodev,noexec,relatime - tmpfs tmpfs ro
+671 662 0:55 / /proc/irq ro,nosuid,nodev,noexec,relatime - tmpfs tmpfs ro
+672 662 0:56 / /proc/sys ro,nosuid,nodev,noexec,relatime - proc proc ro
+673 662 0:57 / /proc/sysrq-trigger ro,nosuid,nodev,noexec,relatime - proc proc ro
+674 662 0:58 / /proc/kcore rw,nosuid,nodev,noexec,relatime - tmpfs tmpfs rw

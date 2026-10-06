@@ -127,13 +127,14 @@ const SCENARIOS: &[Scenario] = &[
         // and CAP_SYS_MODULE joins the list. AppArmor absence is not the MAC
         // witness here: the profile literally says unconfined. The knob stays
         // open (0) → AMR-019, and the full 41-bit CapEff includes
-        // CAP_BPF/CAP_PERFMON → AMR-020.
+        // CAP_BPF/CAP_PERFMON → AMR-020. Unmasked /proc/sys is writable →
+        // AMR-031; host root filesystem is exposed → AMR-033.
         name: "docker-privileged",
         runtime: RuntimeKind::Docker,
         confidence: "high",
         ids: &[
             "AMR-001", "AMR-002", "AMR-003", "AMR-005", "AMR-006", "AMR-008", "AMR-010", "AMR-011",
-            "AMR-012", "AMR-018", "AMR-019", "AMR-020",
+            "AMR-012", "AMR-018", "AMR-019", "AMR-020", "AMR-031", "AMR-033",
         ],
         root: true,
         landlock: Some(1),
@@ -497,12 +498,23 @@ fn bare_host_is_a_plain_host_with_no_findings() {
 
 #[test]
 fn docker_default_reports_socket_and_identity_isolation_gaps() {
-    assert_scenario(scenario("docker-default"));
+    let s = scenario("docker-default");
+    assert_scenario(s);
+    let r = scan(s);
+    let ids: Vec<&str> = r.findings.iter().map(|f| f.rule).collect();
+    assert!(!ids.contains(&"AMR-031"), "AMR-031 must not fire: {ids:?}");
+    assert!(!ids.contains(&"AMR-032"), "AMR-032 must not fire: {ids:?}");
+    assert!(!ids.contains(&"AMR-033"), "AMR-033 must not fire: {ids:?}");
 }
 
 #[test]
 fn docker_privileged_reports_the_full_privileged_signature() {
-    assert_scenario(scenario("docker-privileged"));
+    let s = scenario("docker-privileged");
+    assert_scenario(s);
+    let r = scan(s);
+    let ids: Vec<&str> = r.findings.iter().map(|f| f.rule).collect();
+    assert!(ids.contains(&"AMR-031"), "AMR-031 must fire: {ids:?}");
+    assert!(ids.contains(&"AMR-033"), "AMR-033 must fire: {ids:?}");
 }
 
 #[test]

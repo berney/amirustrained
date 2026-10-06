@@ -13,6 +13,11 @@ CRIT AMR-001 container-socket-exposed: Container runtime API socket is reachable
   fix: Remove the socket mount from the workload; if the API is genuinely needed, broker it through a least-privilege proxy (docker-socket-proxy) exposing only the required endpoints, and restrict which users may reach it.
     - sockets.found = [{"path":"/run/docker.sock","writable":true,"kind":"docker","info":null}] (known runtime socket paths)
 
+CRIT AMR-033 host-filesystem-exposed: Host root filesystem or system control directories are mounted directly inside container
+  why: Mounting the host root (/) or host directories directly inside a container completely breaks filesystem isolation, allowing container processes to access or modify host system binaries, configurations, and sensitive credentials.
+  fix: Do not bind-mount host root (/) or host system directories into containers. Use scoped volume mounts.
+    - mounts.host_leaks = ["/"] (/proc/<pid>/mountinfo)
+
 HIGH AMR-002 privileged-container: Privileged container: CAP_SYS_ADMIN, seccomp disabled, no MAC confinement
   why: This is the `--privileged` signature: CAP_SYS_ADMIN plus no seccomp filter plus nothing confining the task with mandatory access control — an explicit AppArmor `unconfined` profile, or no AppArmor while SELinux is permissive or absent from the active LSM stack. Mount filesystems, reach raw devices, drive cgroup release_agent — the container boundary is nominal and kernel-interface exploits run unopposed by every mitigation the runtime would provide.
   fix: Drop `--privileged` and CAP_SYS_ADMIN; keep the runtime's default seccomp and AppArmor profiles and add back only the specific capabilities the workload needs.
@@ -24,6 +29,11 @@ HIGH AMR-003 cap-sys-module: CAP_SYS_MODULE in the effective capability set
   why: CAP_SYS_MODULE allows inserting kernel modules — arbitrary code executing in ring 0 on the host kernel, where container isolation no longer applies at all. It is almost never intended inside a container.
   fix: Drop CAP_SYS_MODULE (`--cap-drop CAP_SYS_MODULE`) and consider host-side module signature enforcement (`module.sig_enforce=1`).
     - capabilities.effective = ["cap_chown","cap_dac_override","cap_dac_read_search","cap_fowner","cap_fsetid","cap_kill","cap_setgid","cap_setuid","cap_setpcap","cap_linux_immutable","cap_net_bind_service","cap_net_broadcast","cap_net_admin","cap_net_raw","cap_ipc_lock","cap_ipc_owner","cap_sys_module","cap_sys_rawio","cap_sys_chroot","cap_sys_ptrace","cap_sys_pacct","cap_sys_admin","cap_sys_boot","cap_sys_nice","cap_sys_resource","cap_sys_time","cap_sys_tty_config","cap_mknod","cap_lease","cap_audit_write","cap_audit_control","cap_setfcap","cap_mac_override","cap_mac_admin","cap_syslog","cap_wake_alarm","cap_block_suspend","cap_audit_read","cap_perfmon","cap_bpf","cap_checkpoint_restore"] (/proc/<pid>/status)
+
+HIGH AMR-031 sensitive-proc-sys-unmasked: Sensitive /proc or /sys pseudo-filesystem paths are unmasked or writable inside container
+  why: Container isolation requires masking sensitive /proc and /sys interfaces (e.g. /proc/sys, /proc/kcore, /proc/sysrq-trigger, /sys/firmware). Writable sysctl knobs or unmasked raw memory interfaces allow kernel modification or host compromise.
+  fix: Ensure the container runtime masks /proc/kcore, /proc/sysrq-trigger, and /sys/firmware, and mounts /proc/sys read-only.
+    - mounts.sensitive_unmasked = ["/proc/sys"] (/proc/<pid>/mountinfo)
 
 MED AMR-005 seccomp-disabled-in-container: Seccomp filter disabled inside a container
   why: With seccomp mode 0 every syscall the kernel implements is reachable from container processes; the mitigation that normally removes the kernel entry points behind container escapes (fsconfig/af_packet class, CVE-2022-0185 and friends) is switched off.
@@ -73,5 +83,5 @@ INFO AMR-012 landlock-abi-available: Landlock LSM available in this kernel (ABI 
   fix: Informational — no action required. To confine a workload proactively, apply a Landlock ruleset to it (systemd `Landlock=` settings, or a landlock-aware launcher).
     - lsm.landlockAbi = 1 (SYS_LANDLOCK_CREATE_RULESET)
 
-12 findings (c1 h2 m5 l3 i1)
+14 findings (c2 h3 m5 l3 i1)
 scan complete

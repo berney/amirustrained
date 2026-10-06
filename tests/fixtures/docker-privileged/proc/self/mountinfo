@@ -1,0 +1,8 @@
+661 642 8:1 / / rw,nosuid,nodev,noexec,relatime - ext4 /dev/sda1 rw
+662 661 0:46 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw
+663 661 0:47 / /dev rw,nosuid,noexec - devtmpfs udev rw,size=16384k,nr_inodes=4096000,mode=755
+664 663 0:48 / /dev/pts rw,nosuid,noexec,relatime - devpts devpts rw,gid=5,mode=620,ptmxmode=666
+665 661 0:49 / /sys rw,nosuid,nodev,noexec,relatime - sysfs sysfs rw
+666 663 0:50 / /dev/shm rw,nosuid,nodev,noexec,relatime - tmpfs shm rw,size=65536k
+667 663 0:51 / /dev/mqueue rw,nosuid,nodev,noexec,relatime - mqueue mqueue rw
+672 662 0:56 / /proc/sys rw,nosuid,nodev,noexec,relatime - proc proc rw

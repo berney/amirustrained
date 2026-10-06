@@ -433,6 +433,269 @@ probes:
     source: /sys/fs/cgroup/docker/135c8edb135c8edb135c8edb135c8edb135c8edb135c8edb135c8edb135c8edb
     status: ok
   timedOut: false
+- name: mounts
+  availability:
+    state: ok
+  facts:
+  - probe: mounts
+    key: all
+    value:
+    - mount_id: 661
+      parent_id: 642
+      major_minor: "0:45"
+      root: /
+      mount_point: /
+      mount_options:
+      - rw
+      - noexec
+      - relatime
+      optional_fields: []
+      fstype: overlay
+      mount_source: overlay
+      super_options:
+      - rw
+      - lowerdir=/var/lib/docker/overlay2/l/ABC
+      - upperdir=/var/lib/docker/overlay2/XYZ/diff
+      - workdir=/var/lib/docker/overlay2/XYZ/work
+    - mount_id: 662
+      parent_id: 661
+      major_minor: "0:46"
+      root: /
+      mount_point: /proc
+      mount_options:
+      - rw
+      - nosuid
+      - nodev
+      - noexec
+      - relatime
+      optional_fields: []
+      fstype: proc
+      mount_source: proc
+      super_options:
+      - rw
+    - mount_id: 663
+      parent_id: 661
+      major_minor: "0:47"
+      root: /
+      mount_point: /dev
+      mount_options:
+      - rw
+      - nosuid
+      - noexec
+      optional_fields: []
+      fstype: tmpfs
+      mount_source: tmpfs
+      super_options:
+      - rw
+      - size=65536k
+      - mode=755
+    - mount_id: 664
+      parent_id: 663
+      major_minor: "0:48"
+      root: /
+      mount_point: /dev/pts
+      mount_options:
+      - rw
+      - nosuid
+      - noexec
+      - relatime
+      optional_fields: []
+      fstype: devpts
+      mount_source: devpts
+      super_options:
+      - rw
+      - gid=5
+      - mode=620
+      - ptmxmode=666
+    - mount_id: 665
+      parent_id: 661
+      major_minor: "0:49"
+      root: /
+      mount_point: /sys
+      mount_options:
+      - ro
+      - nosuid
+      - nodev
+      - noexec
+      - relatime
+      optional_fields: []
+      fstype: sysfs
+      mount_source: sysfs
+      super_options:
+      - ro
+    - mount_id: 666
+      parent_id: 663
+      major_minor: "0:50"
+      root: /
+      mount_point: /dev/shm
+      mount_options:
+      - rw
+      - nosuid
+      - nodev
+      - noexec
+      - relatime
+      optional_fields: []
+      fstype: tmpfs
+      mount_source: shm
+      super_options:
+      - rw
+      - size=65536k
+    - mount_id: 667
+      parent_id: 663
+      major_minor: "0:51"
+      root: /
+      mount_point: /dev/mqueue
+      mount_options:
+      - rw
+      - nosuid
+      - nodev
+      - noexec
+      - relatime
+      optional_fields: []
+      fstype: mqueue
+      mount_source: mqueue
+      super_options:
+      - rw
+    - mount_id: 668
+      parent_id: 662
+      major_minor: "0:52"
+      root: /
+      mount_point: /proc/asound
+      mount_options:
+      - ro
+      - nosuid
+      - nodev
+      - noexec
+      - relatime
+      optional_fields: []
+      fstype: tmpfs
+      mount_source: tmpfs
+      super_options:
+      - ro
+    - mount_id: 669
+      parent_id: 662
+      major_minor: "0:53"
+      root: /
+      mount_point: /proc/bus
+      mount_options:
+      - ro
+      - nosuid
+      - nodev
+      - noexec
+      - relatime
+      optional_fields: []
+      fstype: tmpfs
+      mount_source: tmpfs
+      super_options:
+      - ro
+    - mount_id: 670
+      parent_id: 662
+      major_minor: "0:54"
+      root: /
+      mount_point: /proc/fs
+      mount_options:
+      - ro
+      - nosuid
+      - nodev
+      - noexec
+      - relatime
+      optional_fields: []
+      fstype: tmpfs
+      mount_source: tmpfs
+      super_options:
+      - ro
+    - mount_id: 671
+      parent_id: 662
+      major_minor: "0:55"
+      root: /
+      mount_point: /proc/irq
+      mount_options:
+      - ro
+      - nosuid
+      - nodev
+      - noexec
+      - relatime
+      optional_fields: []
+      fstype: tmpfs
+      mount_source: tmpfs
+      super_options:
+      - ro
+    - mount_id: 672
+      parent_id: 662
+      major_minor: "0:56"
+      root: /
+      mount_point: /proc/sys
+      mount_options:
+      - ro
+      - nosuid
+      - nodev
+      - noexec
+      - relatime
+      optional_fields: []
+      fstype: proc
+      mount_source: proc
+      super_options:
+      - ro
+    - mount_id: 673
+      parent_id: 662
+      major_minor: "0:57"
+      root: /
+      mount_point: /proc/sysrq-trigger
+      mount_options:
+      - ro
+      - nosuid
+      - nodev
+      - noexec
+      - relatime
+      optional_fields: []
+      fstype: proc
+      mount_source: proc
+      super_options:
+      - ro
+    - mount_id: 674
+      parent_id: 662
+      major_minor: "0:58"
+      root: /
+      mount_point: /proc/kcore
+      mount_options:
+      - rw
+      - nosuid
+      - nodev
+      - noexec
+      - relatime
+      optional_fields: []
+      fstype: tmpfs
+      mount_source: tmpfs
+      super_options:
+      - rw
+    source: /proc/<pid>/mountinfo
+    status: ok
+  - probe: mounts
+    key: count
+    value: 14
+    source: /proc/<pid>/mountinfo
+    status: ok
+  - probe: mounts
+    key: staging
+    value: []
+    source: /proc/<pid>/mountinfo
+    status: ok
+  - probe: mounts
+    key: sensitive_unmasked
+    value: []
+    source: /proc/<pid>/mountinfo
+    status: ok
+  - probe: mounts
+    key: shared_propagation
+    value: []
+    source: /proc/<pid>/mountinfo
+    status: ok
+  - probe: mounts
+    key: host_leaks
+    value: []
+    source: /proc/<pid>/mountinfo
+    status: ok
+  timedOut: false
 - name: k8s
   availability:
     state: ok

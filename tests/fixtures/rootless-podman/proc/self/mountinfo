@@ -1,0 +1,14 @@
+761 742 0:45 / / rw,noexec,relatime - overlay overlay rw,lowerdir=/home/user/.local/share/containers/storage/overlay/l/ABC,upperdir=/home/user/.local/share/containers/storage/overlay/XYZ/diff,workdir=/home/user/.local/share/containers/storage/overlay/XYZ/work
+762 761 0:46 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw
+763 761 0:47 / /dev rw,nosuid,noexec - tmpfs tmpfs rw,size=65536k,mode=755
+764 763 0:48 / /dev/pts rw,nosuid,noexec,relatime - devpts devpts rw,gid=5,mode=620,ptmxmode=666
+765 761 0:49 / /sys ro,nosuid,nodev,noexec,relatime - sysfs sysfs ro
+766 763 0:50 / /dev/shm rw,nosuid,nodev,noexec,relatime - tmpfs shm rw,size=65536k
+767 763 0:51 / /dev/mqueue rw,nosuid,nodev,noexec,relatime - mqueue mqueue rw
+768 762 0:52 / /proc/asound ro,nosuid,nodev,noexec,relatime - tmpfs tmpfs ro
+769 762 0:53 / /proc/bus ro,nosuid,nodev,noexec,relatime - tmpfs tmpfs ro
+770 762 0:54 / /proc/fs ro,nosuid,nodev,noexec,relatime - tmpfs tmpfs ro
+771 762 0:55 / /proc/irq ro,nosuid,nodev,noexec,relatime - tmpfs tmpfs ro
+772 762 0:56 / /proc/sys ro,nosuid,nodev,noexec,relatime - proc proc ro
+773 762 0:57 / /proc/sysrq-trigger ro,nosuid,nodev,noexec,relatime - proc proc ro
+774 762 0:58 / /proc/kcore rw,nosuid,nodev,noexec,relatime - tmpfs tmpfs rw
