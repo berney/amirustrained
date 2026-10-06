@@ -118,6 +118,38 @@ setup_runsc() {
   fi
 }
 
+# gVisor as the container engine's OCI runtime (gvisor, gvisor-privileged).
+docker_has_runsc() { "$1" info --format '{{json .Runtimes}}' 2>/dev/null | grep -q '"runsc"'; }
+
+gvisor_container_check() {
+  local why; why="$(check_engine)"; [[ -z "$why" ]] || { echo "$why"; return; }
+  runsc_bin >/dev/null || { echo "runsc not found"; return; }
+  local eng; eng="$(engine)"
+  if [[ "$(engine_flavor "$eng")" == docker ]]; then
+    docker_has_runsc "$eng" || echo "runsc not registered with docker (setup --system)"
+  fi
+}
+
+gvisor_container_setup() {
+  setup_runsc
+  local eng; eng="$(engine)"
+  if (( SYSTEM )) && [[ "$(engine_flavor "$eng")" == docker ]] && ! docker_has_runsc "$eng"; then
+    sudo "$(command -v runsc)" install
+    sudo systemctl restart docker
+  fi
+}
+
+# $1: extra engine flags; rest: leaf args.
+gvisor_container_run() {
+  local engine_flags="$1"; shift
+  if [[ "$(engine_flavor "$(engine)")" == podman ]]; then
+    # Rootless podman: runsc can apply neither SELinux labels nor systemd cgroups.
+    container_run "$engine_flags --runtime=$(runsc_bin) --runtime-flag=ignore-cgroups --security-opt label=disable" "$@"
+  else
+    container_run "$engine_flags --runtime=runsc" "$@"
+  fi
+}
+
 # ── entrypoint ───────────────────────────────────────────────────────────────
 env_setup() { :; }
 

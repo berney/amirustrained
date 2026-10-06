@@ -42,7 +42,7 @@ jobs:
           - { id: docker-privileged, name: "Docker Privileged", envs: "docker-privileged" }
           - { id: bubblewrap, name: "Bubblewrap (bwrap sandbox)", envs: "bubblewrap" }
           - { id: unshare, name: "Raw Linux User-NS (unshare)", envs: "unshare" }
-          - { id: gvisor, name: "gVisor (runsc)", envs: "gvisor gvisor-sudo gvisor-rootless" }
+          - { id: gvisor, name: "gVisor (runsc)", envs: "gvisor gvisor-privileged gvisor-sudo gvisor-rootless" }
           # Not every runner exposes /dev/kvm; a missing one records a skip.
           - { id: firecracker, name: "Firecracker MicroVM", envs: "firecracker", flags: "--skip-unavailable" }
     steps:

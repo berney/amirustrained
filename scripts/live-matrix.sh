@@ -22,7 +22,7 @@ LIVE="$LIVE_DIR"
 OUT="${OUT:-$ROOT/target/live-matrix}"
 
 # Matrix order == summary column order.
-ENVS=(host docker-default docker-privileged bubblewrap unshare gvisor gvisor-rootless gvisor-sudo firecracker)
+ENVS=(host docker-default docker-privileged bubblewrap unshare gvisor gvisor-privileged gvisor-rootless gvisor-sudo firecracker)
 
 # output-file|title|args. Human views are best-effort; result.json is the gate.
 MODES=(

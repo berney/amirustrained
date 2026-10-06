@@ -113,6 +113,7 @@ live! {
     bubblewrap => "bubblewrap": ["host"];
     unshare => "unshare": ["host"];
     gvisor => "gvisor": ["gvisor"];
+    gvisor_privileged => "gvisor-privileged": ["gvisor"];
     gvisor_rootless => "gvisor-rootless": ["gvisor"];
     gvisor_sudo => "gvisor-sudo": ["gvisor"];
     firecracker => "firecracker": ["firecracker"];

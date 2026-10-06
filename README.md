@@ -353,7 +353,8 @@ cargo test --test live_matrix -- --ignored      # verdict + container-gating ass
 ```
 
 Envs: `host`, `docker-default`, `docker-privileged`, `bubblewrap`, `unshare`,
-`gvisor` (engine `--runtime=runsc`), `gvisor-rootless`, `gvisor-sudo`, `firecracker`.
+`gvisor` (engine `--runtime=runsc`), `gvisor-privileged` (`--privileged` too; needs a
+rootful engine), `gvisor-rootless`, `gvisor-sudo`, `firecracker`.
 `docker-*` use `docker` or podman (`CONTAINER_ENGINE` overrides). Firecracker runs
 rootless with a writable `/dev/kvm`: the rootfs is attached read-only and the binary
 and result travel over raw scratch drives. Unavailable envs exit 3 and are skipped by

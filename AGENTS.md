@@ -109,6 +109,7 @@ scripts/live/<env>.sh shell -- CMD [ARGS...]    # run CMD in the env instead (no
 | `bubblewrap` | `bwrap --ro-bind / / --unshare-all ...` | `host` |
 | `unshare` | `unshare --user --pid --mount --fork --map-root-user` | `host` |
 | `gvisor` | container engine with `--runtime=runsc` | `gvisor` |
+| `gvisor-privileged` | container engine with `--privileged --runtime=runsc`. Unavailable under rootless podman: its `--privileged` bind-mounts every host device and runsc fails with "FD 253 is already in use" | `gvisor` |
 | `gvisor-rootless` | `runsc --rootless --network=none do` | `gvisor` |
 | `gvisor-sudo` | `sudo -n runsc --network=none do` (needs passwordless sudo) | `gvisor` |
 | `firecracker` | rootless microVM (needs read/writable `/dev/kvm`) | `firecracker` |
@@ -116,7 +117,7 @@ scripts/live/<env>.sh shell -- CMD [ARGS...]    # run CMD in the env instead (no
 ### Matrix, cargo tests, CI
 - `scripts/live-matrix.sh list` prints env, status, label and reason: aligned columns on a terminal, TSV when stdout is piped (parse the piped form). `run [--skip-unavailable] <env>...|all` writes `target/live-matrix/<env>/` with a `status` file (`ok` | `skipped: <why>` | `failed: <why>`), six human views (`standard.txt`, `compact.txt`, `verbose.txt`, `active.txt`, `report.md`, `report.yaml`, each with a `.stderr`), and `result.json`. Only `result.json` must succeed and parse. `all` implies skipping unavailable envs. `summary [DIR]` prints the markdown comparison tables.
 - `cargo test --test live_matrix -- --ignored [name]` runs one `#[ignore]` test per env. Each test asserts `schemaVersion`, `scan.complete`, the expected verdict, the container-only rules silent under host/gVisor/Firecracker, and `AMR-014` under gVisor/Firecracker. Unavailable envs are skipped with a stderr note; `AMR_LIVE_REQUIRE=1` turns skips into failures. Plain `cargo test` never starts runtimes.
-- `.github/workflows/live-matrix.yml` legs run `setup --system <envs>` (apt bwrap, AppArmor userns sysctl, install runsc and `runsc install` for docker, `chmod /dev/kvm`), then `BIN=bin/amirustrained scripts/live-matrix.sh run <envs>`, and upload `target/live-matrix/`. The summary job merges the uploads and calls `summary`. The gVisor leg covers `gvisor`, `gvisor-sudo` and `gvisor-rootless`. Firecracker uses `--skip-unavailable` and records a skip when the runner lacks KVM; never fabricate a result.
+- `.github/workflows/live-matrix.yml` legs run `setup --system <envs>` (apt bwrap, AppArmor userns sysctl, install runsc and `runsc install` for docker, `chmod /dev/kvm`), then `BIN=bin/amirustrained scripts/live-matrix.sh run <envs>`, and upload `target/live-matrix/`. The summary job merges the uploads and calls `summary`. The gVisor leg covers `gvisor`, `gvisor-privileged`, `gvisor-sudo` and `gvisor-rootless`. Firecracker uses `--skip-unavailable` and records a skip when the runner lacks KVM; never fabricate a result.
 - For detection or rule-gating changes, run the cargo live tests (filter to the affected env) and quote the observed verdicts.
 
 ### Extending and gotchas
