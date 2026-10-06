@@ -877,8 +877,8 @@ pub static RULES: &[Rule] = &[
         slug: "raw-memory-access-permitted",
         severity: Severity::Critical,
         summary: "Raw physical memory or port I/O access is permitted via /dev/mem, /dev/kmem, or iopl",
-        why: "Direct access to physical memory (/dev/mem, /dev/kmem) or hardware I/O ports (iopl) allows reading and writing kernel memory, page tables, and hardware registers directly, completely subverting kernel protections and privilege separation. Reachability is judged empirically - the `open(2)` verdict from --probe-device-open outranks the passive access(2) heuristic in both directions - and the rule is silent under strong-isolation verdicts, where guest- or sandbox-local nodes reach no host memory (gVisor answers `open()` with ENXIO).",
-        remediation: "Ensure /dev/mem and /dev/kmem device nodes are not present or accessible in the filesystem, enable kernel lockdown (lockdown=integrity or lockdown=confidentiality), and drop CAP_SYS_RAWIO.",
+        why: "Direct access to physical memory (/dev/mem, /dev/kmem) or hardware I/O ports (iopl) allows reading and writing kernel memory, page tables, and hardware registers directly, completely subverting kernel protections and privilege separation. Reachability is judged empirically - the `open(2)` verdict from --probe-device-open outranks the passive access(2) heuristic in both directions. Inside a strong-isolation VM the claim is about raw *guest* memory - still kernel-equivalent access to the platform the hypervisor must defend (the escalation base when module loading and kexec are closed). A passive access(2) reading alone cannot tell a real guest kernel's device from a driverless pseudo-node (gVisor answers `open()` with ENXIO), so an unverified passive finding under such a verdict is honestly degraded to Info; an empirically permitted open (or permitted iopl) is Critical anywhere.",
+        remediation: "Ensure /dev/mem and /dev/kmem device nodes are not present or accessible in the filesystem, enable kernel lockdown (lockdown=integrity or lockdown=confidentiality), and drop CAP_SYS_RAWIO. Under VM or gVisor images, also strip raw-device nodes from the guest rootfs device table and from guest workload capabilities.",
         references: &[
             "https://man7.org/linux/man-pages/man4/mem.4.html",
             "https://man7.org/linux/man-pages/man2/iopl.2.html",
@@ -886,7 +886,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: false,
         verbose_only: false,
-        severity_of: None,
+        severity_of: Some(severity_amr025),
         check: check_amr025,
     },
     Rule {
@@ -1217,15 +1217,15 @@ fn check_amr024(a: &Assess) -> Option<Vec<Fact>> {
     Some(ev)
 }
 
-/// Raw memory / port I/O is a claim about the kernel *behind* the device
-/// node. Under a strong-isolation verdict (spec §6 erratum 2026-10-01,
-/// ReviewT26 F3 family - the same guest-kernel-local exemption already
-/// applied to AMR-019/AMR-021) that kernel is a guest's or a Sentry
-/// sandbox's: `/dev/mem`, `/dev/kmem`, `/dev/port` and `iopl(2)` stay
-/// guest-/sandbox-local and no host physical memory or hardware port is
-/// reachable. Live-matrix proofs: a Firecracker guest hands root an
-/// openable `/dev/mem` (guest memory, not the host's), and gVisor serves
-/// DAC-readable nodes whose `open()` answers `ENXIO` (no driver).
+/// Raw memory is a claim about the kernel *behind* the device node. Under a
+/// strong-isolation verdict (firecracker/gVisor/kata) that kernel is the
+/// guest's own - readable guest RAM is still kernel-equivalent access on the
+/// platform the hypervisor must defend - so the rule never goes silent there.
+/// What a VM verdict *does* change is trust in the passive leg: `access(2)`
+/// cannot tell a real guest kernel's devmem driver from a driverless
+/// pseudo-node (live gVisor proof: DAC-readable injected nodes whose
+/// `open()` answers ENXIO - the reproduced false-positive class). Used by
+/// [`severity_amr025`] to degrade *unverified* passive findings to Info.
 fn strong_isolation_verdict(a: &Assess) -> bool {
     a.report.verdict.as_ref().is_some_and(|v| {
         matches!(
@@ -1241,9 +1241,6 @@ fn check_amr025(a: &Assess) -> Option<Vec<Fact>> {
             .and_then(|f| f.value.as_str()),
         Some("integrity" | "confidentiality")
     ) {
-        return None;
-    }
-    if strong_isolation_verdict(a) {
         return None;
     }
 
@@ -1296,6 +1293,31 @@ fn check_amr025(a: &Assess) -> Option<Vec<Fact>> {
     }
     ev.extend(a.fact("kernel.surface", "lockdown").cloned());
     Some(ev)
+}
+
+/// Dynamic severity for AMR-025 (`raw-memory-access-permitted`):
+/// - Empirically verified reachability (`open(2)` permitted, or `iopl(2)`
+///   granted by the opt-in kernel-exec worker) is Critical under *every*
+///   verdict, VM included - ground truth needs no exemption.
+/// - Non-VM verdicts keep the historical Critical contract for the passive
+///   leg (shared-kernel environments where `access(2)` is a faithful proxy).
+/// - Under a strong-isolation verdict with only passive evidence (no
+///   empirical fact, or an inconclusive `error`), the finding degrades to
+///   Info: the node may be a driverless pseudo-device; re-run with
+///   `--probe-device-open` to establish the verdict.
+fn severity_amr025(a: &Assess, evidence: &[Fact]) -> Severity {
+    let verified = evidence.iter().any(|f| {
+        f.value
+            .get("status")
+            .and_then(|s| s.as_str())
+            .is_some_and(|s| s == "permitted")
+            && matches!(f.probe.as_str(), "kernel.device_open" | "kernel.exec")
+    });
+    if verified || !strong_isolation_verdict(a) {
+        Severity::Critical
+    } else {
+        Severity::Info
+    }
 }
 
 fn check_amr026(a: &Assess) -> Option<Vec<Fact>> {
@@ -3221,13 +3243,13 @@ mod tests {
     }
 
     #[test]
-    fn amr025_silent_under_strong_isolation_verdicts() {
-        // The §6 erratum lineage (AMR-019/AMR-021 precedent) applied to raw
-        // memory: under firecracker/gVisor/kata the kernel behind the nodes
-        // and `iopl(2)` is the guest's or the sandbox's - never host
-        // physical memory. Live-matrix FP that motivated this: a privileged
-        // gVisor run carried the injected host device nodes (`access(2)`
-        // reads "accessible") while Sentry answers `open()` with ENXIO.
+    fn amr025_unverified_passive_under_strong_isolation_degrades_to_info() {
+        // A VM verdict cannot confirm the passive leg: gVisor serves
+        // DAC-readable injected nodes whose `open()` answers ENXIO (live
+        // repro), while a Firecracker guest really does hand root openable
+        // guest RAM. Both readings look identical to `access(2)`, so the
+        // finding fires honestly at Info and names the probe that settles
+        // it - never a silent guess, never an unverified Critical.
         for runtime in [
             RuntimeKind::Firecracker,
             RuntimeKind::Gvisor,
@@ -3240,14 +3262,96 @@ mod tests {
                     ("kernel.surface", "dev_mem", json!("accessible")),
                     ("kernel.surface", "dev_kmem", json!("accessible")),
                     ("kernel.surface", "lockdown", json!("none")),
-                    ("kernel.exec", "iopl", json!({"status": "permitted"})),
                 ],
             );
-            assert!(
-                rule("AMR-025").evaluate(&r, false).is_none(),
-                "AMR-025 must not fire under a {runtime:?} verdict"
+            let f = rule("AMR-025")
+                .evaluate(&r, false)
+                .expect("passive raw-memory leg must still be reported");
+            assert_eq!(
+                f.severity,
+                Severity::Info,
+                "unverified passive leg must degrade to Info under {runtime:?}"
             );
         }
+    }
+
+    #[test]
+    fn amr025_empirical_permitted_open_is_critical_under_vm_verdicts() {
+        // Ground truth needs no exemption: a verified `open(2)` on guest
+        // physical memory is kernel-equivalent access to the platform the
+        // hypervisor defends - the escalation base when module loading and
+        // kexec are closed. Critical even under a strong-isolation verdict.
+        for runtime in [RuntimeKind::Firecracker, RuntimeKind::Gvisor] {
+            let mut r = verdict_report(verdict(runtime));
+            extend_with_facts(
+                &mut r,
+                &[
+                    ("kernel.surface", "dev_mem", json!("accessible")),
+                    ("kernel.surface", "lockdown", json!("none")),
+                    (
+                        "kernel.device_open",
+                        "dev_mem",
+                        json!({"status": "permitted", "errno": 0, "error_name": ""}),
+                    ),
+                ],
+            );
+            let f = rule("AMR-025")
+                .evaluate(&r, false)
+                .expect("permitted empirical open must fire under VM verdicts");
+            assert_eq!(
+                f.severity,
+                Severity::Critical,
+                "verified raw-memory access must stay Critical under {runtime:?}"
+            );
+            assert!(
+                f.evidence
+                    .iter()
+                    .any(|e| e.probe == "kernel.device_open" && e.key == "dev_mem"),
+                "the permitted open fact must be cited under {runtime:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn amr025_driverless_pseudo_device_closes_under_vm_verdicts() {
+        // The gVisor false-positive class end to end: DAC says accessible,
+        // the real open says ENXIO - no pathway, no finding at any level.
+        let mut r = verdict_report(verdict(RuntimeKind::Gvisor));
+        extend_with_facts(
+            &mut r,
+            &[
+                ("kernel.surface", "dev_mem", json!("accessible")),
+                ("kernel.surface", "lockdown", json!("none")),
+                (
+                    "kernel.device_open",
+                    "dev_mem",
+                    json!({"status": "unsupported", "errno": 6, "error_name": "ENXIO"}),
+                ),
+            ],
+        );
+        assert!(
+            rule("AMR-025").evaluate(&r, false).is_none(),
+            "ENXIO-backed pseudo-device must not produce a finding"
+        );
+    }
+
+    #[test]
+    fn amr025_iopl_permitted_is_critical_under_vm_verdict() {
+        // `iopl(2)` evidence only exists when the opt-in kernel-exec worker
+        // actually ran it - verified by construction, Critical under VM.
+        let mut r = verdict_report(verdict(RuntimeKind::Firecracker));
+        extend_with_facts(
+            &mut r,
+            &[
+                ("kernel.surface", "dev_mem", json!("absent")),
+                ("kernel.surface", "lockdown", json!("none")),
+                ("kernel.exec", "iopl", json!({"status": "permitted"})),
+            ],
+        );
+        let f = rule("AMR-025")
+            .evaluate(&r, false)
+            .expect("granted iopl must fire under a firecracker verdict");
+        assert_eq!(f.severity, Severity::Critical);
     }
 
     #[test]

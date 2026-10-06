@@ -49,7 +49,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use model::{Report, RuntimeKind};
+use model::{Report, RuntimeKind, Severity};
 use opts::{Format, Opts};
 use sys::fs::PseudoFs;
 use sys::os::{HypervisorInfo, OsApi, SeccompActions, UdsReply};
@@ -328,15 +328,16 @@ const SCENARIOS: &[Scenario] = &[
     Scenario {
         // `docker run --privileged --runtime=runsc`: the runtime injects
         // host device nodes into the sandbox `/dev`. `access(2)` reads the
-        // nodes permissive for root, so the passive legs would fire the
-        // AMR-025 Critical - the reproduced false positive. Nothing is
-        // behind the node (Sentry answers `open()` with ENXIO) and the
-        // kernel behind it is the Sentry's: the strong-isolation verdict
-        // closes the whole raw-memory leg (spec §6 erratum lineage).
+        // nodes permissive for root, so the passive leg fires AMR-025 - but
+        // only at Info: a strong-isolation verdict cannot confirm whether
+        // there is anything behind the nodes (gVisor answers `open()` with
+        // ENXIO), and an unverified raw-memory claim must not mint a
+        // Critical. The dedicated probe scan below resolves it to closed;
+        // a genuinely openable node (firecracker-style) would be Critical.
         name: "gvisor-privileged",
         runtime: RuntimeKind::Gvisor,
         confidence: "high",
-        ids: &["AMR-014"],
+        ids: &["AMR-014", "AMR-025"],
         root: true,
         landlock: None,
         hypervisor: false,
@@ -889,11 +890,25 @@ fn docker_default_yaml_output_snapshot() {
 }
 
 #[test]
-fn gvisor_privileged_device_injection_stays_quiet_on_raw_memory() {
+fn gvisor_privileged_device_injection_is_info_until_probed_then_closes() {
     // The lab repro of `docker run --privileged --runtime=runsc`: injected
-    // host device nodes, `access(2)`-permissive, Sentry behind them.
+    // host device nodes, `access(2)`-permissive, Sentry (no driver) behind
+    // them. Unverified the finding is honest Info - never the Critical the
+    // old rule minted from `access(2)` alone; the empirical ENXIO verdict
+    // then closes the leg outright.
     let s = scenario("gvisor-privileged");
-    assert_scenario(s); // verdict gate keeps the passive scan AMR-025-free
+    assert_scenario(s);
+    let base = scan(s);
+    let unverified = base
+        .findings
+        .iter()
+        .find(|f| f.rule == "AMR-025")
+        .expect("passive leg reports raw-memory posture under gVisor");
+    assert_eq!(
+        unverified.severity,
+        Severity::Info,
+        "unverified gVisor pseudo-devices must not mint a Critical"
+    );
     let r = scan_with_device_open(s);
     let ids: Vec<&str> = r.findings.iter().map(|f| f.rule).collect();
     assert!(

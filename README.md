@@ -195,9 +195,15 @@ written, or mapped) inside an isolated forked worker under a 5-second deadline. 
 syscall mutates no state, but the open itself is HIDS/EDR bait: Falco ships rules that
 alert on `/dev/mem` opens regardless of any read. That is why it is off by default. When
 it does run, its empirical verdict (`permitted`/`denied`/`absent`/`unsupported`) outranks
-the passive `access(2)`-derived `kernel.surface.dev_*` facts in AMR-025: a device node
-with no driver behind it (gVisor answers `open()` with `ENXIO`) no longer reads as raw
-memory access, and an open that succeeds where DAC bits read denied is one.
+the passive `access(2)`-derived `kernel.surface.dev_*` facts in AMR-025 in both directions:
+a node with no driver behind it (gVisor answers `open()` with `ENXIO`) is no raw-memory
+pathway, and a node that opens while its DAC bits read denied is one. In VM-family
+verdicts (firecracker, gVisor, kata) AMR-025 never mints a Critical from the passive
+`access(2)` leg alone: an identical DAC reading comes either from a genuinely openable
+guest device (a Firecracker guest really does hand root guest RAM) or from a driverless
+pseudo-node, so unverified findings surface at `Info` until `--probe-device-open`
+settles them - a verified permitted open is Critical anywhere, because raw *guest*
+memory is kernel-equivalent access to the platform the hypervisor must defend.
 
 `--yolo` is the maximum-info switch: it turns on `--probe-syscalls`,
 `--probe-kernel-execution`, `--probe-device-open`, and every `--probe-ebpf` target (an
@@ -205,7 +211,7 @@ explicit `--probe-ebpf` subset stays authoritative). It will trip runtime monito
 design; run it only where active reconnaissance is authorized.
 
 `--fixture-root <DIR>` (hidden, for tests) relocates every pseudo-file read under
-`<DIR>/proc`, `<DIR>/sys`, … — the whole fixture corpus (9 scenarios, golden tests)
+`<DIR>/proc`, `<DIR>/sys`, … — the whole fixture corpus (11 scenarios, golden tests)
 runs on it.
 
 ## Probes & privilege
@@ -290,7 +296,7 @@ report `info` + "insufficient privilege to assess" when run unprivileged.
 | AMR-022 | `rootless-socket-exposed` | high | Rootless container runtime API socket is reachable and writable (escape to an unprivileged host uid — not a host-root promise) |
 | AMR-023 | `kernel-module-loading-permitted` | high | Kernel module loading is permitted: ring 0 execution accessible via finit_module/init_module or unconstrained modules |
 | AMR-024 | `kexec-kernel-replacement-permitted` | high | Kexec kernel replacement is permitted: new kernel image can be loaded and booted directly into ring 0 |
-| AMR-025 | `raw-memory-access-permitted` | critical | Raw physical memory or port I/O access is permitted via /dev/mem, /dev/kmem, or iopl (silent under VM-family verdicts - the nodes are guest-/sandbox-local; an empirical `--probe-device-open` verdict outranks the passive DAC reading) |
+| AMR-025 | `raw-memory-access-permitted` | critical / info | Raw physical memory or port I/O access is permitted via /dev/mem, /dev/kmem, or iopl (under VM-family verdicts the claim is raw *guest* memory - an empirically permitted `--probe-device-open` open or granted iopl is Critical, an unverified passive DAC reading degrades to Info because the node may be driverless; spec §6 erratum lineage) |
 | AMR-026 | `user-mode-helper-writable` | high | Kernel user-mode helper path (core_pattern or modprobe) is writable |
 | AMR-027 | `acpi-table-injection-writable` | high | ACPI table customization interface (/sys/kernel/config/acpi/table) is writable |
 | AMR-028 | `kexec-module-lockdown-bypass` | high | Kexec kernel replacement is permitted while kernel module loading is blocked (lockdown bypass; suppressed when AMR-023 fires) |
