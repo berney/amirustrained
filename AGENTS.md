@@ -85,6 +85,36 @@ The scan pipeline executes probes sequentially in deterministic order:
 
 ## Live Runtime Verification
 
-- **Leaf per runtime:** `scripts/live/<env>.sh [ARGS...]` builds the working tree (unless `BIN` is set) and runs it inside that runtime with stdio and exit code passed through. `<env>.sh check` exits `3` when the runtime is unavailable on this machine; treat that as "not testable here", not as a pass.
-- **Matrix and CI share the leaves:** `scripts/live-matrix.sh` (`list`, `run`, `summary`, `setup`) and `.github/workflows/live-matrix.yml` only call the leaves. A new runtime is one new leaf, one `ENVS` entry in `scripts/live-matrix.sh`, and one `live!` row in `tests/live_matrix.rs`.
-- **Verification:** for detection or rule-gating changes, run `cargo test --test live_matrix -- --ignored` (add a name filter for a single env) and quote the observed verdicts.
+Run the real binary inside real isolation runtimes. Everything lives in `scripts/live/` (one leaf script per runtime plus shared `lib.sh`), `scripts/live-matrix.sh`, `scripts/live-matrix-summary.py`, and `tests/live_matrix.rs`; you do not need to read them to use them.
+
+### Running one runtime
+```sh
+scripts/live/<env>.sh [AMIRUSTRAINED ARGS...]   # e.g. scripts/live/gvisor.sh --compact
+scripts/live/<env>.sh check                     # "available" (exit 0) | "unavailable: <why>" (exit 3)
+scripts/live/<env>.sh setup [--system]          # fetch assets to ~/.cache/amirustrained/live-matrix; --system = sudo host prep (CI)
+scripts/live/<env>.sh label                     # human label
+```
+- Args pass straight to amirustrained; stdout, stderr and exit code are amirustrained's own (e.g. `scripts/live/firecracker.sh --format json | jq .verdict`). Exit `3` = runtime unavailable here: "not testable", never a pass.
+- `BIN` unset: the leaf runs `cargo build` first (sub-second no-op), so it always tests the working tree. `BIN=path` tests a given binary. `PROFILE=release` switches the build. Other knobs: `CONTAINER_ENGINE` (docker|podman), `IMAGE` (default `alpine:latest`), `AMR_LIVE_CACHE`, `FC_TIMEOUT` (default 120s), `AMR_FC_CONSOLE=1` (dump the guest console to stderr).
+
+| env | runs the binary via | expected verdict |
+| :--- | :--- | :--- |
+| `host` | directly | `host` |
+| `docker-default` / `docker-privileged` | `docker run --rm [--privileged]` (podman when `docker` is podman) | `docker` or `podman` |
+| `bubblewrap` | `bwrap --ro-bind / / --unshare-all ...` | `host` |
+| `unshare` | `unshare --user --pid --mount --fork --map-root-user` | `host` |
+| `gvisor` | container engine with `--runtime=runsc` | `gvisor` |
+| `gvisor-rootless` | `runsc --rootless --network=none do` | `gvisor` |
+| `gvisor-sudo` | `sudo -n runsc --network=none do` (needs passwordless sudo) | `gvisor` |
+| `firecracker` | rootless microVM (needs read/writable `/dev/kvm`) | `firecracker` |
+
+### Matrix, cargo tests, CI
+- `scripts/live-matrix.sh list` prints a TSV of env, status, label and reason. `run [--skip-unavailable] <env>...|all` writes `target/live-matrix/<env>/` with a `status` file (`ok` | `skipped: <why>` | `failed: <why>`), six human views (`standard.txt`, `compact.txt`, `verbose.txt`, `active.txt`, `report.md`, `report.yaml`, each with a `.stderr`), and `result.json`. Only `result.json` must succeed and parse. `all` implies skipping unavailable envs. `summary [DIR]` prints the markdown comparison tables.
+- `cargo test --test live_matrix -- --ignored [name]` runs one `#[ignore]` test per env. Each test asserts `schemaVersion`, `scan.complete`, the expected verdict, the container-only rules silent under host/gVisor/Firecracker, and `AMR-014` under gVisor/Firecracker. Unavailable envs are skipped with a stderr note; `AMR_LIVE_REQUIRE=1` turns skips into failures. Plain `cargo test` never starts runtimes.
+- `.github/workflows/live-matrix.yml` legs run `setup --system <envs>` (apt bwrap, AppArmor userns sysctl, install runsc and `runsc install` for docker, `chmod /dev/kvm`), then `BIN=bin/amirustrained scripts/live-matrix.sh run <envs>`, and upload `target/live-matrix/`. The summary job merges the uploads and calls `summary`. The gVisor leg covers `gvisor`, `gvisor-sudo` and `gvisor-rootless`. Firecracker uses `--skip-unavailable` and records a skip when the runner lacks KVM; never fabricate a result.
+- For detection or rule-gating changes, run the cargo live tests (filter to the affected env) and quote the observed verdicts.
+
+### Extending and gotchas
+- New runtime = new `scripts/live/<env>.sh` (set `LABEL`, define `env_check` (print the reason when unavailable), `env_launch` (run `"$BIN" "$@"`), optional `env_setup`, end with `leaf_main "$@"`) + `ENVS` entry in `scripts/live-matrix.sh` (order = summary column order) + `live!` row in `tests/live_matrix.rs` + a CI matrix leg. Keep `shellcheck -x scripts/live-matrix.sh scripts/live/*.sh` and `actionlint` clean.
+- SELinux plus rootless podman cannot read a bind-mounted binary from `target/`, and the process dies with SIGSEGV (exit 139), which looks like a product crash. `container_run` in `lib.sh` copies the binary to a temp dir and mounts it `:z`. Reuse that helper rather than mounting `$BIN` directly. Do not use `label=disable` except for the runsc-under-podman case, which requires it.
+- Firecracker: the cached Ubuntu rootfs is attached read-only and never mutated. The guest init script, the binary and a result tarball travel over raw drives `vdb`/`vdc`/`vdd`; init is `/bin/sh /dev/vdb`, so the scan reports that as PID 1. One boot per invocation, about 2s.
