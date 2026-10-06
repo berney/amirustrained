@@ -351,6 +351,7 @@ scripts/live/gvisor.sh shell -- cat /proc/self/status   # or one command, exit c
 scripts/live-matrix.sh list                     # every env + availability (aligned; TSV when piped)
 scripts/live-matrix.sh run all                  # full 8-view sweep (incl. --compact --yolo) -> target/live-matrix/<env>/
 scripts/live-matrix.sh summary                  # markdown comparison tables
+scripts/live-matrix.sh oracle                # drop-and-exec ground truth vs AMR-030 (firecracker only)
 cargo test --test live_matrix -- --ignored      # verdict + container-gating asserts per env
 ```
 
@@ -358,8 +359,13 @@ Envs: `host`, `docker-default`, `docker-privileged`, `bubblewrap`, `unshare`,
 `gvisor` (engine `--runtime=runsc`), `gvisor-privileged` (`--privileged` too; needs a
 rootful engine), `gvisor-rootless`, `gvisor-sudo`, `firecracker`.
 `docker-*` use `docker` or podman (`CONTAINER_ENGINE` overrides). Firecracker runs
-rootless with a writable `/dev/kvm`: the rootfs is attached read-only and the binary
-and result travel over raw scratch drives. Unavailable envs exit 3 and are skipped by
+rootless with a writable `/dev/kvm`: each boot uses a throwaway reflink copy of the
+cached rootfs (the cache is never mutated), and the guest init recreates the mount
+table of a stock systemd microVM, so mount findings match a real Ubuntu uVM. The
+binary and result travel over raw scratch drives. `oracle` (firecracker only) proves
+AMR-030 by create-only-dropping an executable and a device node on every mount and
+running them inside the VM; it exits 1 on any passive-vs-actual mismatch.
+Unavailable envs exit 3 and are skipped by
 `run all` and the cargo tests (`AMR_LIVE_REQUIRE=1` makes them fail).
 `.github/workflows/live-matrix.yml` runs the same scripts after `setup --system`
 (sudo host prep: apt, sysctl, `runsc install`, `/dev/kvm` perms).

@@ -1,13 +1,45 @@
 #!/usr/bin/env bash
 # Firecracker microVM, rootless given a read/writable /dev/kvm. One boot per
-# invocation: the cached Ubuntu rootfs is attached read-only (`ro` root, never
-# mutated); the guest script, the binary, and the result tarball travel over
-# raw scratch drives (vdb/vdc/vdd), so no loop mounts or sudo are needed.
+# invocation on a throwaway reflink copy of the cached Ubuntu rootfs (the
+# cache is never mutated); the guest script, the binary, and the result
+# tarball travel over raw scratch drives (vdb/vdc/vdd), so no loop mounts or
+# sudo are needed. PID 1 is /bin/sh, but it rebuilds the mount table of a
+# stock systemd Ubuntu Firecracker guest (GUEST_MOUNTS), so mount-hygiene
+# findings reflect a realistic microVM, not a bare-init worst case.
 # Usage: see scripts/live/lib.sh header.
 # shellcheck source-path=SCRIPTDIR
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 # shellcheck disable=SC2034 # read by lib.sh
 LABEL="Firecracker MicroVM"
+
+# Mount table of a systemd Ubuntu 22.04 Firecracker guest (captured from a
+# real uVM's /proc/self/mountinfo); devtmpfs on /dev is the kernel automount.
+# Mounts the guest kernel lacks are skipped silently. Not reproduced: the
+# systemd autofs trigger under binfmt_misc (binfmt_misc is mounted directly).
+GUEST_MOUNTS='
+m() { mount "$@" 2>/dev/null || true; }
+mount --make-rshared /
+m -t proc -o rw,nosuid,nodev,noexec,relatime proc /proc
+m -t sysfs -o rw,nosuid,nodev,noexec,relatime sysfs /sys
+m -t securityfs -o rw,nosuid,nodev,noexec,relatime securityfs /sys/kernel/security
+m -t selinuxfs -o rw,nosuid,noexec,relatime selinuxfs /sys/fs/selinux
+mkdir -p /dev/shm /dev/pts /dev/hugepages /dev/mqueue /var/lib/systemd
+m -t tmpfs -o rw,nosuid,nodev,strictatime tmpfs /dev/shm
+m -t devpts -o rw,nosuid,noexec,relatime,gid=5,mode=620,ptmxmode=000 devpts /dev/pts
+m -t tmpfs -o rw,nosuid,nodev,strictatime,size=20%,nr_inodes=800k,mode=755 tmpfs /run
+mkdir -p /run/lock
+m -t tmpfs -o rw,nosuid,nodev,noexec,relatime,size=5120k tmpfs /run/lock
+m -t cgroup2 -o rw,nosuid,nodev,noexec,relatime,nsdelegate,memory_recursiveprot cgroup2 /sys/fs/cgroup
+m -t pstore -o rw,nosuid,nodev,noexec,relatime pstore /sys/fs/pstore
+m -t bpf -o rw,nosuid,nodev,noexec,relatime,mode=700 bpf /sys/fs/bpf
+m -t hugetlbfs -o rw,nosuid,nodev,relatime,pagesize=2M hugetlbfs /dev/hugepages
+m -t mqueue -o rw,nosuid,nodev,noexec,relatime mqueue /dev/mqueue
+m -t debugfs -o rw,nosuid,nodev,noexec,relatime debugfs /sys/kernel/debug
+m -t tmpfs -o rw,nosuid,nodev,strictatime,size=50%,nr_inodes=1m tmpfs /tmp
+m -t tmpfs -o rw,nosuid,nodev,strictatime,size=50%,nr_inodes=10k tmpfs /var/lib/systemd
+m -t fusectl -o rw,nosuid,nodev,noexec,relatime fusectl /sys/fs/fuse/connections
+m -t binfmt_misc -o rw,nosuid,nodev,noexec,relatime binfmt_misc /proc/sys/fs/binfmt_misc
+'
 
 FC_VERSION=v1.17.0
 FC_URL="https://github.com/firecracker-microvm/firecracker/releases/download/${FC_VERSION}/firecracker-${FC_VERSION}-x86_64.tgz"
@@ -64,9 +96,10 @@ env_launch() {
   cp "$BIN" "$work/bin.img"
   truncate -s $(( (size + 511) / 512 * 512 )) "$work/bin.img"
   truncate -s 64M "$work/out.img"
+  cp --reflink=auto "$ROOTFS" "$work/rootfs.ext4"
   {
-    echo 'mount -t proc proc /proc; mount -t sysfs sys /sys'
-    echo 'mount -t tmpfs tmpfs /run; mount -t tmpfs tmpfs /tmp; mkdir -p /run/amr'
+    echo "$GUEST_MOUNTS"
+    echo 'mkdir -p /run/amr'
     echo "head -c $size /dev/vdc > /run/amr/amirustrained; chmod +x /run/amr/amirustrained"
     if (( interactive )); then
       # Shell on the serial console, which firecracker wires to our terminal;
@@ -89,15 +122,15 @@ env_launch() {
 {
   "boot-source": {
     "kernel_image_path": "$KERNEL",
-    "boot_args": "console=ttyS0 reboot=k panic=1 pci=off ro$quiet init=/bin/sh -- /dev/vdb"
+    "boot_args": "console=ttyS0 reboot=k panic=1 pci=off rw$quiet init=/bin/sh -- /dev/vdb"
   },
   "drives": [
-    {"drive_id": "rootfs", "path_on_host": "$ROOTFS", "is_root_device": true, "is_read_only": true},
+    {"drive_id": "rootfs", "path_on_host": "$work/rootfs.ext4", "is_root_device": true, "is_read_only": false},
     {"drive_id": "script", "path_on_host": "$work/init.sh", "is_root_device": false, "is_read_only": true},
     {"drive_id": "binary", "path_on_host": "$work/bin.img", "is_root_device": false, "is_read_only": true},
     {"drive_id": "result", "path_on_host": "$work/out.img", "is_root_device": false, "is_read_only": false}
   ],
-  "machine-config": {"vcpu_count": 2, "mem_size_mib": 512}
+  "machine-config": {"vcpu_count": 2, "mem_size_mib": 2048}
 }
 EOF
   if (( interactive )); then

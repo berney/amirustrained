@@ -26,6 +26,16 @@ pub struct StagingMount {
     pub options: Vec<String>,
 }
 
+/// Filesystems that cannot store user-provided file content, so no droppable
+/// executable can exist on them regardless of `rw`/`!noexec` mount flags:
+/// hugetlbfs files are hugepage reservations (`write` fails with `ENOSPC`
+/// unless the kernel was pre-tuned via `nr_hugepages`), and POSIX message
+/// queue writes return `ENOSYS`. Ground-truthed with the drop-and-exec
+/// oracle: `scripts/live-matrix.sh oracle firecracker`.
+fn holds_user_content(fstype: &str) -> bool {
+    !matches!(fstype, "hugetlbfs" | "mqueue")
+}
+
 pub struct Mounts;
 
 impl Probe for Mounts {
@@ -146,13 +156,14 @@ pub fn probe_mounts(fs: &PseudoFs, pid: u32) -> ProbeOutcome {
 
     let entries = parse_mountinfo(&content);
 
-    // 1. Staging mounts: rw + !noexec + fs.writable
+    // 1. Staging mounts: rw + !noexec + content-capable fstype + fs.writable
     let mut staging = Vec::new();
     for entry in &entries {
         let is_rw = entry.mount_options.iter().any(|o| o == "rw");
         let has_noexec = entry.mount_options.iter().any(|o| o == "noexec");
         if is_rw
             && !has_noexec
+            && holds_user_content(&entry.fstype)
             && fs.writable(&entry.mount_point)
             && !staging
                 .iter()
@@ -318,6 +329,31 @@ mod tests {
         assert!(staging[0].writable_by_caller);
         assert_eq!(staging[0].fstype, "tmpfs");
         assert!(staging.iter().all(|s| s.mount_point != "/var/ro_dir"));
+    }
+
+    #[test]
+    fn test_contentless_fstypes_never_stage() {
+        // hugetlbfs writes fail ENOSPC and mqueue writes fail ENOSYS: an
+        // executable can never be dropped on them, so rw + !noexec must not
+        // stage them (oracle-verified: live-matrix.sh oracle firecracker).
+        // tmpfs next to them keeps staging enabled as the control.
+        let mountinfo = "\
+40 1 0:40 / /dev/hugepages rw,relatime - hugetlbfs hugetlbfs rw,pagesize=2M\n\
+41 1 0:41 / /dev/mqueue rw,relatime - mqueue mqueue rw\n\
+42 1 0:42 / /tmp rw,relatime - tmpfs tmpfs rw\n";
+
+        let (d, fs) = fixture_fs(&[("proc/self/mountinfo", mountinfo)]);
+        for p in &["dev/hugepages", "dev/mqueue", "tmp"] {
+            std::fs::create_dir_all(d.path().join(p)).unwrap();
+        }
+
+        let o = probe_mounts(&fs, 1);
+        let staging_fact = o.facts.iter().find(|f| f.key == "staging").unwrap();
+        let staging: Vec<StagingMount> =
+            serde_json::from_value(staging_fact.value.clone()).unwrap();
+
+        assert_eq!(staging.len(), 1);
+        assert_eq!(staging[0].mount_point, "/tmp");
     }
 
     #[test]
