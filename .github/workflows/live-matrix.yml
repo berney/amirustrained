@@ -71,16 +71,28 @@ jobs:
       - name: Run on Host
         if: matrix.env.type == 'host'
         run: |
-          echo "::group::Standard Compact"
-          ./bin/amirustrained --compact
+          echo "::group::1. Standard Output (Card View with Why / Fix / Evidence)"
+          ./bin/amirustrained || true
           echo "::endgroup::"
 
-          echo "::group::Active Probes Sweep"
-          ./bin/amirustrained --compact --probe-kernel-execution --probe-syscalls
+          echo "::group::2. Compact Output (--compact)"
+          ./bin/amirustrained --compact || true
           echo "::endgroup::"
 
-          echo "::group::Verbose Output"
-          ./bin/amirustrained --verbose
+          echo "::group::3. Verbose Output (--verbose)"
+          ./bin/amirustrained --verbose || true
+          echo "::endgroup::"
+
+          echo "::group::4. Active Probes Sweep (--probe-kernel-execution --probe-syscalls)"
+          ./bin/amirustrained --compact --probe-kernel-execution --probe-syscalls || true
+          echo "::endgroup::"
+
+          echo "::group::5. Markdown Report (--format markdown)"
+          ./bin/amirustrained --format markdown || true
+          echo "::endgroup::"
+
+          echo "::group::6. YAML Report (--format yaml)"
+          ./bin/amirustrained --format yaml || true
           echo "::endgroup::"
 
           ./bin/amirustrained --format json > result.json
@@ -89,16 +101,40 @@ jobs:
       - name: Run in Docker
         if: matrix.env.type == 'docker'
         run: |
-          echo "::group::Docker Scan"
+          echo "::group::1. Standard Output (Card View with Why / Fix / Evidence)"
           docker run --rm ${{ matrix.env.args }} \
             -v "$PWD/bin/amirustrained:/bin/amirustrained:ro" \
-            alpine:latest /bin/amirustrained --compact
+            alpine:latest /bin/amirustrained || true
           echo "::endgroup::"
 
-          echo "::group::Docker Active Probes Sweep"
+          echo "::group::2. Compact Output (--compact)"
           docker run --rm ${{ matrix.env.args }} \
             -v "$PWD/bin/amirustrained:/bin/amirustrained:ro" \
-            alpine:latest /bin/amirustrained --compact --probe-kernel-execution
+            alpine:latest /bin/amirustrained --compact || true
+          echo "::endgroup::"
+
+          echo "::group::3. Verbose Output (--verbose)"
+          docker run --rm ${{ matrix.env.args }} \
+            -v "$PWD/bin/amirustrained:/bin/amirustrained:ro" \
+            alpine:latest /bin/amirustrained --verbose || true
+          echo "::endgroup::"
+
+          echo "::group::4. Active Probes Sweep (--probe-kernel-execution --probe-syscalls)"
+          docker run --rm ${{ matrix.env.args }} \
+            -v "$PWD/bin/amirustrained:/bin/amirustrained:ro" \
+            alpine:latest /bin/amirustrained --compact --probe-kernel-execution --probe-syscalls || true
+          echo "::endgroup::"
+
+          echo "::group::5. Markdown Report (--format markdown)"
+          docker run --rm ${{ matrix.env.args }} \
+            -v "$PWD/bin/amirustrained:/bin/amirustrained:ro" \
+            alpine:latest /bin/amirustrained --format markdown || true
+          echo "::endgroup::"
+
+          echo "::group::6. YAML Report (--format yaml)"
+          docker run --rm ${{ matrix.env.args }} \
+            -v "$PWD/bin/amirustrained:/bin/amirustrained:ro" \
+            alpine:latest /bin/amirustrained --format yaml || true
           echo "::endgroup::"
 
           docker run --rm ${{ matrix.env.args }} \
@@ -112,9 +148,34 @@ jobs:
           sudo apt-get update && sudo apt-get install -y bubblewrap
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
-          echo "::group::Bubblewrap Scan"
+          echo "::group::1. Standard Output (Card View with Why / Fix / Evidence)"
           bwrap --ro-bind / / --tmpfs /tmp --proc /proc --dev /dev --unshare-all \
-            ./bin/amirustrained --compact
+            ./bin/amirustrained || true
+          echo "::endgroup::"
+
+          echo "::group::2. Compact Output (--compact)"
+          bwrap --ro-bind / / --tmpfs /tmp --proc /proc --dev /dev --unshare-all \
+            ./bin/amirustrained --compact || true
+          echo "::endgroup::"
+
+          echo "::group::3. Verbose Output (--verbose)"
+          bwrap --ro-bind / / --tmpfs /tmp --proc /proc --dev /dev --unshare-all \
+            ./bin/amirustrained --verbose || true
+          echo "::endgroup::"
+
+          echo "::group::4. Active Probes Sweep (--probe-kernel-execution --probe-syscalls)"
+          bwrap --ro-bind / / --tmpfs /tmp --proc /proc --dev /dev --unshare-all \
+            ./bin/amirustrained --compact --probe-kernel-execution --probe-syscalls || true
+          echo "::endgroup::"
+
+          echo "::group::5. Markdown Report (--format markdown)"
+          bwrap --ro-bind / / --tmpfs /tmp --proc /proc --dev /dev --unshare-all \
+            ./bin/amirustrained --format markdown || true
+          echo "::endgroup::"
+
+          echo "::group::6. YAML Report (--format yaml)"
+          bwrap --ro-bind / / --tmpfs /tmp --proc /proc --dev /dev --unshare-all \
+            ./bin/amirustrained --format yaml || true
           echo "::endgroup::"
 
           bwrap --ro-bind / / --tmpfs /tmp --proc /proc --dev /dev --unshare-all \
@@ -126,9 +187,34 @@ jobs:
         run: |
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
-          echo "::group::Unshare Scan"
+          echo "::group::1. Standard Output (Card View with Why / Fix / Evidence)"
           unshare --user --pid --mount --fork --map-root-user \
-            ./bin/amirustrained --compact
+            ./bin/amirustrained || true
+          echo "::endgroup::"
+
+          echo "::group::2. Compact Output (--compact)"
+          unshare --user --pid --mount --fork --map-root-user \
+            ./bin/amirustrained --compact || true
+          echo "::endgroup::"
+
+          echo "::group::3. Verbose Output (--verbose)"
+          unshare --user --pid --mount --fork --map-root-user \
+            ./bin/amirustrained --verbose || true
+          echo "::endgroup::"
+
+          echo "::group::4. Active Probes Sweep (--probe-kernel-execution --probe-syscalls)"
+          unshare --user --pid --mount --fork --map-root-user \
+            ./bin/amirustrained --compact --probe-kernel-execution --probe-syscalls || true
+          echo "::endgroup::"
+
+          echo "::group::5. Markdown Report (--format markdown)"
+          unshare --user --pid --mount --fork --map-root-user \
+            ./bin/amirustrained --format markdown || true
+          echo "::endgroup::"
+
+          echo "::group::6. YAML Report (--format yaml)"
+          unshare --user --pid --mount --fork --map-root-user \
+            ./bin/amirustrained --format yaml || true
           echo "::endgroup::"
 
           unshare --user --pid --mount --fork --map-root-user \
@@ -143,10 +229,44 @@ jobs:
           sudo /usr/local/bin/runsc install
           sudo systemctl restart docker
 
-          echo "::group::gVisor Scan"
+          echo "::group::1. Standalone Direct gVisor (runsc do)"
+          /usr/local/bin/runsc --rootless --network=none do ./bin/amirustrained --compact || true
+          echo "::endgroup::"
+
+          echo "::group::2. Docker gVisor Standard Output (Card View with Evidence)"
           docker run --rm --runtime=runsc \
             -v "$PWD/bin/amirustrained:/bin/amirustrained:ro" \
-            alpine:latest /bin/amirustrained --compact
+            alpine:latest /bin/amirustrained || true
+          echo "::endgroup::"
+
+          echo "::group::3. Docker gVisor Compact Output (--compact)"
+          docker run --rm --runtime=runsc \
+            -v "$PWD/bin/amirustrained:/bin/amirustrained:ro" \
+            alpine:latest /bin/amirustrained --compact || true
+          echo "::endgroup::"
+
+          echo "::group::4. Docker gVisor Verbose Output (--verbose)"
+          docker run --rm --runtime=runsc \
+            -v "$PWD/bin/amirustrained:/bin/amirustrained:ro" \
+            alpine:latest /bin/amirustrained --verbose || true
+          echo "::endgroup::"
+
+          echo "::group::5. Docker gVisor Active Probes Sweep"
+          docker run --rm --runtime=runsc \
+            -v "$PWD/bin/amirustrained:/bin/amirustrained:ro" \
+            alpine:latest /bin/amirustrained --compact --probe-kernel-execution --probe-syscalls || true
+          echo "::endgroup::"
+
+          echo "::group::6. Docker gVisor Markdown Report"
+          docker run --rm --runtime=runsc \
+            -v "$PWD/bin/amirustrained:/bin/amirustrained:ro" \
+            alpine:latest /bin/amirustrained --format markdown || true
+          echo "::endgroup::"
+
+          echo "::group::7. Docker gVisor YAML Report"
+          docker run --rm --runtime=runsc \
+            -v "$PWD/bin/amirustrained:/bin/amirustrained:ro" \
+            alpine:latest /bin/amirustrained --format yaml || true
           echo "::endgroup::"
 
           docker run --rm --runtime=runsc \
@@ -181,12 +301,18 @@ jobs:
           sudo mount -o loop /tmp/rootfs.ext4 /tmp/mnt
           sudo cp bin/amirustrained /tmp/mnt/bin/amirustrained
           sudo chmod +x /tmp/mnt/bin/amirustrained
-          # Create guest init runner script
           cat << 'SCRIPT' | sudo tee /tmp/mnt/root/run.sh
           #!/bin/sh
           mount -t proc proc /proc
           mount -t sysfs sys /sys
+          echo "=== 1. Standard Output ==="
+          /bin/amirustrained > /dev/ttyS0 2>&1
+          echo "=== 2. Compact Output ==="
           /bin/amirustrained --compact > /dev/ttyS0 2>&1
+          echo "=== 3. Verbose Output ==="
+          /bin/amirustrained --verbose > /dev/ttyS0 2>&1
+          echo "=== 4. Active Probes Sweep ==="
+          /bin/amirustrained --compact --probe-kernel-execution --probe-syscalls > /dev/ttyS0 2>&1
           /bin/amirustrained --format json > /tmp/out.json 2>/dev/null
           sync
           reboot -f
@@ -194,7 +320,7 @@ jobs:
           sudo chmod +x /tmp/mnt/root/run.sh
           sudo umount /tmp/mnt
 
-          echo "::group::Firecracker Boot & Scan"
+          echo "::group::Firecracker Boot & Scan Matrix"
           sudo firectl \
             --kernel=/tmp/vmlinux \
             --root-drive=/tmp/rootfs.ext4 \
@@ -216,7 +342,7 @@ jobs:
           name: result-${{ matrix.env.id }}
           path: result.json
 
-  # ── Summary: Generate Environment Comparison Table ──────────────────────────
+  # ── Summary: Generate Environment Comparison Tables ─────────────────────────
   summary:
     name: Generate Environment Comparison Table
     needs: matrix
@@ -227,22 +353,24 @@ jobs:
           pattern: result-*
           path: results
           merge-multiple: false
-      - name: Build Comparison Table
+      - name: Build Comparison Tables
         run: |
           python3 - << 'EOF' > summary.md
-          import json, glob, os
+          import json, os
 
           envs = [
               ("host", "Host (Azure VM)"),
-              ("docker-default", "Docker (Default)"),
-              ("docker-privileged", "Docker (Privileged)"),
-              ("bubblewrap", "Bubblewrap (bwrap)"),
-              ("unshare", "Raw User-NS (unshare)"),
+              ("docker-default", "Docker Default"),
+              ("docker-privileged", "Docker Privileged"),
+              ("bubblewrap", "Bubblewrap"),
+              ("unshare", "Raw User-NS"),
               ("gvisor", "gVisor (runsc)"),
               ("firecracker", "Firecracker MicroVM"),
           ]
 
-          rows = []
+          env_results = {}
+          env_summary_rows = []
+
           for env_id, label in envs:
               p = f"results/result-{env_id}/result.json"
               if not os.path.exists(p):
@@ -251,8 +379,15 @@ jobs:
                   data = json.load(open(p))
                   verdict = data.get("verdict", {})
                   runtime = verdict.get("runtime", "unknown")
+                  variant = verdict.get("variant")
                   conf = verdict.get("confidence", "")
-                  verdict_str = f"`{runtime}` ({conf})" if conf else f"`{runtime}`"
+                  
+                  if variant:
+                      verdict_str = f"`{runtime}` ({variant})"
+                  elif conf:
+                      verdict_str = f"`{runtime}` ({conf})"
+                  else:
+                      verdict_str = f"`{runtime}`"
 
                   scan = data.get("scan", {})
                   uid = scan.get("uid", "?")
@@ -263,15 +398,66 @@ jobs:
                   rule_ids = [f.get("rule", "") for f in findings]
                   rule_str = ", ".join(rule_ids) if rule_ids else "*None*"
 
-                  rows.append((label, verdict_str, id_str, str(len(findings)), rule_str))
+                  env_results[env_id] = findings
+                  env_summary_rows.append((label, verdict_str, id_str, str(len(findings)), rule_str))
               except Exception as e:
-                  rows.append((label, f"Error: {e}", "-", "-", "-"))
+                  env_summary_rows.append((label, f"Error: {e}", "-", "-", "-"))
 
           print("## Live Environment Matrix Comparison\n")
+          print("### 1. Environment Runtime Verdicts\n")
           print("| Environment | Detected Runtime | User / UID | Findings Count | Triggered Findings |")
           print("| :--- | :--- | :--- | :--- | :--- |")
-          for r in rows:
+          for r in env_summary_rows:
               print(f"| {r[0]} | {r[1]} | {r[2]} | {r[3]} | {r[4]} |")
+
+          # ── Table 2: Detailed Finding-to-Runtime Matrix ──────────────────────
+          sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+          sev_badge = {
+              "critical": "🚨 Critical",
+              "high": "⚠️ High",
+              "medium": "🟡 Med",
+              "low": "🔵 Low",
+              "info": "ℹ️ Info",
+          }
+
+          all_findings = {}
+          for env_id, flist in env_results.items():
+              for f in flist:
+                  rid = f.get("rule", "")
+                  if not rid:
+                      continue
+                  if rid not in all_findings:
+                      all_findings[rid] = {
+                          "rule": rid,
+                          "severity": f.get("severity", "info").lower(),
+                          "summary": f.get("summary", ""),
+                      }
+
+          sorted_rules = sorted(
+              all_findings.values(),
+              key=lambda x: (sev_order.get(x["severity"], 99), x["rule"])
+          )
+
+          print("\n### 2. Finding-to-Runtime Security Posture Matrix\n")
+          headers = ["Finding (Rule ID & Summary)", "Severity"] + [e[1] for e in envs if e[0] in env_results]
+          print("| " + " | ".join(headers) + " |")
+          print("| :--- | :--- | " + " | ".join([":---:"] * (len(headers) - 2)) + " |")
+
+          for r in sorted_rules:
+              rid = r["rule"]
+              title = f"`{rid}` {r['summary']}"
+              badge = sev_badge.get(r["severity"], r["severity"])
+              cols = []
+              for env_id, _ in envs:
+                  if env_id not in env_results:
+                      continue
+                  hits = [f for f in env_results[env_id] if f.get("rule") == rid]
+                  if hits:
+                      hit_sev = hits[0].get("severity", "").lower()
+                      cols.append(sev_badge.get(hit_sev, "✅"))
+                  else:
+                      cols.append("·")
+              print(f"| {title} | {badge} | " + " | ".join(cols) + " |")
           EOF
 
           cat summary.md >> $GITHUB_STEP_SUMMARY

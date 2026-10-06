@@ -145,7 +145,8 @@ pub fn score(
         | RuntimeKind::Containerd
         | RuntimeKind::CriO
         | RuntimeKind::Lxc
-        | RuntimeKind::SystemdNspawn => {
+        | RuntimeKind::SystemdNspawn
+        | RuntimeKind::Gvisor => {
             outer_runtime(&markers, runtime).map(|outer| format!("nested-in-{outer}"))
         }
         _ => None,

@@ -97,7 +97,7 @@ pub fn probe_vmm_with(fs: &PseudoFs, hv: Option<HypervisorInfo>) -> ProbeOutcome
         version.clone().into(),
         "/proc/version".into(),
     ));
-    if version.contains("gVisor") {
+    if version.to_ascii_lowercase().contains("gvisor") {
         let kernel = o.facts.iter().find(|f| f.key == "kernel").unwrap().clone();
         o = o.with_signal(Signal {
             runtime: RuntimeKind::Gvisor,
@@ -113,7 +113,8 @@ pub fn probe_vmm_with(fs: &PseudoFs, hv: Option<HypervisorInfo>) -> ProbeOutcome
     let dmi_empty = dmi_obj["sysVendor"].is_null()
         && dmi_obj["productName"].is_null()
         && dmi_obj["biosVendor"].is_null();
-    if hv_present && dmi_empty && vsock && clock.as_deref() == Some("kvm-clock") {
+    let clock_ok = matches!(clock.as_deref(), Some("kvm-clock") | Some("tsc"));
+    if hv_present && dmi_empty && vsock && clock_ok {
         let vsock_fact = o.facts.iter().find(|f| f.key == "vsock").unwrap().clone();
         o = o.with_signal(Signal {
             runtime: RuntimeKind::Firecracker,
