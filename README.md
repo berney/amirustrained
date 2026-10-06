@@ -17,7 +17,7 @@ Prebuilt tarballs (one per supported CPU arch — each a static-pie musl ELF,
 independent of the host libc):
 
 ```sh
-tar -xzf amirustrained-0.2.0-x86_64-unknown-linux-musl.tar.gz   # CI "Release (musl)" artifact for your triple
+tar -xzf amirustrained-0.3.0-x86_64-unknown-linux-musl.tar.gz   # CI "Release (musl)" artifact for your triple
 ./amirustrained --format markdown
 ```
 
