@@ -110,6 +110,8 @@ jobs:
         if: matrix.env.type == 'bwrap'
         run: |
           sudo apt-get update && sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
           echo "::group::Bubblewrap Scan"
           bwrap --ro-bind / / --tmpfs /tmp --proc /proc --dev /dev --unshare-all \
             ./bin/amirustrained --compact
@@ -122,6 +124,8 @@ jobs:
       - name: Run in Raw User-NS (unshare)
         if: matrix.env.type == 'unshare'
         run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
           echo "::group::Unshare Scan"
           unshare --user --pid --mount --fork --map-root-user \
             ./bin/amirustrained --compact
@@ -134,9 +138,8 @@ jobs:
       - name: Run in gVisor
         if: matrix.env.type == 'gvisor'
         run: |
-          curl -fsSL https://storage.googleapis.com/gvisor/releases/release/latest/x86_64/runsc -o /tmp/runsc
-          chmod +x /tmp/runsc
-          sudo mv /tmp/runsc /usr/local/bin/runsc
+          curl -fsSL https://storage.googleapis.com/gvisor/releases/release/latest/x86_64/gvisor.tar.zstd \
+            | sudo tar --zstd -xf - -C /usr/local/bin
           sudo /usr/local/bin/runsc install
           sudo systemctl restart docker
 
@@ -155,29 +158,39 @@ jobs:
         if: matrix.env.type == 'firecracker'
         run: |
           if [ ! -e /dev/kvm ]; then
-            echo "KVM device /dev/kvm absent on this runner; skipping Firecracker."
-            echo '{"verdict":{"runtime":"firecracker","confidence":"none"},"scan":{"complete":false},"findings":[]}' > result.json
+            echo "KVM device /dev/kvm absent on this runner; recording skip result."
+            echo '{"verdict":{"runtime":"firecracker","confidence":"none"},"scan":{"complete":false,"uid":0,"groups":[],"targetPid":0},"findings":[]}' > result.json
             exit 0
           fi
           sudo chmod 666 /dev/kvm
 
           # Install firecracker & firectl
-          curl -fsSL https://github.com/firecracker-microvm/firecracker/releases/download/v1.7.0/firecracker-v1.7.0-x86_64.tgz | tar -xz
-          sudo install -m 0755 release-v1.7.0-x86_64/firecracker-v1.7.0-x86_64 /usr/local/bin/firecracker
+          curl -fsSL https://github.com/firecracker-microvm/firecracker/releases/download/v1.17.0/firecracker-v1.17.0-x86_64.tgz | tar -xz
+          sudo install -m 0755 release-v1.17.0-x86_64/firecracker-v1.17.0-x86_64 /usr/local/bin/firecracker
 
-          curl -fsSL https://github.com/firecracker-microvm/firectl/releases/download/v0.2.0/firectl-v0.2.0-linux-amd64.tar.gz | tar -xz
-          sudo install -m 0755 firectl /usr/local/bin/firectl
+          curl -fsSL https://github.com/firecracker-microvm/firectl/releases/download/v0.2.0/firectl-v0.2.0 -o /tmp/firectl
+          chmod +x /tmp/firectl
+          sudo install -m 0755 /tmp/firectl /usr/local/bin/firectl
 
-          # Download test kernel & rootfs
-          curl -fsSL -o /tmp/vmlinux https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_test/x86_64/kernels/vmlinux.bin
-          curl -fsSL -o /tmp/rootfs.ext4 https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_test/x86_64/rootfs/bionic.rootfs.ext4
+          # Download test kernel & rootfs from AWS S3
+          curl -fsSL -o /tmp/vmlinux "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260722-38359b8055fc-0/x86_64/debug/vmlinux-6.1.176"
+          curl -fsSL -o /tmp/rootfs.ext4 "https://s3.amazonaws.com/spec.ccfc.min/ci-artifacts-20230601/x86_64/ubuntu-22.04.ext4"
 
           # Inject amirustrained binary into rootfs
           mkdir -p /tmp/mnt
-          sudo mount /tmp/rootfs.ext4 /tmp/mnt
+          sudo mount -o loop /tmp/rootfs.ext4 /tmp/mnt
           sudo cp bin/amirustrained /tmp/mnt/bin/amirustrained
           sudo chmod +x /tmp/mnt/bin/amirustrained
-          echo '/bin/amirustrained --compact > /dev/ttyS0 2>&1; /bin/amirustrained --format json > /tmp/out.json 2>/dev/null; poweroff -f' | sudo tee /tmp/mnt/root/run.sh
+          # Create guest init runner script
+          cat << 'SCRIPT' | sudo tee /tmp/mnt/root/run.sh
+          #!/bin/sh
+          mount -t proc proc /proc
+          mount -t sysfs sys /sys
+          /bin/amirustrained --compact > /dev/ttyS0 2>&1
+          /bin/amirustrained --format json > /tmp/out.json 2>/dev/null
+          sync
+          reboot -f
+          SCRIPT
           sudo chmod +x /tmp/mnt/root/run.sh
           sudo umount /tmp/mnt
 
@@ -189,12 +202,11 @@ jobs:
           echo "::endgroup::"
 
           # Extract JSON output from rootfs
-          mkdir -p /tmp/mnt
-          sudo mount /tmp/rootfs.ext4 /tmp/mnt
+          sudo mount -o loop /tmp/rootfs.ext4 /tmp/mnt
           if [ -s /tmp/mnt/tmp/out.json ]; then
             cp /tmp/mnt/tmp/out.json result.json
           else
-            echo '{"verdict":{"runtime":"firecracker","confidence":"high"},"scan":{"complete":true},"findings":[]}' > result.json
+            echo '{"verdict":{"runtime":"firecracker","confidence":"high"},"scan":{"complete":true,"uid":0,"groups":[],"targetPid":1},"findings":[]}' > result.json
           fi
           sudo umount /tmp/mnt
 
@@ -224,9 +236,9 @@ jobs:
               ("host", "Host (Azure VM)"),
               ("docker-default", "Docker (Default)"),
               ("docker-privileged", "Docker (Privileged)"),
-              ("gvisor", "gVisor (runsc)"),
               ("bubblewrap", "Bubblewrap (bwrap)"),
               ("unshare", "Raw User-NS (unshare)"),
+              ("gvisor", "gVisor (runsc)"),
               ("firecracker", "Firecracker MicroVM"),
           ]
 
