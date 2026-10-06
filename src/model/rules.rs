@@ -877,7 +877,7 @@ pub static RULES: &[Rule] = &[
         slug: "raw-memory-access-permitted",
         severity: Severity::Critical,
         summary: "Raw physical memory or port I/O access is permitted via /dev/mem, /dev/kmem, or iopl",
-        why: "Direct access to physical memory (/dev/mem, /dev/kmem) or hardware I/O ports (iopl) allows reading and writing kernel memory, page tables, and hardware registers directly, completely subverting kernel protections and privilege separation. Reachability is judged empirically - the `open(2)` verdict from --probe-device-open outranks the passive access(2) heuristic in both directions. Inside a strong-isolation VM the claim is about raw *guest* memory - still kernel-equivalent access to the platform the hypervisor must defend (the escalation base when module loading and kexec are closed). A passive access(2) reading alone cannot tell a real guest kernel's device from a driverless pseudo-node (gVisor answers `open()` with ENXIO), so an unverified passive finding under such a verdict is honestly degraded to Info; an empirically permitted open (or permitted iopl) is Critical anywhere.",
+        why: "Direct access to physical memory (/dev/mem, /dev/kmem) or hardware I/O ports (iopl) allows reading and writing kernel memory, page tables, and hardware registers directly, completely subverting kernel protections and privilege separation. Reachability is judged empirically - the `open(2)` verdict from --probe-device-open outranks the passive access(2) heuristic in both directions. Inside a strong-isolation VM the claim is about raw *guest* memory - still kernel-equivalent access to the platform the hypervisor must defend (the escalation base when module loading and kexec are closed). Reachability is judged empirically: the `open(2)` verdict from --probe-device-open outranks the passive access(2) heuristic in both directions. Firecracker and Kata guests run real Linux kernels where DAC-accessible means genuinely openable (CI matrix 2026-10-06: the firecracker guest's `--probe-device-open` answers `permitted` and `iopl(3)` is granted), so their passive leg keeps Critical; gVisor alone serves inert pseudo-nodes whose `open()` answers `ENXIO`, so an unverified passive reading under a gVisor verdict is honestly degraded to Info.",
         remediation: "Ensure /dev/mem and /dev/kmem device nodes are not present or accessible in the filesystem, enable kernel lockdown (lockdown=integrity or lockdown=confidentiality), and drop CAP_SYS_RAWIO. Under VM or gVisor images, also strip raw-device nodes from the guest rootfs device table and from guest workload capabilities.",
         references: &[
             "https://man7.org/linux/man-pages/man4/mem.4.html",
@@ -1217,22 +1217,21 @@ fn check_amr024(a: &Assess) -> Option<Vec<Fact>> {
     Some(ev)
 }
 
-/// Raw memory is a claim about the kernel *behind* the device node. Under a
-/// strong-isolation verdict (firecracker/gVisor/kata) that kernel is the
-/// guest's own - readable guest RAM is still kernel-equivalent access on the
-/// platform the hypervisor must defend - so the rule never goes silent there.
-/// What a VM verdict *does* change is trust in the passive leg: `access(2)`
-/// cannot tell a real guest kernel's devmem driver from a driverless
-/// pseudo-node (live gVisor proof: DAC-readable injected nodes whose
-/// `open()` answers ENXIO - the reproduced false-positive class). Used by
-/// [`severity_amr025`] to degrade *unverified* passive findings to Info.
-fn strong_isolation_verdict(a: &Assess) -> bool {
-    a.report.verdict.as_ref().is_some_and(|v| {
-        matches!(
-            v.runtime,
-            RuntimeKind::Firecracker | RuntimeKind::Gvisor | RuntimeKind::Kata
-        )
-    })
+/// True when the runtime verdict is gVisor: the *only* environment where a
+/// DAC-permissive raw-device node is a known structural mirage. Sentry
+/// serves injected container device nodes whose `open()` answers `ENXIO`
+/// (no Linux char-driver layer exists there at all), so under a gVisor
+/// verdict `access(2)` is actively misleading and the unverified passive
+/// leg degrades to Info ([`severity_amr025`]). Firecracker and Kata guests
+/// run real Linux kernels with the genuine devmem driver - CI matrix
+/// evidence 2026-10-06: the firecracker guest's `--probe-device-open`
+/// answers `permitted` on `/dev/mem` and `/dev/port` and `iopl(3)` is
+/// granted - so their passive leg keeps the full Critical weight.
+fn gvisor_verdict(a: &Assess) -> bool {
+    a.report
+        .verdict
+        .as_ref()
+        .is_some_and(|v| v.runtime == RuntimeKind::Gvisor)
 }
 
 fn check_amr025(a: &Assess) -> Option<Vec<Fact>> {
@@ -1299,12 +1298,13 @@ fn check_amr025(a: &Assess) -> Option<Vec<Fact>> {
 /// - Empirically verified reachability (`open(2)` permitted, or `iopl(2)`
 ///   granted by the opt-in kernel-exec worker) is Critical under *every*
 ///   verdict, VM included - ground truth needs no exemption.
-/// - Non-VM verdicts keep the historical Critical contract for the passive
-///   leg (shared-kernel environments where `access(2)` is a faithful proxy).
-/// - Under a strong-isolation verdict with only passive evidence (no
-///   empirical fact, or an inconclusive `error`), the finding degrades to
-///   Info: the node may be a driverless pseudo-device; re-run with
-///   `--probe-device-open` to establish the verdict.
+/// - Every other verdict (host, shared-kernel containers, firecracker,
+///   kata) keeps Critical: real kernels where DAC-accessible means openable.
+/// - Under a gVisor verdict with only passive evidence (no empirical
+///   fact, or an inconclusive `error`), the finding degrades to Info:
+///   Sentry pseudo-nodes are DAC-permissive yet `open()`-dead (ENXIO);
+///   re-run with `--probe-device-open` to establish the verdict. Firecracker
+///   and Kata run real guest kernels - their passive leg keeps Critical.
 fn severity_amr025(a: &Assess, evidence: &[Fact]) -> Severity {
     let verified = evidence.iter().any(|f| {
         f.value
@@ -1313,7 +1313,7 @@ fn severity_amr025(a: &Assess, evidence: &[Fact]) -> Severity {
             .is_some_and(|s| s == "permitted")
             && matches!(f.probe.as_str(), "kernel.device_open" | "kernel.exec")
     });
-    if verified || !strong_isolation_verdict(a) {
+    if verified || !gvisor_verdict(a) {
         Severity::Critical
     } else {
         Severity::Info
@@ -3243,13 +3243,14 @@ mod tests {
     }
 
     #[test]
-    fn amr025_unverified_passive_under_strong_isolation_degrades_to_info() {
-        // A VM verdict cannot confirm the passive leg: gVisor serves
-        // DAC-readable injected nodes whose `open()` answers ENXIO (live
-        // repro), while a Firecracker guest really does hand root openable
-        // guest RAM. Both readings look identical to `access(2)`, so the
-        // finding fires honestly at Info and names the probe that settles
-        // it - never a silent guess, never an unverified Critical.
+    fn amr025_unverified_passive_severity_follows_verdict_semantics() {
+        // gVisor structurally serves DAC-readable pseudo-nodes whose
+        // `open()` answers ENXIO (live repro + CI matrix), so its
+        // unverified passive leg is honest Info. Firecracker and Kata run
+        // real guest kernels whose DAC-accessible nodes are genuinely
+        // openable (CI matrix: firecracker `permitted` + granted iopl),
+        // so their passive leg keeps Critical. The probe outranks both
+        // readings either way.
         for runtime in [
             RuntimeKind::Firecracker,
             RuntimeKind::Gvisor,
@@ -3267,14 +3268,17 @@ mod tests {
             let f = rule("AMR-025")
                 .evaluate(&r, false)
                 .expect("passive raw-memory leg must still be reported");
+            let want = if runtime == RuntimeKind::Gvisor {
+                Severity::Info
+            } else {
+                Severity::Critical
+            };
             assert_eq!(
-                f.severity,
-                Severity::Info,
-                "unverified passive leg must degrade to Info under {runtime:?}"
+                f.severity, want,
+                "unverified passive leg: gVisor degrades to Info, real-kernel verdicts stay Critical ({runtime:?})"
             );
         }
     }
-
     #[test]
     fn amr025_empirical_permitted_open_is_critical_under_vm_verdicts() {
         // Ground truth needs no exemption: a verified `open(2)` on guest

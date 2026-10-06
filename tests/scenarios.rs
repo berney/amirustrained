@@ -329,8 +329,8 @@ const SCENARIOS: &[Scenario] = &[
         // `docker run --privileged --runtime=runsc`: the runtime injects
         // host device nodes into the sandbox `/dev`. `access(2)` reads the
         // nodes permissive for root, so the passive leg fires AMR-025 - but
-        // only at Info: a strong-isolation verdict cannot confirm whether
-        // there is anything behind the nodes (gVisor answers `open()` with
+        // only at Info: gVisor structurally serves DAC-readable
+        // pseudo-nodes with nothing behind them (Sentry answers `open()` with
         // ENXIO), and an unverified raw-memory claim must not mint a
         // Critical. The dedicated probe scan below resolves it to closed;
         // a genuinely openable node (firecracker-style) would be Critical.
