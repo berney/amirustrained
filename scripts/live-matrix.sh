@@ -29,9 +29,10 @@ MODES=(
   "standard.txt|1. Standard Output (Card View with Why / Fix / Evidence)|"
   "compact.txt|2. Compact Output (--compact)|--compact"
   "verbose.txt|3. Verbose Output (--verbose)|--verbose"
-  "active.txt|4. Maximum-Info Sweep (--yolo)|--compact --yolo"
+  "active.txt|4. Active Probes Sweep (--probe-kernel-execution --probe-syscalls)|--compact --probe-kernel-execution --probe-syscalls"
   "report.md|5. Markdown Report (--format markdown)|--format markdown"
   "report.yaml|6. YAML Report (--format yaml)|--format yaml"
+  "yolo.txt|7. Maximum-Info Sweep (--compact --yolo)|--compact --yolo"
 )
 
 die() { echo "live-matrix: $*" >&2; exit 2; }
