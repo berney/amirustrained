@@ -585,3 +585,87 @@ fn compact_output() {
     assert!(stdout.contains("    - "));
     assert!(stdout.contains("scan complete"));
 }
+
+#[test]
+fn verbose_only_cli_suppression_and_flag() {
+    // Run on host: AMR-030 fires as Info with verbose_only = true on this bare host.
+    let (code, default_stdout) = run(&[]);
+    assert_eq!(code, 0);
+    if default_stdout.contains("verbose notices hidden — run with -v") {
+        assert!(
+            !default_stdout.contains("AMR-030"),
+            "AMR-030 should be suppressed on standard run: {default_stdout}"
+        );
+
+        // With -v / --verbose, AMR-030 appears and the hidden notices note is omitted.
+        let (code, v_stdout) = run(&["-v"]);
+        assert_eq!(code, 0);
+        assert!(
+            v_stdout.contains("AMR-030"),
+            "AMR-030 should appear with -v: {v_stdout}"
+        );
+        assert!(
+            !v_stdout.contains("verbose notices hidden — run with -v"),
+            "verbose output must omit hidden notices note: {v_stdout}"
+        );
+
+        // With --compact, AMR-030 is suppressed and note appears.
+        let (code, compact_stdout) = run(&["--compact"]);
+        assert_eq!(code, 0);
+        assert!(
+            !compact_stdout.contains("AMR-030"),
+            "AMR-030 should be suppressed with --compact: {compact_stdout}"
+        );
+        assert!(
+            compact_stdout.contains("verbose notices hidden — run with -v"),
+            "compact mode must display hidden notices note: {compact_stdout}"
+        );
+
+        // With --compact and -v, AMR-030 appears.
+        let (code, compact_v_stdout) = run(&["--compact", "-v"]);
+        assert_eq!(code, 0);
+        assert!(
+            compact_v_stdout.contains("AMR-030"),
+            "AMR-030 should appear with --compact -v: {compact_v_stdout}"
+        );
+        assert!(
+            !compact_v_stdout.contains("verbose notices hidden — run with -v"),
+            "compact verbose must omit hidden notices note: {compact_v_stdout}"
+        );
+    }
+}
+
+#[test]
+fn verbose_only_fixture_suppression_and_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("proc/self")).unwrap();
+    fs::create_dir_all(dir.path().join("tmp")).unwrap();
+    // A mountinfo entry with rw, no noexec -> triggers AMR-030
+    fs::write(
+        dir.path().join("proc/self/mountinfo"),
+        "20 1 0:20 / /tmp rw,relatime - tmpfs tmpfs rw\n",
+    )
+    .unwrap();
+
+    let (code, stdout) = in_fixture(dir.path(), &[]);
+    assert_eq!(code, 0);
+    assert!(
+        !stdout.contains("AMR-030"),
+        "AMR-030 must be suppressed: {stdout}"
+    );
+    assert!(
+        stdout.contains("1 verbose notices hidden — run with -v"),
+        "must show hidden notice: {stdout}"
+    );
+
+    let (code, v_stdout) = in_fixture(dir.path(), &["-v"]);
+    assert_eq!(code, 0);
+    assert!(
+        v_stdout.contains("AMR-030"),
+        "AMR-030 must be visible with -v: {v_stdout}"
+    );
+    assert!(
+        !v_stdout.contains("verbose notices hidden — run with -v"),
+        "must not show hidden note with -v: {v_stdout}"
+    );
+}

@@ -83,7 +83,9 @@ impl Renderer for Text {
                     }
                 }
             }
-            Event::Summary { report, .. } => summary_block(w, report, self.color, self.compact)?,
+            Event::Summary { report, .. } => {
+                summary_block(w, report, self.color, self.compact, self.verbose)?
+            }
             _ => {}
         }
         Ok(())
@@ -322,6 +324,64 @@ fn format_identity_header(
     Ok(())
 }
 
+/// Formats staging mounts evidence for AMR-030 cleanly with mount point,
+/// filesystem type, and missing flags, truncating at 5 if `!verbose`.
+fn format_staging_evidence(
+    w: &mut dyn std::io::Write,
+    ev: &crate::model::Fact,
+    verbose: bool,
+) -> std::io::Result<bool> {
+    let Some(arr) = ev.value.as_array() else {
+        return Ok(false);
+    };
+    if arr.is_empty() {
+        return Ok(false);
+    }
+    let limit = if verbose { arr.len() } else { 5 };
+    for item in arr.iter().take(limit) {
+        let mount_point = item
+            .get("mount_point")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let fstype = item.get("fstype").and_then(|v| v.as_str()).unwrap_or("");
+        let missing = item
+            .get("missing_flags")
+            .and_then(|v| v.as_array())
+            .map(|flags| {
+                flags
+                    .iter()
+                    .filter_map(|f| f.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default();
+        let rw = item
+            .get("options")
+            .and_then(|v| v.as_array())
+            .map(|opts| {
+                if opts.iter().any(|o| o == "ro") {
+                    "ro"
+                } else {
+                    "rw"
+                }
+            })
+            .unwrap_or("rw");
+        if missing.is_empty() {
+            writeln!(w, "    - {mount_point} ({fstype}, {rw})")?;
+        } else {
+            writeln!(w, "    - {mount_point} ({fstype}, {rw}): missing {missing}")?;
+        }
+    }
+    if !verbose && arr.len() > 5 {
+        let remaining = arr.len() - 5;
+        writeln!(
+            w,
+            "    ... ({remaining} more staging mounts — run with --verbose)"
+        )?;
+    }
+    Ok(true)
+}
+
 /// Spec §9 summary layout: identity header, timeout-count INCOMPLETE banner
 /// directly below it when the scan did not complete (spec §5: that only ever
 /// means timed-out probes), findings severity-descending (the sort is stable,
@@ -333,6 +393,7 @@ fn summary_block(
     report: &Report,
     color: ColorSupport,
     compact: bool,
+    verbose: bool,
 ) -> std::io::Result<()> {
     format_identity_header(w, report, report.verdict.as_ref(), color)?;
     if !report.scan.complete {
@@ -350,10 +411,29 @@ fn summary_block(
     let mut order: Vec<&Finding> = report.findings.iter().collect();
     // Stable sort keeps registry order inside each severity group.
     order.sort_by_key(|f| std::cmp::Reverse(f.severity));
+
+    let (visible, hidden): (Vec<&Finding>, Vec<&Finding>) = if verbose {
+        (order, Vec::new())
+    } else {
+        order.into_iter().partition(|f| {
+            let is_verbose_only = crate::model::rules::RULES
+                .iter()
+                .find(|r| r.id == f.rule)
+                .is_some_and(|r| r.verbose_only);
+            !(f.severity == Severity::Info && is_verbose_only)
+        })
+    };
+    let hidden_count = hidden.len();
+    let hidden_suffix = if hidden_count > 0 {
+        format!(" [{} verbose notices hidden — run with -v]", hidden_count)
+    } else {
+        String::new()
+    };
+
     if compact {
-        if !order.is_empty() {
+        if !visible.is_empty() {
             writeln!(w)?;
-            for f in &order {
+            for f in &visible {
                 writeln!(
                     w,
                     "{} {} {}: {}",
@@ -367,7 +447,7 @@ fn summary_block(
         }
         writeln!(
             w,
-            "{} findings (c{} h{} m{} l{} i{})",
+            "{} findings (c{} h{} m{} l{} i{}){}",
             report.counts.critical
                 + report.counts.high
                 + report.counts.medium
@@ -377,11 +457,12 @@ fn summary_block(
             report.counts.high,
             report.counts.medium,
             report.counts.low,
-            report.counts.info
+            report.counts.info,
+            hidden_suffix,
         )?;
         return Ok(());
     }
-    for f in &order {
+    for f in &visible {
         writeln!(w)?;
         writeln!(
             w,
@@ -394,6 +475,13 @@ fn summary_block(
         writeln!(w, "  why: {}", f.why)?;
         writeln!(w, "  fix: {}", f.remediation)?;
         for ev in &f.evidence {
+            if f.rule == "AMR-030"
+                && ev.probe == "mounts"
+                && ev.key == "staging"
+                && format_staging_evidence(w, ev, verbose)?
+            {
+                continue;
+            }
             let value = serde_json::to_string(&ev.value).map_err(std::io::Error::other)?;
             writeln!(
                 w,
@@ -402,12 +490,12 @@ fn summary_block(
             )?;
         }
     }
-    if !order.is_empty() {
+    if !visible.is_empty() {
         writeln!(w)?;
     }
     writeln!(
         w,
-        "{} findings (c{} h{} m{} l{} i{})",
+        "{} findings (c{} h{} m{} l{} i{}){}",
         report.counts.critical
             + report.counts.high
             + report.counts.medium
@@ -417,7 +505,8 @@ fn summary_block(
         report.counts.high,
         report.counts.medium,
         report.counts.low,
-        report.counts.info
+        report.counts.info,
+        hidden_suffix,
     )?;
     if report.scan.complete {
         writeln!(w, "scan complete")?;
@@ -517,6 +606,32 @@ mod tests {
         let mut buf = vec![];
         Text {
             verbose: false,
+            color,
+            optins: vec![],
+            compact: true,
+        }
+        .on_event(&mut buf, &summary_event(r))
+        .unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    fn render_text_verbose(r: &Report, color: ColorSupport) -> String {
+        let mut buf = vec![];
+        Text {
+            verbose: true,
+            color,
+            optins: vec![],
+            compact: false,
+        }
+        .on_event(&mut buf, &summary_event(r))
+        .unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    fn render_text_compact_verbose(r: &Report, color: ColorSupport) -> String {
+        let mut buf = vec![];
+        Text {
+            verbose: true,
             color,
             optins: vec![],
             compact: true,
@@ -977,6 +1092,158 @@ Visibility: pid_ns=host (120 procs visible, pid 1=\"/usr/lib/systemd/systemd\", 
             s.contains("lockdown=confidentiality"),
             "header must show fallback lockdown: {s}"
         );
+    }
+
+    #[test]
+    fn verbose_only_finding_hidden_by_default_and_shown_with_verbose() {
+        let mut r = Report::blank(ScanMeta::stub(), 1);
+        r.verdict = Some(docker_verdict());
+        r.findings = vec![
+            test_finding("AMR-002", Severity::Critical),
+            test_finding("AMR-030", Severity::Info),
+            test_finding("AMR-007", Severity::Info),
+        ];
+        r.scan.complete = true;
+        r.compute_counts();
+
+        // Standard run (verbose = false): AMR-030 (Info, verbose_only) is hidden.
+        let default_out = render_text(&r, ColorSupport::Off);
+        assert!(default_out.contains("AMR-002"));
+        assert!(default_out.contains("AMR-007"));
+        assert!(!default_out.contains("AMR-030"));
+        assert!(
+            default_out
+                .contains("3 findings (c1 h0 m0 l0 i2) [1 verbose notices hidden — run with -v]")
+        );
+
+        // Verbose run (verbose = true): AMR-030 is visible and no hidden notices suffix.
+        let verbose_out = render_text_verbose(&r, ColorSupport::Off);
+        assert!(verbose_out.contains("AMR-002"));
+        assert!(verbose_out.contains("AMR-007"));
+        assert!(verbose_out.contains("AMR-030"));
+        assert!(verbose_out.contains("3 findings (c1 h0 m0 l0 i2)\n"));
+        assert!(!verbose_out.contains("hidden — run with -v"));
+    }
+
+    #[test]
+    fn verbose_only_compact_mode_respects_suppression() {
+        let mut r = Report::blank(ScanMeta::stub(), 1);
+        r.verdict = Some(docker_verdict());
+        r.findings = vec![
+            test_finding("AMR-002", Severity::Critical),
+            test_finding("AMR-030", Severity::Info),
+            test_finding("AMR-007", Severity::Info),
+        ];
+        r.scan.complete = true;
+        r.compute_counts();
+
+        let compact_out = render_text_compact(&r, ColorSupport::Off);
+        assert!(compact_out.contains("AMR-002"));
+        assert!(compact_out.contains("AMR-007"));
+        assert!(!compact_out.contains("AMR-030"));
+        assert!(
+            compact_out
+                .contains("3 findings (c1 h0 m0 l0 i2) [1 verbose notices hidden — run with -v]")
+        );
+
+        let compact_verbose = render_text_compact_verbose(&r, ColorSupport::Off);
+        assert!(compact_verbose.contains("AMR-002"));
+        assert!(compact_verbose.contains("AMR-007"));
+        assert!(compact_verbose.contains("AMR-030"));
+        assert!(compact_verbose.contains("3 findings (c1 h0 m0 l0 i2)"));
+        assert!(!compact_verbose.contains("hidden — run with -v"));
+    }
+
+    #[test]
+    fn verbose_only_elevated_severity_not_suppressed() {
+        let mut r = Report::blank(ScanMeta::stub(), 1);
+        r.verdict = Some(docker_verdict());
+        // AMR-030 at Medium severity (container scenario) must NOT be suppressed even when verbose = false
+        r.findings = vec![test_finding("AMR-030", Severity::Medium)];
+        r.scan.complete = true;
+        r.compute_counts();
+
+        let out = render_text(&r, ColorSupport::Off);
+        assert!(out.contains("AMR-030"));
+        assert!(out.contains("1 findings (c0 h0 m1 l0 i0)\n"));
+        assert!(!out.contains("hidden — run with -v"));
+    }
+
+    #[test]
+    fn verbose_only_amr030_staging_mounts_formatted_cleanly() {
+        let mut r = Report::blank(ScanMeta::stub(), 1);
+        r.verdict = Some(docker_verdict());
+        let mut f = test_finding("AMR-030", Severity::Medium);
+        f.evidence = vec![crate::model::Fact::ok(
+            "mounts",
+            "staging",
+            serde_json::json!([
+                {
+                    "mount_point": "/data/scratch",
+                    "fstype": "tmpfs",
+                    "writable_by_caller": true,
+                    "missing_flags": ["noexec", "nosuid", "nodev"],
+                    "options": ["rw", "relatime"]
+                },
+                {
+                    "mount_point": "/mnt/share",
+                    "fstype": "ext4",
+                    "writable_by_caller": true,
+                    "missing_flags": ["noexec", "nosuid"],
+                    "options": ["rw", "relatime"]
+                }
+            ]),
+            "procfs:/proc/self/mountinfo".into(),
+        )];
+        r.findings = vec![f];
+        r.scan.complete = true;
+        r.compute_counts();
+
+        let out = render_text(&r, ColorSupport::Off);
+        assert!(out.contains("    - /data/scratch (tmpfs, rw): missing noexec, nosuid, nodev"));
+        assert!(out.contains("    - /mnt/share (ext4, rw): missing noexec, nosuid"));
+        assert!(!out.contains("mounts.staging ="));
+    }
+
+    #[test]
+    fn verbose_only_amr030_staging_mounts_truncates_at_five_entries() {
+        let mut r = Report::blank(ScanMeta::stub(), 1);
+        r.verdict = Some(docker_verdict());
+        let mut mounts = Vec::new();
+        for i in 1..=7 {
+            mounts.push(serde_json::json!({
+                "mount_point": format!("/mnt/staging{i}"),
+                "fstype": "tmpfs",
+                "writable_by_caller": true,
+                "missing_flags": ["noexec", "nosuid", "nodev"],
+                "options": ["rw"]
+            }));
+        }
+        let mut f = test_finding("AMR-030", Severity::Medium);
+        f.evidence = vec![crate::model::Fact::ok(
+            "mounts",
+            "staging",
+            serde_json::Value::Array(mounts),
+            "procfs:/proc/self/mountinfo".into(),
+        )];
+        r.findings = vec![f];
+        r.scan.complete = true;
+        r.compute_counts();
+
+        // Standard run (verbose = false): truncates after 5, shows "2 more"
+        let out = render_text(&r, ColorSupport::Off);
+        assert!(out.contains("    - /mnt/staging1 (tmpfs, rw): missing noexec, nosuid, nodev"));
+        assert!(out.contains("    - /mnt/staging5 (tmpfs, rw): missing noexec, nosuid, nodev"));
+        assert!(!out.contains("    - /mnt/staging6"));
+        assert!(!out.contains("    - /mnt/staging7"));
+        assert!(out.contains("    ... (2 more staging mounts — run with --verbose)"));
+
+        // Verbose run (verbose = true): renders all 7 without truncation notice
+        let v_out = render_text_verbose(&r, ColorSupport::Off);
+        assert!(v_out.contains("    - /mnt/staging1 (tmpfs, rw): missing noexec, nosuid, nodev"));
+        assert!(v_out.contains("    - /mnt/staging6 (tmpfs, rw): missing noexec, nosuid, nodev"));
+        assert!(v_out.contains("    - /mnt/staging7 (tmpfs, rw): missing noexec, nosuid, nodev"));
+        assert!(!v_out.contains("more staging mounts"));
     }
 
     mod fact_lines {
