@@ -407,6 +407,7 @@ CONFIG_USER_NS=y
             pid: None,
             probe_syscalls: false,
             probe_kernel_execution: false,
+            probe_device_open: false,
             compact: false,
             probe_ebpf: Vec::new(),
             dump_filters: false,

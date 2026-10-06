@@ -58,12 +58,14 @@ The scan pipeline executes probes sequentially in deterministic order:
 13. `k8s` — Kubernetes service account and environment detection.
 14. `kernel-config` — Passive config discovery, pure-Rust decompression, dual SHA-256, whitelist extraction.
 15. `kernel-surface` — Passive attack surface checks (modules, kexec, `/dev/mem`, USMH, ACPI).
-16. `kernel-exec` — *(Opt-in: `--probe-kernel-execution`)* Isolated boundary execution probe.
-17. `runtime` — Composite container/host runtime verdict fusion.
+16. `device-open` — *(Opt-in: `--probe-device-open`)* Empirical `open()` test of the raw memory/port devices (`/dev/mem`, `/dev/kmem`, `/dev/port`) in an isolated forked worker; off by default because the `open(2)` itself trips HIDS rules (Falco alerts on `/dev/mem` opens).
+17. `kernel-exec` — *(Opt-in: `--probe-kernel-execution`)* Isolated boundary execution probe.
+18. `runtime` — Composite container/host runtime verdict fusion.
 
 ### Rule Evaluation Model
 - **Append-Only ID Space:** Rule IDs (`AMR-001` through `AMR-033`) are immutable and append-only.
 - **Container Gating:** Container-specific rules (e.g., `AMR-002`, `AMR-005`, `AMR-019`, `AMR-031`, `AMR-032`, `AMR-033`) fire only when running inside a shared-kernel container. They stay silent under `Host` or VM-isolated verdicts (`firecracker`, `gVisor`, `kata`).
+- **Raw-Memory Ground Truth (`AMR-025`):** The Critical claim is about the kernel *behind* the device node. The rule is silent under VM-isolated verdicts (`firecracker`, `gVisor`, `kata`): guest-/sandbox-local nodes reach no host physical memory (gVisor serves DAC-readable pseudo-devices whose `open()` answers `ENXIO`). When the opt-in `device-open` probe ran, its empirical verdict outranks the passive `access(2)`-derived `kernel.surface.dev_*` facts in **both** directions (`permitted` fires where DAC read denied; `denied`/`absent`/`unsupported` close where DAC read accessible); only `error` (worker timeout/IPC failure) is treated as inconclusive and defers to the passive verdict.
 - **Path-Agnostic Capability & DAC Staging Invariants:** `AMR-030` (`staging-mount-unhardened`) does not rely on fragile directory name lists or path heuristics. It evaluates filesystem and mount security invariants:
   - Mount options: filesystem is writable (`rw`) and execution is permitted (`!noexec`).
   - $O(1)$ DAC writability: `fs.writable` confirms current process credentials can write to the mount target.

@@ -75,6 +75,8 @@ amirustrained --fail-on high                      # CI gate: exit 1 at High+ (an
 amirustrained --probe-syscalls                    # opt-in: enumerate syscalls blocked by seccomp
 amirustrained --probe-ebpf                        # opt-in: real bpf() probes — load + BTF/fentry + type sweep (see note)
 amirustrained --probe-ebpf types                  # opt-in: sweep the 32 prog-type existence matrix only
+amirustrained --probe-device-open                 # opt-in: empirically open() /dev/mem, /dev/kmem, /dev/port (see note)
+amirustrained --yolo                              # maximum-info: every opt-in probe at once (expect HIDS alerts)
 amirustrained -o report.sarif --format sarif      # for code-scanning pipelines
 amirustrained --format markdown --no-color        # plain bytes even on a terminal
 ```
@@ -187,6 +189,21 @@ process under a 5-second deadline; any hanging worker is terminated via `SIGKILL
 the main scan. When all tested entry points are confirmed closed or restricted, rule AMR-029
 affirmatively reports the verified boundary status.
 
+`--probe-device-open` risk note: the probe issues a real `open(2)` against `/dev/mem`,
+`/dev/kmem`, and `/dev/port` (`O_RDONLY`; the fd closes immediately - nothing is read,
+written, or mapped) inside an isolated forked worker under a 5-second deadline. The
+syscall mutates no state, but the open itself is HIDS/EDR bait: Falco ships rules that
+alert on `/dev/mem` opens regardless of any read. That is why it is off by default. When
+it does run, its empirical verdict (`permitted`/`denied`/`absent`/`unsupported`) outranks
+the passive `access(2)`-derived `kernel.surface.dev_*` facts in AMR-025: a device node
+with no driver behind it (gVisor answers `open()` with `ENXIO`) no longer reads as raw
+memory access, and an open that succeeds where DAC bits read denied is one.
+
+`--yolo` is the maximum-info switch: it turns on `--probe-syscalls`,
+`--probe-kernel-execution`, `--probe-device-open`, and every `--probe-ebpf` target (an
+explicit `--probe-ebpf` subset stays authoritative). It will trip runtime monitoring by
+design; run it only where active reconnaissance is authorized.
+
 `--fixture-root <DIR>` (hidden, for tests) relocates every pseudo-file read under
 `<DIR>/proc`, `<DIR>/sys`, … — the whole fixture corpus (9 scenarios, golden tests)
 runs on it.
@@ -209,6 +226,7 @@ runs on it.
 | `runtime` | composite fusion of all the above | — | low-confidence verdict ⇒ AMR-015 tells you to audit manually |
 | `kernel-config` | discover `/proc/config.gz`, `/boot/config-*`, `/proc/config` | — | no config found ⇒ `degraded` (pure-Rust decompression + dual SHA-256) |
 | `kernel-surface` | sysctl (`modules_disabled`, `kexec_load_disabled`), lockdown, `/dev/mem`, USMH, ACPI | + test open | unreadable paths ⇒ reported independently |
+| `device-open` | *(opt-in: `--probe-device-open`)* real `open()` test of `/dev/mem`, `/dev/kmem`, `/dev/port` in an isolated worker (`O_RDONLY`, immediate close, never read/mapped) | - | worker timeout (5s) => `degraded`; verdicts are never inferred |
 | `kernel-exec` | *(opt-in: `--probe-kernel-execution`)* isolated worker testing `finit_module`, `init_module`, `kexec_file_load`, `kexec_load`, `iopl` | + elevated capabilities | worker timeout (5s) ⇒ `degraded` |
 
 `--probe-syscalls` adds the `syscall-probe` event to the stream (see risk note above).
@@ -218,6 +236,9 @@ runs on it.
 layering; `types` reports `loadable`/`absent`/`denied`/`rejected` per prog type.
 `--probe-kernel-execution` adds the `kernel-exec` event (fact namespace `kernel.exec`)
 evaluating Ring 0 execution pathways; safe closure triggers AMR-029.
+`--probe-device-open` adds the `device-open` event (fact namespace `kernel.device_open`)
+carrying the `permitted`/`denied`/`absent`/`unsupported` verdicts that AMR-025 prefers over
+the passive DAC facts; `--yolo` fans all of the above opt-ins on at once.
 
 
 ## Exit codes
@@ -269,7 +290,7 @@ report `info` + "insufficient privilege to assess" when run unprivileged.
 | AMR-022 | `rootless-socket-exposed` | high | Rootless container runtime API socket is reachable and writable (escape to an unprivileged host uid — not a host-root promise) |
 | AMR-023 | `kernel-module-loading-permitted` | high | Kernel module loading is permitted: ring 0 execution accessible via finit_module/init_module or unconstrained modules |
 | AMR-024 | `kexec-kernel-replacement-permitted` | high | Kexec kernel replacement is permitted: new kernel image can be loaded and booted directly into ring 0 |
-| AMR-025 | `raw-memory-access-permitted` | critical | Raw physical memory or port I/O access is permitted via /dev/mem, /dev/kmem, or iopl |
+| AMR-025 | `raw-memory-access-permitted` | critical | Raw physical memory or port I/O access is permitted via /dev/mem, /dev/kmem, or iopl (silent under VM-family verdicts - the nodes are guest-/sandbox-local; an empirical `--probe-device-open` verdict outranks the passive DAC reading) |
 | AMR-026 | `user-mode-helper-writable` | high | Kernel user-mode helper path (core_pattern or modprobe) is writable |
 | AMR-027 | `acpi-table-injection-writable` | high | ACPI table customization interface (/sys/kernel/config/acpi/table) is writable |
 | AMR-028 | `kexec-module-lockdown-bypass` | high | Kexec kernel replacement is permitted while kernel module loading is blocked (lockdown bypass; suppressed when AMR-023 fires) |
@@ -340,8 +361,9 @@ The binary is read-only with respect to the system: it never writes files (excep
 `--probe-ebpf` `bpf(BPF_PROG_LOAD)` attempts (plus aya's one-time feature
 detection: a few transient bpf() calls, all fds closed immediately; `btf` additionally
 loads BTF objects into the kernel's in-memory table, freed at process exit), and
-`--probe-kernel-execution` boundary probes (`finit_module(-1)`, `init_module(NULL)`,
-`kexec_file_load(-1)`, `kexec_load(ULONG_MAX)`, `iopl(3)`).
+`kexec_file_load(-1)`, `kexec_load(ULONG_MAX)`, `iopl(3)`), and
+`--probe-device-open` `open(2)`+`close()` round-trips on the raw memory/port devices
+(`O_RDONLY`, fd dropped inside the worker; never read, written, or mapped).
 
 Boundary execution probing runs inside an isolated forked worker child with a 5-second
 deadline; any hung or unresponsive child is forcefully killed with `SIGKILL`. The boundary

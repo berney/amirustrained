@@ -511,6 +511,71 @@ fn help_lists_kernel_execution_and_compact_with_aliases() {
 }
 
 #[test]
+fn help_lists_device_open_and_yolo() {
+    let (code, stdout) = run(&["--help"]);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("--probe-device-open"),
+        "help must list --probe-device-open:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("--yolo"),
+        "help must list --yolo:\n{stdout}"
+    );
+}
+
+#[test]
+fn device_open_probe_is_absent_without_the_flag_and_visible_with_it() {
+    // Default: the probe never registers, so its fact namespace appears
+    // nowhere in the exhaustive machine stream (no `open(2)` was made).
+    let (code, stdout) = run(&["--format", "jsonl"]);
+    assert_eq!(code, 0);
+    assert!(
+        !stdout.contains("kernel.device_open"),
+        "no device-open facts without the flag"
+    );
+
+    // Opt-in: every node gets a verdict line in machine output, whatever
+    // this host's raw-memory posture is (value assertions belong to the
+    // sandbox scenario corpus, not the arbitrary CI runner).
+    let (code, stdout) = run(&["--format", "jsonl", "--probe-device-open"]);
+    assert_eq!(code, 0);
+    for key in ["dev_mem", "dev_kmem", "dev_port"] {
+        assert!(
+            stdout.contains(&format!("\"{key}\"")) && stdout.contains("kernel.device_open"),
+            "--probe-device-open must export {key} in jsonl"
+        );
+    }
+}
+
+#[test]
+fn device_open_facts_render_in_default_text_as_an_optin_probe() {
+    // Opt-in answers are shown without --verbose (Tenet 3's affirmative
+    // reporting path, same contract as --probe-syscalls).
+    let (code, stdout) = run(&["--probe-device-open"]);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("kernel.device_open.dev_mem"),
+        "opt-in fact line must show in default text: {stdout}"
+    );
+}
+
+#[test]
+fn yolo_runs_every_optin_probe_clean() {
+    // Fan-out end-to-end: the sweep, kernel-exec, device-open and all
+    // eBPF targets execute; denials are affirmative, never hangs (the
+    // forced 30 s sweep ceiling still governs under yolo).
+    let (code, stdout) = run(&["--format", "jsonl", "--yolo", "--probe-timeout", "10"]);
+    assert_eq!(code, 0, "--yolo must complete on any host: {code}");
+    for marker in ["kernel.exec", "kernel.device_open", "syscall", "ebpf"] {
+        assert!(
+            stdout.contains(marker),
+            "--yolo must exercise {marker}: missing from stream"
+        );
+    }
+}
+
+#[test]
 fn compact_output() {
     let dir = tempfile::tempdir().unwrap();
     fs::create_dir_all(dir.path().join("run")).unwrap();

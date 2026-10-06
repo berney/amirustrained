@@ -1,0 +1,5 @@
+{
+  "dev_mem": {"status": "unsupported", "errno": 6},
+  "dev_kmem": {"status": "unsupported", "errno": 6},
+  "dev_port": {"status": "unsupported", "errno": 6}
+}

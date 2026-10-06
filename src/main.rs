@@ -68,6 +68,9 @@ fn main() -> ExitCode {
     if opts.probe_syscalls {
         optins.push("syscall-probe");
     }
+    if opts.probe_device_open {
+        optins.push("device-open");
+    }
     optins.extend(opts.probe_ebpf.iter().map(|t| t.probe_name()));
     let mut renderer = render::make(fmt, cli.verbose, color, optins, opts.compact);
     let mut out: Box<dyn std::io::Write> = match &cli.output {

@@ -17,6 +17,7 @@ pub trait Probe: Send + Sync {
 // ebpf, vmm, sockets, cgroup, k8s, runtime) lives in `registry()` below.
 pub mod capabilities;
 pub mod cgroup;
+pub mod device_open;
 pub mod ebpf;
 pub mod ebpf_btf;
 pub mod ebpf_load;
@@ -76,6 +77,12 @@ pub fn registry(opts: &Opts) -> Vec<Arc<dyn Probe>> {
         Arc::new(kernel_surface::KernelSurface),
     ];
     probes.extend(rest);
+    // The empirical raw-device open test is opt-in (HIDS-visible `open(2)`;
+    // `--probe-device-open`). Slotted right after `kernel-surface` so its
+    // facts sit beside the passive `dev_*` verdicts they can override.
+    if opts.probe_device_open {
+        probes.push(Arc::new(device_open::DeviceOpen));
+    }
     if opts.probe_kernel_execution {
         probes.push(Arc::new(kernel_exec::KernelExec));
     }

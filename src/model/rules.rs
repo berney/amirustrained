@@ -877,7 +877,7 @@ pub static RULES: &[Rule] = &[
         slug: "raw-memory-access-permitted",
         severity: Severity::Critical,
         summary: "Raw physical memory or port I/O access is permitted via /dev/mem, /dev/kmem, or iopl",
-        why: "Direct access to physical memory (/dev/mem, /dev/kmem) or hardware I/O ports (iopl) allows reading and writing kernel memory, page tables, and hardware registers directly, completely subverting kernel protections and privilege separation.",
+        why: "Direct access to physical memory (/dev/mem, /dev/kmem) or hardware I/O ports (iopl) allows reading and writing kernel memory, page tables, and hardware registers directly, completely subverting kernel protections and privilege separation. Reachability is judged empirically - the `open(2)` verdict from --probe-device-open outranks the passive access(2) heuristic in both directions - and the rule is silent under strong-isolation verdicts, where guest- or sandbox-local nodes reach no host memory (gVisor answers `open()` with ENXIO).",
         remediation: "Ensure /dev/mem and /dev/kmem device nodes are not present or accessible in the filesystem, enable kernel lockdown (lockdown=integrity or lockdown=confidentiality), and drop CAP_SYS_RAWIO.",
         references: &[
             "https://man7.org/linux/man-pages/man4/mem.4.html",
@@ -1217,6 +1217,24 @@ fn check_amr024(a: &Assess) -> Option<Vec<Fact>> {
     Some(ev)
 }
 
+/// Raw memory / port I/O is a claim about the kernel *behind* the device
+/// node. Under a strong-isolation verdict (spec §6 erratum 2026-10-01,
+/// ReviewT26 F3 family - the same guest-kernel-local exemption already
+/// applied to AMR-019/AMR-021) that kernel is a guest's or a Sentry
+/// sandbox's: `/dev/mem`, `/dev/kmem`, `/dev/port` and `iopl(2)` stay
+/// guest-/sandbox-local and no host physical memory or hardware port is
+/// reachable. Live-matrix proofs: a Firecracker guest hands root an
+/// openable `/dev/mem` (guest memory, not the host's), and gVisor serves
+/// DAC-readable nodes whose `open()` answers `ENXIO` (no driver).
+fn strong_isolation_verdict(a: &Assess) -> bool {
+    a.report.verdict.as_ref().is_some_and(|v| {
+        matches!(
+            v.runtime,
+            RuntimeKind::Firecracker | RuntimeKind::Gvisor | RuntimeKind::Kata
+        )
+    })
+}
+
 fn check_amr025(a: &Assess) -> Option<Vec<Fact>> {
     if matches!(
         a.fact("kernel.surface", "lockdown")
@@ -1225,25 +1243,53 @@ fn check_amr025(a: &Assess) -> Option<Vec<Fact>> {
     ) {
         return None;
     }
+    if strong_isolation_verdict(a) {
+        return None;
+    }
 
-    let dev_mem_acc = a.is("kernel.surface", "dev_mem", "accessible");
-    let dev_kmem_acc = a.is("kernel.surface", "dev_kmem", "accessible");
+    // Empirical verdict from `--probe-device-open`, where it ran: `open(2)`
+    // is ground truth for the entry gate (DAC, credentials, seccomp, LSM,
+    // device layer) and outranks the `access(2)` heuristic in both
+    // directions - a node without a driver behind it is no pathway
+    // (`unsupported`, the sandbox signature), and a node that opens while
+    // its DAC bits read denied is one (real-uid vs effective-set skew).
+    // Only `error` (worker timeout / IPC failure) is inconclusive and
+    // defers to the passive leg - an unproven close never silences a
+    // passive Critical.
+    let empirical = |dev: &str| -> Option<bool> {
+        match a
+            .fact("kernel.device_open", dev)
+            .and_then(|f| f.value.get("status"))
+            .and_then(|s| s.as_str())
+        {
+            Some("permitted") => Some(true),
+            Some("denied" | "absent" | "unsupported") => Some(false),
+            _ => None,
+        }
+    };
+    let device_reachable =
+        |dev: &str| empirical(dev).unwrap_or_else(|| a.is("kernel.surface", dev, "accessible"));
+
+    let dev_mem_reachable = device_reachable("dev_mem");
+    let dev_kmem_reachable = device_reachable("dev_kmem");
     let iopl_fact = a.fact("kernel.exec", "iopl");
     let iopl_permitted = iopl_fact
         .and_then(|f| f.value.get("status"))
         .and_then(|s| s.as_str())
         == Some("permitted");
 
-    if !dev_mem_acc && !dev_kmem_acc && !iopl_permitted {
+    if !dev_mem_reachable && !dev_kmem_reachable && !iopl_permitted {
         return None;
     }
 
     let mut ev = Vec::new();
-    if dev_mem_acc {
+    if dev_mem_reachable {
         ev.extend(a.fact("kernel.surface", "dev_mem").cloned());
+        ev.extend(a.fact("kernel.device_open", "dev_mem").cloned());
     }
-    if dev_kmem_acc {
+    if dev_kmem_reachable {
         ev.extend(a.fact("kernel.surface", "dev_kmem").cloned());
+        ev.extend(a.fact("kernel.device_open", "dev_kmem").cloned());
     }
     if iopl_permitted {
         ev.extend(iopl_fact.cloned());
@@ -3172,6 +3218,97 @@ mod tests {
             ("kernel.exec", "iopl", json!({"status": "denied"})),
         ]);
         assert!(rule("AMR-025").evaluate(&r_abs, false).is_none());
+    }
+
+    #[test]
+    fn amr025_silent_under_strong_isolation_verdicts() {
+        // The §6 erratum lineage (AMR-019/AMR-021 precedent) applied to raw
+        // memory: under firecracker/gVisor/kata the kernel behind the nodes
+        // and `iopl(2)` is the guest's or the sandbox's - never host
+        // physical memory. Live-matrix FP that motivated this: a privileged
+        // gVisor run carried the injected host device nodes (`access(2)`
+        // reads "accessible") while Sentry answers `open()` with ENXIO.
+        for runtime in [
+            RuntimeKind::Firecracker,
+            RuntimeKind::Gvisor,
+            RuntimeKind::Kata,
+        ] {
+            let mut r = verdict_report(verdict(runtime));
+            extend_with_facts(
+                &mut r,
+                &[
+                    ("kernel.surface", "dev_mem", json!("accessible")),
+                    ("kernel.surface", "dev_kmem", json!("accessible")),
+                    ("kernel.surface", "lockdown", json!("none")),
+                    ("kernel.exec", "iopl", json!({"status": "permitted"})),
+                ],
+            );
+            assert!(
+                rule("AMR-025").evaluate(&r, false).is_none(),
+                "AMR-025 must not fire under a {runtime:?} verdict"
+            );
+        }
+    }
+
+    #[test]
+    fn amr025_closed_open_verdict_overrides_passive_accessible() {
+        // Ground truth says the open fails while the `access(2)` heuristic
+        // says accessible: no pathway, no Critical (sandbox pseudo-device
+        // class even when the runtime fingerprint produced no verdict).
+        for (status, errno) in [("denied", 13), ("absent", 2), ("unsupported", 6)] {
+            let r = report_with(&[
+                ("kernel.surface", "dev_mem", json!("accessible")),
+                ("kernel.surface", "dev_kmem", json!("absent")),
+                (
+                    "kernel.device_open",
+                    "dev_mem",
+                    json!({"status": status, "errno": errno, "error_name": "X"}),
+                ),
+            ]);
+            assert!(
+                rule("AMR-025").evaluate(&r, false).is_none(),
+                "open verdict '{status}' must close the passive leg"
+            );
+        }
+    }
+
+    #[test]
+    fn amr025_open_permitted_overrides_passive_denied() {
+        // `access(2)` tests the real uid; `open(2)` runs on the effective
+        // credentials. A permitted empirical open proves reachability and
+        // must be cited as evidence beside the passive fact.
+        let r = report_with(&[
+            ("kernel.surface", "dev_mem", json!("denied")),
+            (
+                "kernel.device_open",
+                "dev_mem",
+                json!({"status": "permitted", "errno": 0, "error_name": ""}),
+            ),
+        ]);
+        let f = rule("AMR-025")
+            .evaluate(&r, false)
+            .expect("permitted open must fire despite denied access");
+        assert_eq!(f.severity, Severity::Critical);
+        assert!(
+            f.evidence
+                .iter()
+                .any(|e| e.probe == "kernel.device_open" && e.key == "dev_mem")
+        );
+    }
+
+    #[test]
+    fn amr025_open_error_is_inconclusive_not_closed() {
+        // Timeout/IPC failure never counts as a close: the passive verdict
+        // still decides.
+        let r = report_with(&[
+            ("kernel.surface", "dev_mem", json!("accessible")),
+            (
+                "kernel.device_open",
+                "dev_mem",
+                json!({"status": "error", "errno": 110, "error_name": "ETIMEDOUT"}),
+            ),
+        ]);
+        assert!(rule("AMR-025").evaluate(&r, false).is_some());
     }
 
     #[test]

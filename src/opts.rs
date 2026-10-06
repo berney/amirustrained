@@ -26,6 +26,17 @@ pub struct Cli {
     )]
     pub probe_kernel_execution: bool,
 
+    /// Opt-in ACTIVE raw-device open test: really `open()`s /dev/mem,
+    /// /dev/kmem and /dev/port (`O_RDONLY`; the fd closes immediately,
+    /// nothing is read, written or mapped) inside a forked, deadline-
+    /// monitored worker. Default off because the `open(2)` itself is HIDS
+    /// bait (Falco ships rules alerting on /dev/mem opens). When enabled,
+    /// the empirical verdict outranks the `access(2)`-derived passive
+    /// kernel.surface.dev_* facts: nodes can carry DAC permission while no
+    /// driver backs them (gVisor answers `open()` with ENXIO).
+    #[arg(long)]
+    pub probe_device_open: bool,
+
     /// Render concise single-line findings (ideal for diffing privilege states).
     #[arg(long = "compact", alias = "terse", visible_alias = "terse")]
     pub compact: bool,
@@ -45,6 +56,13 @@ pub struct Cli {
         value_parser = parse_ebpf_targets
     )]
     pub probe_ebpf: Option<EbpfTargets>,
+    /// Maximum-info mode: turn on every opt-in active probe
+    /// (`--probe-syscalls`, `--probe-kernel-execution`, `--probe-device-open`
+    /// and `--probe-ebpf` with all targets). An explicit `--probe-ebpf`
+    /// subset stays authoritative. Will trip runtime monitoring; run it
+    /// only where active reconnaissance is authorized.
+    #[arg(long)]
+    pub yolo: bool,
     /// Seconds; 0 is rejected (would degrade every probe instantly while
     /// the forced-ceiling sweep thread runs with no consumer).
     #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
@@ -72,6 +90,9 @@ pub struct Opts {
     pub probe_syscalls: bool,
     #[allow(dead_code)]
     pub probe_kernel_execution: bool,
+    /// Empirical `open(2)` test of the raw memory/port device nodes
+    /// (`--probe-device-open`, off by default: HIDS-visible syscall).
+    pub probe_device_open: bool,
     pub compact: bool,
     /// Selected active eBPF probes; empty = none (default). Duplicates from
     /// repeated/comma-mixed flag uses are collapsed at parse time.
@@ -187,15 +208,27 @@ impl Opts {
                 _ => return Err(CliError::BadFailOn(s.into())),
             }),
         };
+        // `--yolo` is the fan-out switch: every opt-in probe turns on. An
+        // explicit `--probe-ebpf` subset stays authoritative; with the flag
+        // absent, yolo stands in for all three eBPF targets.
+        let probe_syscalls = c.probe_syscalls || c.yolo;
+        let probe_kernel_execution = c.probe_kernel_execution || c.yolo;
+        let probe_device_open = c.probe_device_open || c.yolo;
+        let probe_ebpf = match (&c.probe_ebpf, c.yolo) {
+            (Some(targets), _) => targets.0.clone(),
+            (None, true) => vec![EbpfTarget::Load, EbpfTarget::Btf, EbpfTarget::Types],
+            (None, false) => Vec::new(),
+        };
         Ok((
             fmt,
             Opts {
                 pid: c.pid,
-                probe_syscalls: c.probe_syscalls,
-                probe_kernel_execution: c.probe_kernel_execution,
+                probe_syscalls,
+                probe_kernel_execution,
+                probe_device_open,
                 compact: c.compact,
-                probe_ebpf: c.probe_ebpf.clone().map(|t| t.0).unwrap_or_default(),
-                probe_timeout: match (c.probe_syscalls, c.probe_timeout) {
+                probe_ebpf,
+                probe_timeout: match (probe_syscalls, c.probe_timeout) {
                     // An explicit value stays authoritative; the sweep
                     // alone never runs without a ceiling (spec §5).
                     (true, None) => Some(Duration::from_secs(SWEEP_TIMEOUT_SECS)),
@@ -243,6 +276,8 @@ mod tests {
             output: None,
             probe_syscalls: false,
             probe_kernel_execution: false,
+            probe_device_open: false,
+            yolo: false,
             compact: false,
             probe_ebpf: None,
             probe_timeout,
@@ -423,5 +458,54 @@ mod tests {
         assert!(!parsed.compact);
         let (_, opts) = Opts::from_cli(&parsed).unwrap();
         assert!(!opts.compact);
+    }
+
+    #[test]
+    fn device_open_probe_is_opt_in() {
+        // Default off: no raw-device `open(2)` without the flag.
+        let (_, opts) = Opts::from_cli(&cli("text", None, None)).unwrap();
+        assert!(!opts.probe_device_open);
+        let parsed = Cli::try_parse_from(["amirustrained", "--probe-device-open"]).unwrap();
+        let (_, opts) = Opts::from_cli(&parsed).unwrap();
+        assert!(opts.probe_device_open);
+        assert!(!opts.probe_syscalls);
+        assert!(!opts.probe_kernel_execution);
+        assert!(opts.probe_ebpf.is_empty());
+    }
+
+    #[test]
+    fn yolo_fans_out_to_every_optin_probe() {
+        let parsed = Cli::try_parse_from(["amirustrained", "--yolo"]).unwrap();
+        let (_, opts) = Opts::from_cli(&parsed).unwrap();
+        assert!(opts.probe_syscalls);
+        assert!(opts.probe_kernel_execution);
+        assert!(opts.probe_device_open);
+        assert_eq!(
+            opts.probe_ebpf,
+            [EbpfTarget::Load, EbpfTarget::Btf, EbpfTarget::Types]
+        );
+        // The sweep runs under yolo, so the forced §5 ceiling applies too.
+        assert_eq!(
+            opts.probe_timeout,
+            Some(Duration::from_secs(SWEEP_TIMEOUT_SECS))
+        );
+    }
+
+    #[test]
+    fn yolo_keeps_explicit_ebpf_subset_authoritative() {
+        let parsed =
+            Cli::try_parse_from(["amirustrained", "--yolo", "--probe-ebpf", "btf"]).unwrap();
+        let (_, opts) = Opts::from_cli(&parsed).unwrap();
+        assert_eq!(opts.probe_ebpf, [EbpfTarget::Btf]);
+        assert!(opts.probe_syscalls);
+        assert!(opts.probe_device_open);
+    }
+
+    #[test]
+    fn explicit_probe_timeout_still_wins_under_yolo() {
+        let parsed =
+            Cli::try_parse_from(["amirustrained", "--yolo", "--probe-timeout", "5"]).unwrap();
+        let (_, opts) = Opts::from_cli(&parsed).unwrap();
+        assert_eq!(opts.probe_timeout, Some(Duration::from_secs(5)));
     }
 }

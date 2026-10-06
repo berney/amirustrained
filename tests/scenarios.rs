@@ -325,6 +325,41 @@ const SCENARIOS: &[Scenario] = &[
         env: &[],
         probe_kernel_execution: true,
     },
+    Scenario {
+        // `docker run --privileged --runtime=runsc`: the runtime injects
+        // host device nodes into the sandbox `/dev`. `access(2)` reads the
+        // nodes permissive for root, so the passive legs would fire the
+        // AMR-025 Critical - the reproduced false positive. Nothing is
+        // behind the node (Sentry answers `open()` with ENXIO) and the
+        // kernel behind it is the Sentry's: the strong-isolation verdict
+        // closes the whole raw-memory leg (spec §6 erratum lineage).
+        name: "gvisor-privileged",
+        runtime: RuntimeKind::Gvisor,
+        confidence: "high",
+        ids: &["AMR-014"],
+        root: true,
+        landlock: None,
+        hypervisor: false,
+        env: &[],
+        probe_kernel_execution: false,
+    },
+    Scenario {
+        // Bare host with DAC-readable raw-device nodes whose driver is
+        // simulated as unimplemented: the passive scan fires AMR-025 (the
+        // committed host contract, no verdict to exempt it), while the
+        // dedicated scan with `--probe-device-open` sees the `unsupported`
+        // empirical verdict and goes quiet - the probe outranking the
+        // `access(2)` heuristic in the FP direction.
+        name: "host-raw-device",
+        runtime: RuntimeKind::Host,
+        confidence: "high",
+        ids: &["AMR-025"],
+        root: false,
+        landlock: None,
+        hypervisor: false,
+        env: &[],
+        probe_kernel_execution: false,
+    },
 ];
 
 fn scenario(name: &str) -> &'static Scenario {
@@ -436,6 +471,30 @@ fn scan_with_kernel_exec(s: &Scenario, probe_kernel_execution: bool) -> Report {
         pid: None,
         probe_syscalls: false,
         probe_kernel_execution,
+        probe_device_open: false,
+        compact: false,
+        probe_ebpf: Vec::new(),
+        probe_timeout: None,
+        fail_on: None,
+        dump_filters: false,
+    };
+    pipeline::scan_with_probes(
+        Arc::new(PseudoFs::new(fixture_root(s.name))),
+        Arc::new(FixtureOs::new(s)),
+        &opts,
+        probes::registry(&opts),
+        &mut |_| {},
+    )
+}
+
+/// Runs the scenario through the shipped pipeline with the empirical
+/// raw-device open probe active (fixture-simulated answers).
+fn scan_with_device_open(s: &Scenario) -> Report {
+    let opts = Opts {
+        pid: None,
+        probe_syscalls: false,
+        probe_kernel_execution: false,
+        probe_device_open: true,
         compact: false,
         probe_ebpf: Vec::new(),
         probe_timeout: None,
@@ -722,6 +781,7 @@ fn docker_privileged_text_output_snapshot() {
         pid: None,
         probe_syscalls: false,
         probe_kernel_execution: false,
+        probe_device_open: false,
         compact: false,
         probe_ebpf: Vec::new(),
         probe_timeout: None,
@@ -803,6 +863,7 @@ fn docker_default_yaml_output_snapshot() {
         pid: None,
         probe_syscalls: false,
         probe_kernel_execution: false,
+        probe_device_open: false,
         compact: false,
         probe_ebpf: Vec::new(),
         probe_timeout: None,
@@ -825,4 +886,35 @@ fn docker_default_yaml_output_snapshot() {
     assert!(!text.contains('\x1b'), "colourless output has no escapes");
     let text = normalize_scan_meta(&normalize_pids(&text));
     insta::assert_snapshot!(text);
+}
+
+#[test]
+fn gvisor_privileged_device_injection_stays_quiet_on_raw_memory() {
+    // The lab repro of `docker run --privileged --runtime=runsc`: injected
+    // host device nodes, `access(2)`-permissive, Sentry behind them.
+    let s = scenario("gvisor-privileged");
+    assert_scenario(s); // verdict gate keeps the passive scan AMR-025-free
+    let r = scan_with_device_open(s);
+    let ids: Vec<&str> = r.findings.iter().map(|f| f.rule).collect();
+    assert!(
+        !ids.contains(&"AMR-025"),
+        "empirical ENXIO must keep AMR-025 silent: {ids:?}"
+    );
+    let open = r
+        .fact("kernel.device_open", "dev_mem")
+        .expect("active device-open probe reports");
+    assert_eq!(open.value["status"], "unsupported");
+    assert_eq!(open.value["error_name"], "ENXIO");
+}
+
+#[test]
+fn host_raw_device_open_probe_closes_the_passive_leg() {
+    let s = scenario("host-raw-device");
+    assert_scenario(s); // passive: AMR-025 fires (bare-host contract)
+    let r = scan_with_device_open(s);
+    let ids: Vec<&str> = r.findings.iter().map(|f| f.rule).collect();
+    assert!(
+        !ids.contains(&"AMR-025"),
+        "`unsupported` open verdict must close the passive leg: {ids:?}"
+    );
 }
