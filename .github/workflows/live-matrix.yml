@@ -228,8 +228,13 @@ jobs:
             | sudo tar --zstd -xf - -C /usr/local/bin
           sudo /usr/local/bin/runsc install
           sudo systemctl restart docker
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
-          echo "::group::1. Standalone Direct gVisor (runsc do)"
+          echo "::group::1. Standalone Direct gVisor (sudo runsc do)"
+          sudo /usr/local/bin/runsc --network=none do ./bin/amirustrained --compact || true
+          echo "::endgroup::"
+
+          echo "::group::2. Standalone Rootless gVisor (runsc --rootless do)"
           /usr/local/bin/runsc --rootless --network=none do ./bin/amirustrained --compact || true
           echo "::endgroup::"
 
