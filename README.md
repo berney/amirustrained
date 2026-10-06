@@ -203,6 +203,7 @@ runs on it.
 | `ebpf` | `unprivileged_bpf_disabled` + lockdown knobs; computed bpf() reachability (zero syscalls — the real load probe is the opt-in `--probe-ebpf`) | — | capabilities facts absent ⇒ `reachability` degraded (knobs still reported) |
 | `vmm` | CPUID, DMI (public fields), clocksource, vsock | — | restricted DMI ⇒ fewer signatures |
 | `cgroup` | own cgroup path, controllers, limits | — | v1 or v2, both handled |
+| `mounts` | `/proc/self/mountinfo` parsing, staging mount detection, sensitive proc/sys masking, propagation tags, host leaks | — | unreadable mountinfo ⇒ legacy `/proc/mounts` fallback |
 | `sockets` | candidate socket probe + `GET /info` over UDS | — | socket absent/unwritable ⇒ quiet (environment-only evidence) |
 | `k8s` | env vars, serviceaccount dir | — | outside a pod ⇒ silent |
 | `runtime` | composite fusion of all the above | — | low-confidence verdict ⇒ AMR-015 tells you to audit manually |
@@ -234,8 +235,7 @@ timed out: a per-probe timeout (`--probe-timeout`) yields a `timed_out` probe an
 probe facts (e.g. `namespaces` on a hardened host) stay visible in each probe's
 `availability` and never flip the scan to incomplete.
 
-## Rule catalog (v0.2.0)
-
+## Rule catalog (v0.3.0)
 Severity = how much closer to host root the state puts an attacker already inside
 the environment. Container-gated rules stay silent unless the verdict is a
 shared-kernel containment — i.e. at a `host` verdict and at VM-family verdicts
@@ -274,16 +274,24 @@ report `info` + "insufficient privilege to assess" when run unprivileged.
 | AMR-027 | `acpi-table-injection-writable` | high | ACPI table customization interface (/sys/kernel/config/acpi/table) is writable |
 | AMR-028 | `kexec-module-lockdown-bypass` | high | Kexec kernel replacement is permitted while kernel module loading is blocked (lockdown bypass; suppressed when AMR-023 fires) |
 | AMR-029 | `kernel-execution-probe-report` | info | Active kernel execution probe confirmed all tested ring 0 pathways are closed or restricted |
+| AMR-030 | `staging-mount-unhardened` | medium / info | Writable mount allows code execution and device creation (Info on bare host; High with CAP_MKNOD in container) |
+| AMR-031 | `sensitive-proc-sys-unmasked` | high | Sensitive /proc or /sys pseudo-filesystem paths are unmasked or writable inside container |
+| AMR-032 | `shared-mount-propagation` | medium | Container mount carries shared or master mount propagation flags |
+| AMR-033 | `host-filesystem-exposed` | critical | Host root filesystem or system control directories are mounted directly inside container |
 
-*Notes:* the 29-id catalog (v0.2.0) is complete; the id-space is append-only. AMR-021
+*Notes:* the 33-id catalog (v0.3.0) is complete; the id-space is append-only. AMR-021
 and AMR-029 are rules whose evidence requires opt-in probes (`--probe-ebpf` and
 `--probe-kernel-execution` respectively): without the corresponding flag the fact never
 exists and the rule can never fire. AMR-028 is a chained bypass rule that triggers when
 kexec kernel replacement is open while module loading is blocked, but is suppressed when
-direct module loading (AMR-023) is already open to avoid redundant alerts.
+direct module loading (AMR-023) is already open to avoid redundant alerts. AMR-030 through
+AMR-033 audit mount sandboxing and filesystem isolation: AMR-030 detects staging mounts
+(rw + !noexec + fs.writable), silenced in default human terminal output on bare hosts via
+`Rule.verbose_only`; AMR-031 flags unmasked/writable sensitive pseudo-filesystem paths in
+containers; AMR-032 flags shared/master propagation; and AMR-033 flags host root or host
+control directory leaks into containers.
 
 ## Development
-
 ```sh
 cargo test --all          # unit + CLI + 9-scenario fixture corpus (musl default target)
 cargo build --release --target aarch64-unknown-linux-musl    # cross-free (self-contained rust-lld)
@@ -294,7 +302,7 @@ PROFILE=release scripts/live-smoke.sh       # …or the release binary
 
 The smoke script builds on demand, runs the json/jsonl/sarif/markdown formats
 plus `--probe-syscalls`, and asserts the JSON contract (`schemaVersion 1`,
-`scan.complete`, all eleven default probes with `runtime` emitting the verdict,
+`scan.complete`, all twelve default probes with `runtime` emitting the verdict,
 SARIF 2.1.0). Its `--fail-on high ⇒ 1 / critical ⇒ 0` exit-code asserts are
 **this-host** posture claims, so it is a local smoke, not portable CI.
 

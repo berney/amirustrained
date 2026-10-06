@@ -4,12 +4,12 @@ This document tracks prioritized future capability and audit milestones descoped
 
 ---
 
-## 1. Mounts & Filesystem Isolation Audit (In Progress — Spec: 2026-10-06)
+## 1. Mounts & Filesystem Isolation Audit (Complete — Spec: 2026-10-06)
 **Theme:** Filesystem sandboxing, payload staging ground identification, and mount flag hygiene via `/proc/self/mountinfo`.
-- **Current Scope:**
-  - Full `/proc/self/mountinfo` parsing (mount options, in-tree root, propagation tags).
+- **Completed Scope:**
+  - Full `/proc/self/mountinfo` parsing (mount options, in-tree root, propagation tags) with fallback to `/proc/mounts`.
   - Capability/DAC-driven staging detection: checks `rw`, lack of `noexec`, and $O(1)$ DAC writability (`fs.writable`).
-  - Rules `AMR-030..033` (staging, unmasked proc/sys, shared propagation, host root leaks).
+  - Rules `AMR-030..033` (staging-mount-unhardened, sensitive-proc-sys-unmasked, shared-mount-propagation, host-filesystem-exposed).
   - `Rule.verbose_only` suppression mechanism for low-priority informational posture.
 - **Follow-up Sub-Item: Recursive Filesystem Staging Hunter (`--hunt-staging [PATH]` / `--hunt-writable`)**
   - Opt-in CLI recursive directory traversal (`fd`-style tree crawler).

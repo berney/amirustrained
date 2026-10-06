@@ -9,6 +9,7 @@ This document defines the architectural invariants, core tenets, execution model
 ### Tenet 1: Human Output is Opinionated and Concise
 - **Signal-to-Noise Ratio:** Default human text output (`--format text`) prioritizes actionable security findings and immediate situational context.
 - **Probe Heartbeat Silencing:** Routine probe progress lines (`probe <name>: ok`) are silenced by default in human output. Only degraded probes emit a concise single-line warning to `stderr`. Full probe progress is deferred to `--verbose` (`-v`).
+- **Verbose-Only Informational Suppression (`Rule.verbose_only`):** Low-priority informational findings (e.g. `AMR-030` at `Info` on bare hosts) are silenced in default human terminal output (`--format text` and `--compact`) to prevent alert fatigue. Findings above `Info` are never silenced. The summary line alerts the user with `[N verbose notices hidden — run with -v]`, running with `-v` renders them in full, and machine formats (`json`, `yaml`, `sarif`, `jsonl`) always export 100% of findings regardless of flag.
 - **Deferred Metadata:** Large data structures—such as full kernel configuration option dictionaries and cryptographic SHA-256 hashes—are suppressed from default human terminal output and displayed only when `--verbose` is enabled.
 - **Identity & Environment Header:** Every human scan begins with a high-density, 5-line context header (`Host:`, `Identity:`, `Caps:`, `Sandboxing:`, `Visibility:`) establishing the execution baseline (UID/GID, supplemental groups, 64-bit hexadecimal capabilities bitmask, seccomp/lockdown sandboxing state, PID namespace isolation, and PID 1).
 - **Compact Diffable Mode:** The `--compact` flag (alias `--terse`) provides single-line finding summaries (`<SEVERITY> <RULE_ID> <SLUG>: <SUMMARY>`), retaining the Identity Header for diffability across privilege boundaries (e.g. `diff -u before.txt after.txt`).
@@ -53,20 +54,24 @@ The scan pipeline executes probes sequentially in deterministic order:
 9. `vmm` — CPUID, DMI tables, vsock, and hypervisor detection.
 10. `sockets` — Container runtime UDS inspection.
 11. `cgroup` — Cgroup hierarchy, controllers, and resource limits.
-12. `k8s` — Kubernetes service account and environment detection.
-13. `kernel-config` — Passive config discovery, pure-Rust decompression, dual SHA-256, whitelist extraction.
-14. `kernel-surface` — Passive attack surface checks (modules, kexec, `/dev/mem`, USMH, ACPI).
-15. `kernel-exec` — *(Opt-in: `--probe-kernel-execution`)* Isolated boundary execution probe.
-16. `runtime` — Composite container/host runtime verdict fusion.
+12. `mounts` — `/proc/self/mountinfo` parsing, staging mount detection, sensitive proc/sys masking, propagation tags, and host leaks.
+13. `k8s` — Kubernetes service account and environment detection.
+14. `kernel-config` — Passive config discovery, pure-Rust decompression, dual SHA-256, whitelist extraction.
+15. `kernel-surface` — Passive attack surface checks (modules, kexec, `/dev/mem`, USMH, ACPI).
+16. `kernel-exec` — *(Opt-in: `--probe-kernel-execution`)* Isolated boundary execution probe.
+17. `runtime` — Composite container/host runtime verdict fusion.
 
 ### Rule Evaluation Model
-- **Append-Only ID Space:** Rule IDs (`AMR-001` through `AMR-029`) are immutable and append-only.
-- **Container Gating:** Container-specific rules (e.g., `AMR-002`, `AMR-005`, `AMR-019`) fire only when running inside a shared-kernel container. They stay silent under `Host` or VM-isolated verdicts (`firecracker`, `gVisor`, `kata`).
+- **Append-Only ID Space:** Rule IDs (`AMR-001` through `AMR-033`) are immutable and append-only.
+- **Container Gating:** Container-specific rules (e.g., `AMR-002`, `AMR-005`, `AMR-019`, `AMR-031`, `AMR-032`, `AMR-033`) fire only when running inside a shared-kernel container. They stay silent under `Host` or VM-isolated verdicts (`firecracker`, `gVisor`, `kata`).
+- **Path-Agnostic Capability & DAC Staging Invariants:** `AMR-030` (`staging-mount-unhardened`) does not rely on fragile directory name lists or path heuristics. It evaluates filesystem and mount security invariants:
+  - Mount options: filesystem is writable (`rw`) and execution is permitted (`!noexec`).
+  - $O(1)$ DAC writability: `fs.writable` confirms current process credentials can write to the mount target.
+  - Severity ladder: bare host environments degrade to `Info` (and are suppressed under `verbose_only`), container environments report `Medium`, and containers combining missing `nodev` with `CAP_MKNOD` elevate to `High` (device node creation primitive).
 - **Chained Bypass Suppression:** Composite rules prevent notification fatigue:
   - `AMR-028` (`kexec-module-lockdown-bypass`) fires when kexec replacement is open while direct module loading is blocked.
   - If direct module loading is **also** open (`AMR-023` fires), `AMR-028` is **strictly suppressed** because full Ring 0 access is already directly reported.
 - **Honest Privilege Degradation:** Probes never guess state when privileges are lacking. Missing root or capability access degrades findings honestly to `info` with explanatory rationale.
-
 ---
 
 ## Toolchain & Platform Invariants
