@@ -94,10 +94,17 @@ pub struct Rule {
     /// host verdict too, applicability never false), and the ungated specs
     /// AMR-007/012/013/014/015/020 are false.
     pub container_only: bool,
-    /// true → finding is hidden in human text output unless `--verbose` is passed
-    /// (spec §4). Typically used for informational notes on bare hosts to eliminate
-    /// terminal alert fatigue while preserving complete machine reporting.
+    /// true → a finding is hidden in human text output iff
+    /// `finding.severity == Severity::Info && rule.verbose_only && !verbose`
+    /// (spec §4). Findings above Info always render, so a rule whose severity
+    /// is dynamic (e.g. AMR-030: Info on a bare host, Medium/High otherwise)
+    /// only suppresses its Info-level notes. Machine output (JSON) always
+    /// carries every finding.
     pub verbose_only: bool,
+    /// `Some(f)` computes the fired finding's severity from the assessment
+    /// and the evidence, overriding the static `severity`; `None` keeps it.
+    /// Never consulted on the insufficient-privilege note path (always Info).
+    pub severity_of: Option<fn(&Assess, &[Fact]) -> Severity>,
     /// `Some(evidence)` fires the rule; `None` stays silent.
     pub check: fn(&Assess) -> Option<Vec<Fact>>,
 }
@@ -133,11 +140,7 @@ impl Rule {
             });
         }
         let evidence = evidence?;
-        let severity = if self.id == "AMR-030" {
-            evaluate_amr030_severity(&a, &evidence)
-        } else {
-            self.severity
-        };
+        let severity = self.severity_of.map_or(self.severity, |f| f(&a, &evidence));
         Some(Finding {
             rule: self.id,
             severity,
@@ -147,36 +150,5 @@ impl Rule {
             references: self.references,
             evidence,
         })
-    }
-}
-
-/// Computes dynamic severity for AMR-030 (`staging-mount-unhardened`):
-/// - Bare host: Info
-/// - Shared-kernel container: Medium, elevating to High if any staging mount is
-///   missing `nodev` and the caller holds `cap_mknod`.
-fn evaluate_amr030_severity(a: &Assess, evidence: &[Fact]) -> Severity {
-    if !a.shared_kernel_containment() {
-        return Severity::Info;
-    }
-    let has_cap_mknod = a.arr_has("capabilities", "effective", "cap_mknod");
-    let missing_nodev = evidence.iter().any(|fact| {
-        fact.value.as_array().is_some_and(|arr| {
-            arr.iter().any(|entry| {
-                let in_missing = entry
-                    .get("missing_flags")
-                    .and_then(|f| f.as_array())
-                    .is_some_and(|flags| flags.iter().any(|flag| flag == "nodev"));
-                let not_in_options = entry
-                    .get("options")
-                    .and_then(|opts| opts.as_array())
-                    .is_some_and(|opts| !opts.iter().any(|o| o == "nodev"));
-                in_missing || not_in_options
-            })
-        })
-    });
-    if has_cap_mknod && missing_nodev {
-        Severity::High
-    } else {
-        Severity::Medium
     }
 }

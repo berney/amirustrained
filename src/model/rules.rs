@@ -25,6 +25,7 @@ pub static RULES: &[Rule] = &[
         // rule fires on a Host verdict by design, applicability never false.
         container_only: false,
         verbose_only: false,
+        severity_of: None,
         check: |a| {
             let f = a.fact("sockets", "found")?;
             let hits: Vec<&serde_json::Value> = f
@@ -71,6 +72,7 @@ pub static RULES: &[Rule] = &[
         // mirrors the shared_kernel_containment() conjunct in check).
         container_only: true,
         verbose_only: false,
+        severity_of: None,
         check: |a| {
             if !a.shared_kernel_containment() {
                 return None;
@@ -108,6 +110,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: true,
         verbose_only: false,
+        severity_of: None,
         check: |a| {
             if !a.shared_kernel_containment() {
                 return None;
@@ -136,6 +139,7 @@ pub static RULES: &[Rule] = &[
         requires_root: true,
         container_only: true,
         verbose_only: false,
+        severity_of: None,
         check: |a| {
             // Host PID ns is tautological on a bare host: the finding is about a
             // contained process that shares it.
@@ -180,6 +184,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: true,
         verbose_only: false,
+        severity_of: None,
         check: |a| {
             if !a.shared_kernel_containment() {
                 return None;
@@ -207,6 +212,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: true,
         verbose_only: false,
+        severity_of: None,
         check: |a| {
             if !a.shared_kernel_containment() {
                 return None;
@@ -253,6 +259,7 @@ pub static RULES: &[Rule] = &[
         // Ungated like AMR-001 (see its note): fires on a Host verdict too.
         container_only: false,
         verbose_only: false,
+        severity_of: None,
         check: |a| {
             let f = a.fact("sockets", "found")?;
             let hits: Vec<&serde_json::Value> = f
@@ -294,6 +301,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: false,
         verbose_only: false,
+        severity_of: None,
         check: |a| {
             // No containment gate (spec condition verbatim): permissive MAC on a
             // bare host is a real hardening gap, not a tautology like AMR-003/004.
@@ -322,6 +330,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: true,
         verbose_only: false,
+        severity_of: None,
         check: |a| {
             if !a.shared_kernel_containment() {
                 return None;
@@ -353,6 +362,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: true,
         verbose_only: false,
+        severity_of: None,
         check: |a| {
             if !a.shared_kernel_containment() {
                 return None;
@@ -381,6 +391,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: true,
         verbose_only: false,
+        severity_of: None,
         check: |a| {
             if !a.shared_kernel_containment() {
                 return None;
@@ -419,6 +430,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: true,
         verbose_only: false,
+        severity_of: None,
         check: |a| {
             // Containment gate (spec §6 erratum, live host scan 2026-10-01):
             // init-ns gid_map is trivially `0 0 4294967295` with setgroups
@@ -460,6 +472,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: false,
         verbose_only: false,
+        severity_of: None,
         check: |a| {
             a.fact("lsm", "landlockAbi")
                 .filter(|f| f.value.as_i64().is_some_and(|v| v >= 1))
@@ -483,6 +496,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: false,
         verbose_only: false,
+        severity_of: None,
         check: |a| {
             a.fact("vmm", "hypervisor")
                 .filter(|f| f.value.get("present") == Some(&serde_json::Value::Bool(true)))
@@ -510,6 +524,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: false,
         verbose_only: false,
+        severity_of: None,
         check: |a| {
             // Typed RuntimeKind match on the fusion verdict (not a string):
             // spec row 210 names the three strong-isolation variants.
@@ -539,6 +554,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: false,
         verbose_only: false,
+        severity_of: None,
         check: |a| {
             // Plan amendment: Verdict::confidence is the string ladder
             // high|medium|low — match "low" exactly, never a numeric < 0.5.
@@ -567,6 +583,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: true,
         verbose_only: false,
+        severity_of: None,
         check: |a| {
             if !a.shared_kernel_containment() {
                 return None;
@@ -635,6 +652,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: true,
         verbose_only: false,
+        severity_of: None,
         check: |a| {
             if !a.shared_kernel_containment() {
                 return None;
@@ -668,6 +686,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: true,
         verbose_only: false,
+        severity_of: None,
         check: |a| {
             if !a.shared_kernel_containment() {
                 return None;
@@ -711,6 +730,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: true,
         verbose_only: false,
+        severity_of: None,
         check: |a| {
             if !a.shared_kernel_containment() {
                 return None;
@@ -757,6 +777,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: false,
         verbose_only: false,
+        severity_of: None,
         check: |a| {
             if !a.arr_has("capabilities", "effective", "cap_bpf")
                 && !a.arr_has("capabilities", "effective", "cap_perfmon")
@@ -806,6 +827,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: true,
         verbose_only: false,
+        severity_of: None,
         check: |a| {
             if !a.shared_kernel_containment() {
                 return None;
@@ -830,6 +852,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: false,
         verbose_only: false,
+        severity_of: None,
         check: check_amr023,
     },
     Rule {
@@ -846,6 +869,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: false,
         verbose_only: false,
+        severity_of: None,
         check: check_amr024,
     },
     Rule {
@@ -862,6 +886,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: false,
         verbose_only: false,
+        severity_of: None,
         check: check_amr025,
     },
     Rule {
@@ -878,6 +903,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: false,
         verbose_only: false,
+        severity_of: None,
         check: check_amr026,
     },
     Rule {
@@ -894,6 +920,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: false,
         verbose_only: false,
+        severity_of: None,
         check: check_amr027,
     },
     Rule {
@@ -910,6 +937,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: false,
         verbose_only: false,
+        severity_of: None,
         check: check_amr028,
     },
     Rule {
@@ -926,6 +954,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: false,
         verbose_only: false,
+        severity_of: None,
         check: check_amr029,
     },
     Rule {
@@ -942,6 +971,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: false,
         verbose_only: true,
+        severity_of: Some(severity_amr030),
         check: check_amr030,
     },
     Rule {
@@ -958,6 +988,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: true,
         verbose_only: false,
+        severity_of: None,
         check: check_amr031,
     },
     Rule {
@@ -974,6 +1005,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: true,
         verbose_only: false,
+        severity_of: None,
         check: check_amr032,
     },
     Rule {
@@ -990,6 +1022,7 @@ pub static RULES: &[Rule] = &[
         requires_root: false,
         container_only: true,
         verbose_only: false,
+        severity_of: None,
         check: check_amr033,
     },
 ];
@@ -1338,6 +1371,43 @@ fn check_amr030(a: &Assess) -> Option<Vec<Fact>> {
         return None;
     }
     Some(vec![f.clone()])
+}
+
+/// Dynamic severity for AMR-030 (`staging-mount-unhardened`), the rule's
+/// `severity_of` hook:
+/// - Host verdict: Info — no containment boundary for the mount to weaken.
+/// - Anything else (shared-kernel container, VM-family sandbox, or verdict
+///   absent = containment unknown): Medium, elevating to High when a staging
+///   mount lacks `nodev` and the caller holds `cap_mknod`.
+fn severity_amr030(a: &Assess, evidence: &[Fact]) -> Severity {
+    if a.report
+        .verdict
+        .as_ref()
+        .is_some_and(|v| v.runtime == RuntimeKind::Host)
+    {
+        return Severity::Info;
+    }
+    let has_cap_mknod = a.arr_has("capabilities", "effective", "cap_mknod");
+    let missing_nodev = evidence.iter().any(|fact| {
+        fact.value.as_array().is_some_and(|arr| {
+            arr.iter().any(|entry| {
+                let in_missing = entry
+                    .get("missing_flags")
+                    .and_then(|f| f.as_array())
+                    .is_some_and(|flags| flags.iter().any(|flag| flag == "nodev"));
+                let not_in_options = entry
+                    .get("options")
+                    .and_then(|opts| opts.as_array())
+                    .is_some_and(|opts| !opts.iter().any(|o| o == "nodev"));
+                in_missing || not_in_options
+            })
+        })
+    });
+    if has_cap_mknod && missing_nodev {
+        Severity::High
+    } else {
+        Severity::Medium
+    }
 }
 
 fn check_amr031(a: &Assess) -> Option<Vec<Fact>> {
@@ -3620,6 +3690,70 @@ mod tests {
         let mut r_empty = report_with(&[("mounts", "staging", json!([]))]);
         r_empty.verdict = Some(verdict(RuntimeKind::Docker));
         assert!(rule("AMR-030").evaluate(&r_empty, false).is_none());
+    }
+
+    #[test]
+    fn amr030_verbose_only_never_hides_container_findings() {
+        // verbose_only hides a finding iff severity == Info && !verbose: the
+        // flag is set, yet a contained process's finding is >= Medium and so
+        // stays visible in default text output.
+        let rule_030 = rule("AMR-030");
+        assert!(rule_030.verbose_only);
+        let mut r = report_with(&[(
+            "mounts",
+            "staging",
+            json!([{"mount_point": "/tmp", "missing_flags": ["noexec"], "options": ["rw", "nodev"]}]),
+        )]);
+        r.verdict = Some(verdict(RuntimeKind::Docker));
+        let f = rule_030.evaluate(&r, false).expect("fires in container");
+        assert!(f.severity >= Severity::Medium, "got {:?}", f.severity);
+    }
+
+    #[test]
+    fn amr030_downgrades_to_info_only_on_host_verdict() {
+        let missing_nodev = json!([{
+            "mount_point": "/tmp",
+            "missing_flags": ["noexec", "nosuid", "nodev"],
+            "options": ["rw"]
+        }]);
+        let with_nodev = json!([{
+            "mount_point": "/tmp",
+            "missing_flags": ["noexec"],
+            "options": ["rw", "nodev"]
+        }]);
+        // Absent verdict = containment unknown: no downgrade.
+        let r_absent = report_with(&[("mounts", "staging", with_nodev.clone())]);
+        assert!(r_absent.verdict.is_none());
+        let f = rule("AMR-030").evaluate(&r_absent, false).expect("fires");
+        assert_eq!(f.severity, Severity::Medium);
+        // VM-family sandboxes are not Host: no downgrade, and the nodev +
+        // cap_mknod elevation still applies.
+        for runtime in [
+            RuntimeKind::Firecracker,
+            RuntimeKind::Gvisor,
+            RuntimeKind::Kata,
+        ] {
+            let mut r = report_with(&[("mounts", "staging", with_nodev.clone())]);
+            r.verdict = Some(verdict(runtime));
+            let f = rule("AMR-030").evaluate(&r, false).expect("fires");
+            assert_eq!(f.severity, Severity::Medium, "{runtime:?}");
+
+            let mut r = report_with(&[
+                ("mounts", "staging", missing_nodev.clone()),
+                ("capabilities", "effective", json!(["cap_mknod"])),
+            ]);
+            r.verdict = Some(verdict(runtime));
+            let f = rule("AMR-030").evaluate(&r, false).expect("fires");
+            assert_eq!(f.severity, Severity::High, "{runtime:?}");
+        }
+        // Host verdict downgrades even with the High conjuncts open.
+        let mut r_host = report_with(&[
+            ("mounts", "staging", missing_nodev),
+            ("capabilities", "effective", json!(["cap_mknod"])),
+        ]);
+        r_host.verdict = Some(verdict(RuntimeKind::Host));
+        let f = rule("AMR-030").evaluate(&r_host, false).expect("fires");
+        assert_eq!(f.severity, Severity::Info);
     }
 
     #[test]

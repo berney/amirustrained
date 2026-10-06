@@ -46,6 +46,7 @@ mod tests {
         requires_root: false,
         container_only: false,
         verbose_only: false,
+        severity_of: None,
         check: |_| Some(vec![]),
     };
 
