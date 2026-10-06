@@ -26,14 +26,36 @@ pub struct StagingMount {
     pub options: Vec<String>,
 }
 
-/// Filesystems that cannot store user-provided file content, so no droppable
-/// executable can exist on them regardless of `rw`/`!noexec` mount flags:
-/// hugetlbfs files are hugepage reservations (`write` fails with `ENOSPC`
-/// unless the kernel was pre-tuned via `nr_hugepages`), and POSIX message
-/// queue writes return `ENOSYS`. Ground-truthed with the drop-and-exec
-/// oracle: `scripts/live-matrix.sh oracle firecracker`.
+/// Kernel-managed pseudo-filesystems whose regular inodes exist only because
+/// kernel code creates them: userspace `open(O_CREAT)`/`write` is rejected
+/// (`EPERM`, `EOPNOTSUPP`, `ENOSPC` for unreserved `hugetlbfs`, `ENOSYS` for
+/// `mqueue`), so no droppable executable can exist on them regardless of
+/// `rw`/`!noexec` mount flags and a passing DAC `fs.writable` heuristic.
+/// Every mount of every entry below was empirically write-rejected as root by
+/// the drop oracle (`scripts/live-matrix.sh oracle firecracker`); tracefs,
+/// configfs, cgroup v1 and autofs share the same kernel-created-inode design
+/// and are included by family.
 fn holds_user_content(fstype: &str) -> bool {
-    !matches!(fstype, "hugetlbfs" | "mqueue")
+    !matches!(
+        fstype,
+        "proc"
+            | "sysfs"
+            | "securityfs"
+            | "selinuxfs"
+            | "cgroup"
+            | "cgroup2"
+            | "debugfs"
+            | "tracefs"
+            | "configfs"
+            | "pstore"
+            | "bpf"
+            | "fusectl"
+            | "devpts"
+            | "binfmt_misc"
+            | "autofs"
+            | "mqueue"
+            | "hugetlbfs"
+    )
 }
 
 pub struct Mounts;
@@ -333,17 +355,32 @@ mod tests {
 
     #[test]
     fn test_contentless_fstypes_never_stage() {
-        // hugetlbfs writes fail ENOSPC and mqueue writes fail ENOSYS: an
-        // executable can never be dropped on them, so rw + !noexec must not
-        // stage them (oracle-verified: live-matrix.sh oracle firecracker).
-        // tmpfs next to them keeps staging enabled as the control.
+        // Kernel-managed pseudo-filesystems reject userspace file creation
+        // (and hugetlbfs writes fail ENOSPC, mqueue writes ENOSYS): an
+        // executable can never be dropped on them, so rw + !noexec + DAC-
+        // writable must not stage them (oracle-verified as root inside the
+        // guest: live-matrix.sh oracle firecracker). tmpfs + ext4 next to
+        // them keep staging enabled as the control.
         let mountinfo = "\
-40 1 0:40 / /dev/hugepages rw,relatime - hugetlbfs hugetlbfs rw,pagesize=2M\n\
-41 1 0:41 / /dev/mqueue rw,relatime - mqueue mqueue rw\n\
-42 1 0:42 / /tmp rw,relatime - tmpfs tmpfs rw\n";
+40 1 0:40 / /proc rw,nosuid,nodev - proc proc rw\n\
+41 1 0:41 / /sys rw,nosuid,nodev - sysfs sysfs rw\n\
+42 1 0:42 / /sys/fs/cgroup rw - cgroup2 cgroup2 rw\n\
+43 1 0:43 / /sys/fs/bpf rw - bpf bpf rw\n\
+44 1 0:44 / /dev/hugepages rw - hugetlbfs hugetlbfs rw,pagesize=2M\n\
+45 1 0:45 / /dev/mqueue rw - mqueue mqueue rw\n\
+46 1 0:46 / /tmp rw - tmpfs tmpfs rw\n\
+47 1 0:47 / /var rw - ext4 /dev/sda1 rw\n";
 
         let (d, fs) = fixture_fs(&[("proc/self/mountinfo", mountinfo)]);
-        for p in &["dev/hugepages", "dev/mqueue", "tmp"] {
+        for p in &[
+            "sys",
+            "sys/fs/cgroup",
+            "sys/fs/bpf",
+            "dev/hugepages",
+            "dev/mqueue",
+            "tmp",
+            "var",
+        ] {
             std::fs::create_dir_all(d.path().join(p)).unwrap();
         }
 
@@ -352,8 +389,12 @@ mod tests {
         let staging: Vec<StagingMount> =
             serde_json::from_value(staging_fact.value.clone()).unwrap();
 
-        assert_eq!(staging.len(), 1);
-        assert_eq!(staging[0].mount_point, "/tmp");
+        assert_eq!(staging.len(), 2);
+        assert!(
+            staging
+                .iter()
+                .all(|s| s.mount_point == "/tmp" || s.mount_point == "/var")
+        );
     }
 
     #[test]
