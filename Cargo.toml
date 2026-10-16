@@ -16,7 +16,7 @@ aya = "0.14"
 aya-obj = "0.3"
 object = { version = "0.39", default-features = false }
 flate2 = { version = "1.0", default-features = false, features = ["rust_backend"] }
-sha2 = { version = "0.10", default-features = false }
+sha2 = { version = "0.11", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
