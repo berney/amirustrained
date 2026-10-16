@@ -43,7 +43,7 @@ jobs:
           version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
           tar -C target/${{ matrix.target }}/release \
               -czf "amirustrained-${version}-${{ matrix.target }}.tar.gz" amirustrained
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: amirustrained-${{ matrix.target }}
           path: amirustrained-*-${{ matrix.target }}.tar.gz
