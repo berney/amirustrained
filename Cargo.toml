@@ -13,7 +13,7 @@ serde_json = { version = "1", features = ["preserve_order"] }
 rustix = { version = "1", features = ["fs", "process", "system"] }
 libc = "0.2"
 aya = "0.14"
-aya-obj = "0.3"
+aya-obj = "0.5"
 object = { version = "0.39", default-features = false }
 flate2 = { version = "1.0", default-features = false, features = ["rust_backend"] }
 sha2 = { version = "0.10", default-features = false }
