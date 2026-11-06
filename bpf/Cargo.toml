@@ -12,7 +12,7 @@ license = "MIT"
 publish = false
 
 [dependencies]
-aya-ebpf = "0.2"
+aya-ebpf = "0.3"
 
 [profile.release]
 # bpf-linker 0.11 rejects Rust's `s` level: O2 is the supported size mode.
